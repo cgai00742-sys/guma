@@ -27,6 +27,7 @@ public/
                   @page rule and no print stylesheet anywhere in this repo
   brand/          the 16 production brand files, shipped as-is
   _headers        Cloudflare Pages: a year of immutable caching on /brand/*
+  _redirects      SPA fallback. Without it a refresh on /settings 404s
 src/
   lib/pricing.ts       THE quote calculation. One copy, no second implementation
   lib/pricing.test.ts  23 tests, including the fully worked example off the
@@ -80,7 +81,20 @@ Two things that waste an afternoon if skipped:
   production domain and add every preview pattern plus `http://localhost:5173`
   to the redirect allowlist, or every magic link goes to localhost.
 
-Then: Pages project from this repo, build `npm run build`, output `dist`,
-`_headers` already at the project root. `VITE_SUPABASE_URL` and
-`VITE_SUPABASE_ANON_KEY` as Pages env vars, **production and preview
-separately**. The service-role key never reaches the client.
+**Connect this repo to Pages** (recommended): build command `npm run build`,
+output directory `dist`. Nothing is uploaded by hand; Cloudflare builds on push.
+Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as Pages environment
+variables, **production and preview separately** — `.env` is gitignored, so
+without them the build produces an app that throws on load.
+
+**Or upload directly:** run `npm run build` and drag the **`dist` folder**
+(its contents, not the source tree) into Pages → Create → Upload assets. With
+this route the two `VITE_` values are already baked into the bundle from your
+local `.env`, so Pages env vars do nothing — you rebuild and re-upload to change
+them.
+
+Either way `_headers` and `_redirects` end up at the deployed root, which is
+where Cloudflare reads them. The copy at `brand/_headers` is inert — it ships
+because `brand/` is shipped as-is, and Cloudflare only reads the root one.
+
+The service-role key never reaches the client.

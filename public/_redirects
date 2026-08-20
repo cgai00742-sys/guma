@@ -1,0 +1,8 @@
+# Single-page app. Every route is served by index.html and resolved by the
+# router in the browser. Without this, a refresh on /settings, or a bookmarked
+# /quote/<id>/print, returns a 404 from the edge — the file genuinely is not
+# there.
+#
+# Real files are matched first, so /guma.css, /doc-page.js, /brand/* and
+# /site.webmanifest still serve normally. This is the last rule to run.
+/*    /index.html   200
