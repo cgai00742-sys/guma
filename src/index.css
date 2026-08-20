@@ -1,0 +1,18 @@
+/* guma.css is the design system and is linked from index.html as-is.
+   Nothing here re-derives a token — this file only does app-shell plumbing
+   that the design system has no opinion about. */
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* The topbar is cinematic register (a surface you pass through). Everything
+   below it is calm register and stays flat. */
+.app-main {
+  min-height: calc(100vh - 52px);
+}

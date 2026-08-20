@@ -1,0 +1,1357 @@
+/* =============================================================================
+   GUMA — application stylesheet
+   Design system v1 (Aug 2026). Drop-in replacement for the previous 428 lines.
+
+   HOW THIS FILE WORKS
+   -------------------
+   The app's HTML is generated at runtime by JavaScript template literals. Class
+   names are the only styling hook, so nothing here renames or replaces a class:
+   every selector targets a name already emitted by the app. New names may be
+   added later; existing ones must never change.
+
+   THE SYSTEM, IN FIVE RULES
+   1. TYPE — Inter (SIL Open Font License), weights 400/500/600/650 only.
+      Scale: 20/26 title · 16/22 heading · 14/20 subhead · 13/18 body ·
+      12/16 small · 11/16 micro-uppercase. Nothing smaller than 11px.
+      All numerals in data contexts use tabular-nums so columns align.
+   2. SPACE — 4px base: 4 / 8 / 12 / 16 / 20 / 24 / 32. Compact on purpose:
+      the board must fit 6 columns × 212px + 12px gaps = 1332px at 1440px.
+      Table rows 40px, controls 32px (26px small).
+   3. COLOR — SINAHI: an abyssal blue neutral family lit by one bioluminescent
+      cyan. Semantics are operational and never decorative: ok=passed,
+      warn=at-risk, red=blocked, info=informational.
+      TWO ACCENT SLOTS, and the difference matters:
+        · --biolum is LOCKED. It is Guma's identity — the wordmark, anything
+          live, and the single primary action per view. Never overridden per
+          customer; swapping it swaps the product's face.
+        · --ember and --teal are FREELY OVERRIDABLE per install by app-config.js
+          (customer accent + chart secondary). Washes and tinted borders are
+          DERIVED with color-mix() from their base token, so a swap restyles
+          them automatically and can never touch the identity colour.
+   4. TWO REGISTERS — cinematic where you PASS THROUGH, calm where you WORK.
+      Cinematic (glow, gradient fields, depth): the top bar and module switcher,
+      the sign-in screen, wall-mounted floor displays (.wall), empty and error
+      states, and marketing. Calm (flat surfaces, hairlines, no glow): the tab
+      strip, KPI cards, the board, tables, and everything inside a dialog —
+      the surfaces somebody stares at for six hours. Glow is a budget: the
+      moment everything shines, nothing does.
+   5. ELEVATION — in the calm register, depth is a surface step plus a 1px
+      hairline. Shadows only where something floats: dialogs and menus.
+      E0 --bg page · E1 --panel · E2 --panel-2 · E3 --panel-3 + shadow.
+
+   MOTION — five things move, and nothing else (§8). Progress bars breathe as
+   they fill, cards have lift-and-settle physics, a stage advance sweeps, changed
+   numbers roll up, and sign-in reveals. Deliberately NOT animated: ambient
+   background drift, printer glow pulsing, and route transitions — all three read
+   as motion in the periphery of a dense operational view, which is fatigue.
+   Everything respects prefers-reduced-motion.
+
+   ACCESSIBILITY — every text/background pairing is AA (4.5:1) or better;
+   most clear AAA. Keyboard focus is a 2px --info ring, deliberately neither
+   --biolum nor --ember, so focus is never confused with "live" or with a
+   customer accent. State is never carried by color alone — a chip, dot, or word
+   always says it.
+
+   MAINTENANCE NOTES
+   - --ember and --teal are overridden at runtime by app-config.js. Keep them as
+     custom properties; never hard-code either value in a rule.
+   - --biolum is NOT overridable. If a customer asks for it, they're asking for
+     a different product's colour; give them --ember.
+   - --ember-dim is derived from --ember, so it follows an accent override.
+   - Several generation sites emit INLINE styles (stage colors on .bar, priority
+     dots, .flagtag colors, part-card borders). Those win over this file by
+     design — they carry data. Don't fight them with !important.
+   - Additive tokens: --panel-3 (overlay surface), --line-strong (hover / overlay
+     edge), --biolum (locked identity). Additive only; nothing removed.
+   ============================================================================= */
+
+/* =============================================================================
+   1. TOKENS
+   ============================================================================= */
+:root{
+  /* surfaces & lines — abyssal blue, five steps */
+  --bg:#05090F;
+  --panel:#0A121C;
+  --panel-2:#0F1B27;
+  --panel-3:#152534;          /* additive: dialogs, menus */
+  --line:#1C2E42;
+  --line-strong:#2C4560;      /* additive: hover borders, overlay edges */
+
+  /* text — moonlight on deep water (measured against --panel-2) */
+  --txt:#DCE9F2;              /* 14.1:1 on --panel-2  AAA */
+  --txt-2:#9FB4C8;            /*  8.2:1 on --panel-2  AAA */
+  --txt-3:#7189A0;            /*  4.8:1 on --panel-2  AA  */
+
+  /* semantic — meanings are operational, never decorative */
+  --ok:#45DDA0;               /* passed / on track    10.0:1 */
+  --warn:#FFC46B;             /* at risk / caution    11.1:1 */
+  --red:#FF5C6C;              /* blocked / overdue     5.8:1 */
+  --info:#5AA9FF;             /* informational, focus  7.1:1 */
+
+  /* IDENTITY — locked. Never overridden per install. Wordmark, anything live,
+     and the one primary action per view. */
+  --biolum:#37E2C8;           /* 10.7:1 on --panel-2 */
+
+  /* customer accents — --ember and --teal ARE per-install (app-config.js) */
+  --ember:#FF7A45;            /* spondylus shell: customer accent, alerts-adjacent */
+  --teal:#2FBFD6;             /* chart secondary */
+  --violet:#8E7BFF;           /* deeplight — charts only */
+  --gray:#6E8298;             /* neutral chip, declined */
+
+  /* derived from --ember so an accent swap carries through */
+  --ember-dim:color-mix(in srgb, var(--ember) 42%, var(--bg));
+
+  --radius:6px;
+
+  /* derived helpers (not part of the named set; safe to read, don't override) */
+  --ink:#05090F;                                          /* text on solid fills */
+  --wash:color-mix(in srgb, var(--ember) 10%, transparent);
+  --edge:color-mix(in srgb, var(--ember) 35%, transparent);
+  --lit:color-mix(in srgb, var(--biolum) 12%, transparent); /* live wash */
+  --lit-edge:color-mix(in srgb, var(--biolum) 42%, transparent);
+  --glow:0 0 18px color-mix(in srgb, var(--biolum) 45%, transparent);
+  --focus:0 0 0 2px var(--bg), 0 0 0 4px var(--info);
+  --shadow-overlay:0 16px 40px rgba(0,0,0,.60), 0 2px 8px rgba(0,0,0,.40);
+  --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+}
+
+/* =============================================================================
+   2. BASE / RESET
+   ============================================================================= */
+*{box-sizing:border-box}
+
+html,body{
+  margin:0;
+  background:var(--bg);
+  color:var(--txt);
+  font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:13px;
+  line-height:1.45;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  font-variant-numeric:tabular-nums;
+}
+body{
+  /* Calm canvas. The one cinematic gesture at page level is a faint cold field
+     at the top edge, behind the shell — not an ambient animated drift. */
+  background-image:radial-gradient(ellipse at 14% -14%, color-mix(in srgb, var(--biolum) 7%, transparent), transparent 46%),
+                   radial-gradient(ellipse at 92% -8%, color-mix(in srgb, var(--violet) 6%, transparent), transparent 40%);
+  background-attachment:fixed;
+  /* Sticky footer: short views (Requests, an errored tab) left ~800px of void
+     below the footer. Column layout pins it to the bottom of the viewport. */
+  display:flex;flex-direction:column;min-height:100vh;
+}
+body>main,main{flex:1 0 auto}
+body>footer,footer.app{flex:none}
+
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.01em;color:var(--txt)}
+h1{font-size:20px;line-height:26px;font-weight:650}
+h2{font-size:16px;line-height:22px}
+h3{font-size:14px;line-height:20px}
+p{margin:0 0 8px}
+b,strong{font-weight:600}
+hr{border:none;border-top:1px solid var(--line);margin:16px 0}
+code,kbd,pre{font-family:var(--mono);font-size:12px}
+
+a{color:var(--info);text-decoration:none}
+a:hover{color:var(--txt);text-decoration:underline}
+
+::selection{background:color-mix(in srgb, var(--ember) 32%, transparent);color:var(--txt)}
+::placeholder{color:var(--txt-3);opacity:1}
+
+/* Scrollbars: present but recessive — these views scroll all day. */
+*{scrollbar-color:var(--line-strong) transparent;scrollbar-width:thin}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--line-strong);border:3px solid var(--bg);border-radius:20px}
+::-webkit-scrollbar-thumb:hover{background:var(--txt-3)}
+
+/* Focus: one ring, everywhere, keyboard-only. Info blue, not ember. */
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--info);outline-offset:2px;border-radius:3px}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}
+
+/* =============================================================================
+   3. LAYOUT & SHELL
+   .app .wrap .top .topbar .toolbar .brand .home .foot2 .footn .col .row .stack
+   .grid .grid2 .grid3 .grow .fw .section-head .pane .card .bigcard
+   ============================================================================= */
+.wrap{max-width:1320px;margin:0 auto;padding:0 20px}
+
+header.app,.top{
+  border-bottom:1px solid var(--line);
+  background:
+    radial-gradient(120% 200% at 8% 0%, color-mix(in srgb, var(--biolum) 9%, transparent), transparent 60%),
+    color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter:saturate(1.4) blur(10px);
+  position:sticky;top:0;z-index:20;
+}
+/* CINEMATIC · the shell is a surface you pass through, so it gets the depth. */
+header.app::after,.top::after{
+  content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
+  background:linear-gradient(90deg,transparent,color-mix(in srgb, var(--biolum) 55%, transparent) 18%,transparent 62%);
+  pointer-events:none;
+}
+.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 20px}
+.topbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 0}
+
+.brand{margin-right:auto;min-width:0}
+.brand .mark,.mark{font-weight:650;font-size:15px;letter-spacing:.14em;text-transform:uppercase;color:var(--txt);text-shadow:0 0 20px color-mix(in srgb, var(--biolum) 30%, transparent)}
+.mark b{color:var(--biolum);font-weight:650}
+.brand .sub{color:var(--txt-3);font-size:11px;letter-spacing:.01em;margin-top:1px}
+
+.who{color:var(--txt-3);font-size:11px}
+.who b{color:var(--txt-2);font-weight:500}
+
+main{padding-top:16px;padding-bottom:32px}
+
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 0 12px}
+.section-head h2{font-size:16px;line-height:22px}
+
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}
+.pane h3{
+  margin:0 0 12px;font-size:11px;line-height:16px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.06em;color:var(--txt-3);
+  display:flex;justify-content:space-between;align-items:center;gap:10px;
+}
+.bigcard{
+  flex:1;min-width:150px;background:var(--panel-2);border:1px solid var(--line);
+  border-radius:var(--radius);padding:12px 14px;
+}
+.bigcard .k{color:var(--txt-3);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.bigcard .v{font-size:22px;line-height:26px;font-weight:650;margin-top:3px}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media (max-width:780px){.grid,.grid2,.grid3{grid-template-columns:1fr}}
+.grow{flex:1;min-width:0}
+.stack{display:flex;flex-direction:column;gap:8px}
+.big{display:flex;gap:12px;flex-wrap:wrap;margin-top:4px}
+
+.row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+.row:last-child{border-bottom:none}
+.row .nm{font-weight:500;color:var(--txt)}
+.row .m{color:var(--txt-3);font-size:11px}
+
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}
+.toolbar .grow{flex:1;min-width:160px}
+.toolbar input.search,.search{width:100%}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+
+.home{
+  width:100%;max-width:480px;margin:0 auto;background:var(--panel);
+  border:1px solid var(--line);border-radius:10px;padding:24px;text-align:center;
+}
+.home h2{font-size:20px;line-height:26px}
+.route{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);
+  padding:12px 14px;margin:16px 0;text-align:left;
+}
+.route .to{font-size:14px;line-height:20px;font-weight:600;color:var(--txt)}
+.route .sub{color:var(--txt-3);font-size:11px;margin-top:2px}
+
+footer.app,footer{
+  color:var(--txt-3);font-size:11px;padding:20px 0;
+  border-top:1px solid var(--line);margin-top:24px;
+}
+.footn{text-align:center;font-size:11px;color:var(--txt-3);margin-top:16px}
+.foot2{display:flex;align-items:center;gap:6px;margin-top:8px}
+.foot2 select{padding:3px 6px;font-size:11px;flex:1;height:24px}
+
+/* =============================================================================
+   4. COMPONENTS
+   ============================================================================= */
+
+/* --- 4.1 Navigation: .tabs .tab .seg .stepper .step .linkbtn ---------------- */
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tab{
+  background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-1px;
+  color:var(--txt-2);padding:10px 12px;font:600 12px/16px inherit;
+  letter-spacing:.02em;cursor:pointer;transition:color .12s,border-color .12s;
+}
+.tab:hover{color:var(--txt)}
+.tab[aria-selected="true"]{color:var(--txt);border-bottom-color:var(--ember)}
+
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--panel-2)}
+.seg button{
+  background:transparent;border:none;color:var(--txt-2);height:30px;padding:0 12px;
+  font:600 12px/1 inherit;cursor:pointer;transition:background .12s,color .12s;
+}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button:hover{background:var(--panel-3);color:var(--txt)}
+.seg button[aria-pressed="true"]{background:var(--ember);color:var(--ink)}
+
+.stepper{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
+.step{
+  display:flex;align-items:center;gap:5px;font-size:11px;color:var(--txt-3);
+  padding:3px 9px;border:1px solid var(--line);border-radius:20px;white-space:nowrap;
+}
+.step i{width:6px;height:6px;border-radius:50%;background:var(--line-strong);display:inline-block}
+.step.done{color:var(--txt-2)}
+.step.done i{background:var(--ok)}
+.step.cur{color:var(--txt);border-color:var(--ember);background:var(--wash)}
+.step.cur i{background:var(--ember)}
+
+.linkbtn{
+  display:block;width:100%;background:none;border:none;color:var(--txt-2);
+  font:400 12px/16px inherit;cursor:pointer;margin-top:12px;text-decoration:underline;
+  text-underline-offset:2px;
+}
+.linkbtn:hover{color:var(--txt)}
+
+/* --- 4.2 Buttons & controls ------------------------------------------------ */
+.btn,.vmui-btn,.signin{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  height:32px;padding:0 12px;background:var(--panel-2);color:var(--txt);
+  border:1px solid var(--line);border-radius:var(--radius);
+  font:500 13px/1 inherit;cursor:pointer;text-decoration:none;white-space:nowrap;
+  transition:background .12s,border-color .12s,color .12s;
+}
+.btn:hover,.vmui-btn:hover{background:var(--panel-3);border-color:var(--line-strong)}
+.btn:active,.vmui-btn:active{background:var(--bg)}
+.btn.primary,.signin{background:var(--biolum);border-color:var(--biolum);color:var(--ink);font-weight:600}
+.btn.primary:hover,.signin:hover{background:color-mix(in srgb, var(--biolum) 86%, #fff);border-color:color-mix(in srgb, var(--biolum) 86%, #fff)}
+.btn.primary:active,.signin:active{background:color-mix(in srgb, var(--biolum) 84%, #000)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--txt-2)}
+.btn.ghost:hover{background:var(--panel-2);border-color:var(--line);color:var(--txt)}
+.btn.danger{background:var(--panel-2);color:var(--red);border-color:color-mix(in srgb, var(--red) 35%, transparent)}
+.btn.danger:hover{background:color-mix(in srgb, var(--red) 12%, transparent);border-color:color-mix(in srgb, var(--red) 55%, transparent)}
+.btn.danger:active{background:var(--red);color:var(--ink);border-color:var(--red)}
+.btn.sm,.vmui-btn.sm{height:26px;padding:0 9px;font-size:12px}
+.signin{width:100%;height:38px;margin-top:6px;font-size:14px}
+
+.btnrow{display:flex;gap:8px;flex-wrap:wrap}
+.actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+
+.rbtn,.mtoggle button{
+  background:var(--panel-2);border:1px solid var(--line);color:var(--txt-2);
+  border-radius:var(--radius);height:26px;padding:0 10px;
+  font:500 12px/1 inherit;cursor:pointer;transition:background .12s,border-color .12s,color .12s;
+}
+.rbtn:hover,.mtoggle button:hover{background:var(--panel-3);border-color:var(--line-strong);color:var(--txt)}
+.rbtn[aria-pressed="true"]{background:var(--ember);border-color:var(--ember);color:var(--ink);font-weight:600}
+.mtoggle{display:inline-flex;gap:4px}
+.mtoggle button[aria-pressed="true"]{background:var(--wash);border-color:var(--edge);color:var(--ember)}
+
+.ranger{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.ranger .lbl{margin-right:2px}
+.ranger select,.ranger input{height:26px;padding:0 8px;font-size:12px}
+
+.cb{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--txt-2);cursor:pointer}
+.cb input{width:auto;accent-color:var(--ember)}
+input[type="checkbox"],input[type="radio"]{accent-color:var(--ember);width:auto;height:auto}
+
+.x{
+  background:none;border:none;color:var(--txt-3);font-size:18px;line-height:1;
+  width:26px;height:26px;border-radius:var(--radius);cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;
+}
+.x:hover{background:var(--panel-2);color:var(--txt)}
+
+.click{cursor:pointer}
+.on{border-color:var(--ember)!important;box-shadow:0 0 0 1px var(--ember) inset}
+
+.sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px;flex:none}
+.act{
+  display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.05em;border-radius:4px;padding:2px 7px;margin-right:8px;white-space:nowrap;
+  background:var(--panel-3);color:var(--txt-2);
+}
+
+/* --- 4.3 Forms: .fld .lbl .lab .in .m .hint .err .note .addnote ------------- */
+input,select,textarea,.in{
+  width:100%;height:32px;background:var(--panel-2);color:var(--txt);
+  border:1px solid var(--line);border-radius:var(--radius);padding:0 10px;
+  font:400 13px/1 inherit;transition:border-color .12s,background .12s;
+}
+textarea{height:auto;min-height:56px;padding:8px 10px;line-height:1.45;resize:vertical}
+select{padding-right:6px;cursor:pointer}
+select[multiple]{height:auto;min-height:96px;padding:4px}
+input:hover,select:hover,textarea:hover{border-color:var(--line-strong)}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--info);outline-offset:1px;border-color:var(--info)}
+input:disabled,select:disabled,textarea:disabled{background:var(--panel);color:var(--txt-3);opacity:.6;cursor:not-allowed}
+input[type="date"]{color-scheme:dark}
+input::-webkit-calendar-picker-indicator{opacity:.6;cursor:pointer;filter:invert(1)}
+input::-webkit-calendar-picker-indicator:hover{opacity:1}
+
+.fld{margin-bottom:12px}
+.fld label,.lbl,.lab{
+  display:block;color:var(--txt-3);font-size:11px;line-height:16px;font-weight:500;
+  text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;
+}
+.lab{display:inline-block;margin-bottom:0;text-transform:none;letter-spacing:0;font-size:12px;color:var(--txt-2)}
+.fld input,.fld select,.fld textarea{width:100%}
+.hint,.note{color:var(--txt-3);font-size:11px;line-height:16px;margin-top:4px}
+.note{text-align:center;margin-top:10px}
+.err,.note.err,.msg.err{color:var(--red)}
+.note.ok,.msg.ok{color:var(--ok)}
+.msg{font-size:12px;margin-top:8px}
+.addnote{
+  background:none;border:none;color:var(--txt-3);font-size:11px;cursor:pointer;
+  padding:2px 0;text-decoration:underline;text-underline-offset:2px;
+}
+.addnote:hover{color:var(--txt-2)}
+
+/* --- 4.4 Dialogs: native <dialog>, .dlg-* .vmui-dlg ------------------------ */
+dialog,.vmui-dlg{
+  background:var(--panel-3);color:var(--txt);border:1px solid var(--line-strong);
+  border-radius:10px;padding:0;width:min(680px,95vw);max-height:92vh;
+  box-shadow:var(--shadow-overlay);
+}
+dialog::backdrop{background:rgba(4,5,7,.62);backdrop-filter:blur(2px)}
+.dlg-head,.vmui-dlg .h{
+  display:flex;justify-content:space-between;align-items:center;gap:12px;
+  padding:12px 16px;border-bottom:1px solid var(--line);
+  position:sticky;top:0;background:var(--panel-3);z-index:2;border-radius:10px 10px 0 0;
+}
+.dlg-head h3,.vmui-dlg .h{font-size:14px;line-height:20px;font-weight:600}
+.dlg-body,.vmui-dlg .m{padding:16px;overflow:auto;max-height:70vh}
+.dlg-foot,.vmui-dlg .ft{
+  display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;
+  border-top:1px solid var(--line);position:sticky;bottom:0;background:var(--panel-3);
+  border-radius:0 0 10px 10px;
+}
+/* Inside a dialog the surface is one step up, so nested cards step up too. */
+dialog .pane,dialog .gatebox,dialog .upd,dialog .grphead,dialog details.snap{background:var(--panel-2)}
+
+/* --- 4.4b Project detail dialog -------------------------------------------
+   REDESIGN, Aug 2026. The old dialog was one long scroll: the stage rail and
+   the flag summary scrolled away with everything else, so the two facts a user
+   needs to keep their bearings were the first two to leave the screen.
+
+   The fix is not more collapsing \u2014 it is a FIXED ANCHOR plus a PERSISTENT MAP.
+
+   dialog.proj-dlg is a 3-row grid: head / cols / foot. Only .dlg-main scrolls.
+     \u00b7 .dlg-head never moves. It carries the project name, the stage rail
+       (.stepper) and the flag strip \u2014 "where am I, what stage, what's wrong".
+     \u00b7 .dlg-nav is a standing index, NOT a wizard: every section is reachable
+       at all times, in any order, and each entry states its own status, so the
+       map doubles as a dashboard. The scroll-spy marks the section you're in.
+     \u00b7 .sechead is sticky inside .dlg-main, so the current section's title and
+       status sit at the top of the body even mid-section. Between the spine and
+       the sticky header there is no scroll position at which the user cannot
+       answer "which part of this job am I looking at".
+     \u00b7 The build sheet keeps its own bounded scroller (.sheetwrap) with a sticky
+       thead. 41 rows must not own the dialog's scrollbar \u2014 that is what buried
+       the delivery window and the activity log below it.
+     \u00b7 .dlg-foot holds exactly one primary (advance), with the gate precondition
+       stated beside it in words. Destructive and rare actions go in a .dlg-more
+       menu; they were previously three peer buttons competing with the action
+       that matters.
+   ------------------------------------------------------------------------- */
+dialog.proj-dlg{
+  width:min(1080px,95vw);height:min(760px,92vh);max-height:92vh;
+  display:grid;grid-template-rows:auto minmax(0,1fr) auto;grid-template-columns:100%;
+  overflow:hidden;
+}
+dialog.proj-dlg .dlg-head{
+  position:static;display:block;padding:12px 16px 10px;
+  background:var(--panel-3);border-bottom:1px solid var(--line);
+}
+.dlg-title{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.dlg-title h3{font-size:16px;line-height:22px;font-weight:600;margin:0}
+.dlg-title .pmeta{margin:0;font-size:12px;white-space:normal}
+.dlg-title .x{margin-left:auto;align-self:flex-start}
+dialog.proj-dlg .stepper{margin:10px 0 0}
+/* Flag strip in the head: same fixed-slot language as the board card, so the
+   two surfaces are read the same way. Words are present here \u2014 there is room. */
+.dlg-flags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.dlg-flags .flagtag{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;font-weight:500}
+.dlg-flags .flagtag.crit{color:var(--red);border-color:color-mix(in srgb, var(--red) 40%, transparent);background:color-mix(in srgb, var(--red) 10%, transparent)}
+.dlg-flags .flagtag.warn{color:var(--warn);border-color:color-mix(in srgb, var(--warn) 40%, transparent);background:color-mix(in srgb, var(--warn) 10%, transparent)}
+.dlg-flags .flagtag.info{color:var(--info);border-color:color-mix(in srgb, var(--info) 40%, transparent);background:color-mix(in srgb, var(--info) 10%, transparent)}
+.dlg-flags .flagtag.ok{color:var(--ok);border-color:color-mix(in srgb, var(--ok) 35%, transparent);background:color-mix(in srgb, var(--ok) 8%, transparent)}
+
+/* the two-pane middle */
+.dlg-cols{display:grid;grid-template-columns:196px minmax(0,1fr);min-height:0;overflow:hidden}
+.dlg-nav{
+  border-right:1px solid var(--line);background:color-mix(in srgb, var(--bg) 45%, var(--panel-3));
+  padding:8px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;
+}
+.dlg-navitem{
+  display:block;width:100%;text-align:left;background:none;border:none;cursor:pointer;
+  border-radius:var(--radius);padding:7px 9px;color:var(--txt-2);
+  border-left:2px solid transparent;transition:background .12s,color .12s,border-color .12s;
+}
+.dlg-navitem .nvt{display:block;font-size:12px;line-height:16px;font-weight:600;color:inherit}
+.dlg-navitem .nvs{display:block;font-size:11px;line-height:15px;color:var(--txt-3);margin-top:1px}
+.dlg-navitem:hover{background:var(--panel-2);color:var(--txt)}
+.dlg-navitem.on{background:var(--panel-2);color:var(--txt);border-left-color:var(--ember)}
+.dlg-navitem.on .nvs{color:var(--txt-2)}
+.dlg-navitem .nvs.crit{color:var(--red)}
+.dlg-navitem .nvs.warn{color:var(--warn)}
+.dlg-navitem .nvs.ok{color:var(--ok)}
+
+/* No scroll-behavior:smooth here. The spine's jump is a programmatic scroll
+   followed by a re-render, and a pending smooth animation gets cancelled by the
+   re-render before it advances a frame \u2014 the nav highlight moves and the body
+   never does. Instant is also the right feel: this is a jump to a known place,
+   not a tour. */
+.dlg-main{overflow-y:auto;overscroll-behavior:contain;padding:0 20px 24px}
+.sec{padding-top:4px;margin-bottom:22px}
+.sec:last-child{margin-bottom:4px}
+.sechead{
+  position:sticky;top:0;z-index:3;background:var(--panel-3);
+  padding:12px 0 8px;margin-bottom:10px;border-bottom:1px solid var(--line);
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+}
+.sechead h4{
+  margin:0;font-size:11px;line-height:16px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--txt-2);
+}
+.secstat{font-size:11px;color:var(--txt-3);margin-left:auto;font-variant-numeric:tabular-nums}
+.secstat.ok{color:var(--ok)}
+.secstat.warn{color:var(--warn)}
+.secstat.crit{color:var(--red)}
+/* Collapsed reference sections: the header still carries the status, so
+   collapsing never hides state \u2014 only detail. */
+.sec details>summary{
+  list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;
+  padding:9px 11px;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel-2);font-size:12px;color:var(--txt-2);
+}
+.sec details>summary::-webkit-details-marker{display:none}
+.sec details>summary::marker{content:""}
+.sec details>summary:hover{border-color:var(--line-strong);color:var(--txt)}
+.sec details>summary .caret{color:var(--txt-3);transition:transform .12s;display:inline-block}
+.sec details[open]>summary{border-radius:var(--radius) var(--radius) 0 0;border-bottom-color:transparent}
+.sec details[open]>summary .caret{transform:rotate(90deg)}
+.sec details>summary b{color:var(--txt);font-weight:600}
+.sec details>summary .secstat{margin-left:auto}
+.sec details .dbody{
+  border:1px solid var(--line);border-top:none;border-radius:0 0 var(--radius) var(--radius);
+  padding:12px;background:color-mix(in srgb, var(--panel-2) 60%, transparent);
+}
+
+/* build sheet: bounded scroller, sticky head, 40px rows */
+.sheetwrap{
+  border:1px solid var(--line);border-radius:var(--radius);overflow:auto;
+  max-height:340px;background:var(--panel-2);
+}
+.sheetwrap table{font-size:12px}
+.sheetwrap thead th{background:var(--panel-2);border-bottom:1px solid var(--line-strong)}
+.sheetwrap tbody td{height:40px}
+.sheetwrap tbody tr:hover td{background:var(--panel-3)}
+.sheetwrap .pn{font-weight:500;color:var(--txt)}
+.sheetwrap .mono{font-family:var(--mono);font-size:11px;color:var(--txt-2)}
+/* Part status uses the same fixed-slot grammar as the board: slot 1 printed,
+   slot 2 QC. Square = printed, disc = QC passed. */
+.pstat{display:inline-flex;gap:3px;align-items:center;vertical-align:-2px;margin-right:7px}
+.pstat i{
+  width:13px;height:13px;border-radius:3px;flex:none;display:flex;align-items:center;justify-content:center;
+  background:color-mix(in srgb, var(--line) 55%, transparent);
+}
+.pstat i::before{content:"";display:block;background:var(--txt-3);opacity:.5}
+.pstat i.s-print::before{width:7px;height:7px;border-radius:1px}
+.pstat i.s-qc::before{width:7px;height:7px;border-radius:50%}
+.pstat i.on{background:color-mix(in srgb, var(--c) 20%, transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent)}
+.pstat i.on::before{background:var(--c);opacity:1}
+.pstat i.s-print{--c:var(--ember)}
+.pstat i.s-qc{--c:var(--ok)}
+.pstat i.fail{--c:var(--red)}
+.sheetsum{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--txt-3);margin-top:8px}
+
+/* footer: one primary, with its precondition in words */
+dialog.proj-dlg .dlg-foot{
+  position:static;display:flex;align-items:center;gap:12px;
+  padding:12px 16px;border-top:1px solid var(--line);background:var(--panel-3);
+}
+.dlg-foot .gatewhy{font-size:11px;line-height:15px;color:var(--txt-3);max-width:52ch}
+.dlg-foot .gatewhy b{color:var(--warn);font-weight:600}
+.dlg-foot .spacer{margin-left:auto}
+.dlg-more{position:relative}
+.dlg-more>menu{
+  position:absolute;right:0;bottom:calc(100% + 6px);margin:0;padding:4px;list-style:none;
+  min-width:172px;background:var(--panel-3);border:1px solid var(--line-strong);
+  border-radius:8px;box-shadow:var(--shadow-overlay);display:flex;flex-direction:column;gap:2px;
+}
+.dlg-more>menu[hidden]{display:none}
+.dlg-more>menu button{
+  width:100%;text-align:left;background:none;border:none;color:var(--txt-2);
+  font:500 12px/1 inherit;padding:8px 9px;border-radius:var(--radius);cursor:pointer;
+}
+.dlg-more>menu button:hover{background:var(--panel-2);color:var(--txt)}
+.dlg-more>menu button.danger:hover{background:color-mix(in srgb, var(--red) 14%, transparent);color:var(--red)}
+.dlg-more>menu hr{margin:4px 2px}
+.btn.advance{height:36px;padding:0 16px;font-size:13px}
+
+/* --- 4.5 Pipeline board ----------------------------------------------------
+   REDESIGN, Aug 2026. Three ideas carry this screen:
+
+   1. THE SIGNAL STRIP. Every card wears the same three-slot strip (.flag) in
+      the same place, in the same order: STEWARD · RISK · WINDOW. A slot is lit
+      or it is dark. Position is therefore meaning, so a lead scans the board
+      by PATTERN — a lit middle column down the In Build stack is "everything
+      here is at risk" — with no reading. Slot shapes differ (disc / triangle /
+      bar) so the read survives color blindness and greyscale printing.
+      A card's left edge takes the worst lit slot's color, which makes the
+      pattern legible one zoom level out, at column scale.
+   2. THE BOARD DOES NOT SCROLL; COLUMNS DO. The six columns always sit on one
+      screen. Each column body scrolls independently and keeps its own header
+      pinned, so a 15-card In Build never pushes Delivered off the viewport and
+      an empty Intake never collapses. The height is DERIVED, not guessed: the
+      shell above .board becomes a flex chain (opted into with :has(.board), so
+      no other page is touched) and the board takes the leftover. Never put a
+      magic `calc(100vh - <chrome>)` back on .col — the chrome above the board
+      differs on every tab and the number is wrong the moment anyone edits it.
+   3. DRAG IS DECLARED, NOT DISCOVERED. Cards carry a grip and a grab cursor at
+      rest; lifting one tilts and shadows it; the target column takes an --info
+      ring and opens a dashed slot the exact height of the card being carried.
+
+   Density budget at 1440px: 6 × 212px + 5 × 12px gap = 1332px inside a 1360px
+   content box. Card is ~100px, so 12 cards (2 per column) land above the fold.
+   The column count is not fixed — the board flows columns and scrolls sideways
+   past six, which is what happens once Design and Client approval are their own
+   phases (7 × 212 + 6 × 12 = 1556px).
+   ------------------------------------------------------------------------- */
+
+/* The flex chain that gives the board its height. Scoped with :has() so only
+   the page that actually contains a board opts in. Two safety properties:
+   the body stays scrollable, and .col is never given a percentage cap — the
+   grid's align-items:stretch already sizes columns to the board when the board
+   has a definite height, and when it doesn't the columns simply grow and the
+   page scrolls. Content can therefore never end up both uncapped and clipped. */
+html:has(.board),body:has(.board){height:100vh;min-height:0;overflow:auto}
+body:has(.board) main{flex:1 1 auto;min-height:0;min-width:0;display:flex;flex-direction:column}
+/* any wrapper that directly contains the board joins the chain too.
+   width:100% and min-width:0 are both load-bearing. These wrappers are now
+   items in a COLUMN flex container, so width is the cross axis: without an
+   explicit width they take their cross size from the board's 1332px
+   min-content and the PAGE scrolls sideways instead of the board, stranding
+   the section-head actions off-screen at any viewport under ~1340px.
+   width:100% ties them to the container; .wrap's max-width still centres it. */
+body:has(.board) main *:has(>.board),.wrap:has(.board){
+  flex:1 1 auto;min-height:0;min-width:0;width:100%;display:flex;flex-direction:column;
+}
+.board{
+  display:grid;grid-auto-flow:column;grid-auto-columns:minmax(212px,1fr);gap:12px;
+  align-items:stretch;padding-bottom:8px;
+  flex:1 1 auto;min-height:0;
+  /* only if the window is genuinely narrower than the board's 1332px floor */
+  overflow-x:auto;scroll-padding-inline:20px;
+}
+.col{
+  display:flex;flex-direction:column;min-width:0;overflow:hidden;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  /* stretched to the board by the grid; the column, not the page, owns the
+     overflow. No max-height here on purpose — see the note above. */
+  min-height:132px;
+  transition:border-color .12s,background .12s;
+}
+.col h3{
+  margin:0;padding:9px 10px;font-size:11px;line-height:16px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.06em;color:var(--txt-2);
+  border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px;
+  flex:none;background:var(--panel);border-radius:8px 8px 0 0;
+}
+.col h3 .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin:0;flex:none}
+.col h3 .count{
+  margin-left:auto;color:var(--txt-3);font-weight:500;font-variant-numeric:tabular-nums;
+  background:var(--panel-2);border-radius:20px;padding:0 6px;min-width:20px;text-align:center;
+}
+/* Column body: the only scroller on the board. */
+.col .stack{
+  padding:8px;display:flex;flex-direction:column;gap:8px;
+  overflow-y:auto;overscroll-behavior:contain;flex:1 1 auto;min-height:0;
+}
+/* A long column shouldn't end on a hard cut — fade the last 20px so it reads
+   as "more below" without a scrollbar being the only clue. */
+.col .stack{mask-image:linear-gradient(to bottom,#000 calc(100% - 20px),transparent)}
+.col .stack:not([data-overflowing]){mask-image:none}
+
+/* Drop target: --info ring, never red or ember. Guidance, not an alert, and it
+   can't be confused with a card's own severity edge. */
+.col.drag-over,.drag-over{
+  border-color:var(--info);
+  box-shadow:0 0 0 1px var(--info) inset;
+  background:color-mix(in srgb, var(--info) 7%, var(--panel));
+}
+.col.drag-over h3{background:transparent;border-bottom-color:color-mix(in srgb, var(--info) 40%, transparent)}
+/* The dashed slot the carried card will land in. Sized by the drag handler. */
+.col.drag-over .stack::after{
+  content:"";display:block;flex:none;height:var(--drop-h,96px);border-radius:var(--radius);
+  border:1px dashed color-mix(in srgb, var(--info) 60%, transparent);
+  background:color-mix(in srgb, var(--info) 8%, transparent);
+}
+
+/* --- the card ------------------------------------------------------------- */
+.card,.proj{
+  position:relative;background:var(--panel-2);border:1px solid var(--line);
+  border-radius:var(--radius);padding:8px 10px 9px 12px;cursor:grab;
+  display:flex;flex-direction:column;gap:6px;
+  transition:background .12s,border-color .12s,transform .12s,box-shadow .12s;
+}
+/* Severity edge — the worst lit slot, restated at column-scan distance. */
+.proj::before{
+  content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+  border-radius:var(--radius) 0 0 var(--radius);background:var(--line-strong);
+}
+.proj[data-sev="crit"]::before{background:var(--red)}
+.proj[data-sev="warn"]::before{background:var(--warn)}
+.proj[data-sev="info"]::before{background:var(--info)}
+/* No lit slot = neutral edge. Clean is the absence of signal, not a green one:
+   a board of green edges is as noisy as a board of red ones. */
+.card:hover,.proj:hover{border-color:var(--line-strong);background:var(--panel-3)}
+.card:active,.proj:active{cursor:grabbing}
+.card:focus-visible,.proj:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+/* Lifted: tilt + shadow. The card leaves the plane, so the gap it left behind
+   and the slot it's heading for are both unambiguous. */
+.proj.dragging,.proj[aria-grabbed="true"]{
+  opacity:.9;transform:rotate(1.4deg) scale(1.02);
+  box-shadow:var(--shadow-overlay);border-color:var(--info);cursor:grabbing;
+}
+/* Grip: three dots, top-right, always present at 35% and full on hover. It is
+   the one part of the card that says "pick me up" before you touch it. */
+.proj .grip{
+  position:absolute;top:7px;right:7px;width:10px;height:14px;opacity:.35;
+  background-image:radial-gradient(var(--txt-3) 1px,transparent 1px);
+  background-size:5px 5px;transition:opacity .12s;pointer-events:none;
+}
+.proj:hover .grip{opacity:.85}
+
+.card .nm,.pname{
+  font-size:13px;line-height:17px;font-weight:600;color:var(--txt);
+  padding-right:14px;                              /* clear of the grip */
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.card .sub,.pmeta{
+  color:var(--txt-3);font-size:11px;line-height:15px;margin-top:-2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+/* Card text is user data (6-name steward lists, long assembly names): wrap it
+   rather than let it clip at the column edge. */
+.card,.proj,.card .nm,.pname,.stewline{overflow-wrap:anywhere;word-break:normal}
+
+/* --- the signal strip ------------------------------------------------------
+   .flag is the strip; each .flagchip is a FIXED slot — slot 1 steward, slot 2
+   risk, slot 3 window. Never reorder, never omit a slot: a dark slot carries
+   as much information as a lit one, and the reading depends on position being
+   constant across every card on the board. .flagchip.on lights it.
+   ------------------------------------------------------------------------- */
+.proj .flag{
+  display:flex;gap:3px;align-items:center;padding:0;border:none;margin:0;
+}
+.proj .flagchip{
+  width:15px;height:15px;border-radius:3px;flex:none;padding:0;
+  display:flex;align-items:center;justify-content:center;
+  background:color-mix(in srgb, var(--line) 55%, transparent);
+  border:1px solid transparent;transition:background .12s;
+}
+/* the glyph — distinct silhouette per slot, so hue is never the only channel */
+.proj .flagchip::before{content:"";display:block;background:var(--txt-3);opacity:.55}
+.proj .flagchip.f-steward::before{width:7px;height:7px;border-radius:50%}
+.proj .flagchip.f-risk::before{width:0;height:0;background:none;border-left:4px solid transparent;border-right:4px solid transparent;border-bottom:7px solid var(--txt-3);opacity:.55}
+.proj .flagchip.f-window::before{width:8px;height:3px;border-radius:1px}
+/* lit */
+.proj .flagchip.on{background:color-mix(in srgb, var(--c) 20%, transparent);border-color:color-mix(in srgb, var(--c) 45%, transparent)}
+.proj .flagchip.on::before{background:var(--c);opacity:1}
+.proj .flagchip.f-risk.on::before{background:none;border-bottom-color:var(--c);opacity:1}
+.proj .flagchip.f-steward{--c:var(--red)}      /* unowned work is blocked work */
+.proj .flagchip.f-risk{--c:var(--warn)}
+.proj .flagchip.f-window{--c:var(--info)}
+/* Legend above the board reuses the same three chips at the same size. */
+.flaglegend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:0 0 10px;font-size:11px;color:var(--txt-3)}
+.flaglegend span{display:flex;align-items:center;gap:6px}
+
+/* --- card foot: priority + progress --------------------------------------- */
+.proj .pfoot{display:flex;align-items:center;gap:8px;margin-top:1px}
+.proj .pfoot .badge{margin-left:auto}
+.proj .barwrap{flex:1;margin-top:0}
+.proj .pct{font-size:10px;color:var(--txt-3)}
+
+/* Priority — a .badge with a fixed hue per level. Reads as a colour at speed,
+   still says the word up close. */
+.badge.p-urgent{background:var(--red);color:var(--ink)}
+.badge.p-high{background:var(--warn);color:var(--ink)}
+.badge.p-medium{background:var(--panel-3);color:var(--txt-2);box-shadow:inset 0 0 0 1px var(--line)}
+.badge.p-low{background:transparent;color:var(--txt-3);box-shadow:inset 0 0 0 1px var(--line)}
+
+/* Zero cards: a ghost slot the size of a card, so an empty column still reads
+   as a place things go rather than as a rendering failure. */
+.col .stack .empty{
+  border:1px dashed var(--line);border-radius:var(--radius);
+  color:var(--txt-3);font-size:11px;text-align:center;padding:26px 8px;
+  background:color-mix(in srgb, var(--panel-2) 50%, transparent);
+}
+.card .star,.star{color:var(--warn);font-size:11px;flex:none}
+.card .tags,.tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;align-items:center}
+.card .meta,.meta{
+  display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;font-size:11px;color:var(--txt-2);
+}
+.card .meta b,.meta b{color:var(--txt);font-weight:500}
+
+.badge,.pill{
+  display:inline-block;border-radius:4px;padding:1px 6px;font-size:10px;line-height:16px;
+  font-weight:600;color:var(--ink);letter-spacing:.02em;
+}
+.chip{
+  display:inline-block;border:1px solid var(--line);border-radius:20px;padding:1px 8px;
+  font-size:11px;line-height:16px;color:var(--txt-2);background:var(--panel-2);
+}
+.tag{
+  display:inline-block;font-size:10px;line-height:16px;font-weight:600;border-radius:4px;
+  padding:1px 6px;color:var(--ink);
+}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px;flex:none}
+.pdot{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--txt-2)}
+.pdot i{width:6px;height:6px;border-radius:50%;display:inline-block;flex:none}
+.projswatch{
+  background:repeating-linear-gradient(45deg,var(--ember-dim),var(--ember-dim) 3px,transparent 3px,transparent 6px);
+  border:1px dashed var(--ember);
+}
+.flag{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line);font-size:12px}
+.flag:last-child{border-bottom:none}
+.flagchip{
+  display:inline-flex;align-items:center;gap:4px;font-size:10px;line-height:16px;
+  font-weight:600;border-radius:20px;padding:1px 8px;
+}
+.flagrow{display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)}
+.flagtag{
+  flex:none;font-size:10px;line-height:16px;font-weight:600;border:1px solid;
+  border-radius:20px;padding:1px 8px;white-space:nowrap;
+}
+.flagrow .fw{font-size:12px;color:var(--txt)}
+.flagrow .fa{font-size:11px;color:var(--txt-2);margin-top:1px}
+
+/* --- 4.6 Stage gates ------------------------------------------------------- */
+.gatebox{
+  border:1px solid var(--line);background:var(--panel-2);border-radius:var(--radius);
+  padding:12px;margin-top:6px;
+}
+.gatebox .gh,.gh{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
+.gatebox .gh b{font-weight:600;font-size:13px}
+.gatechip{
+  display:inline-flex;align-items:center;gap:5px;font-size:10px;line-height:16px;
+  color:var(--txt-2);background:var(--panel-3);border:1px solid var(--line);
+  border-radius:20px;padding:1px 8px;margin-top:6px;
+}
+.gatechip.ok{color:var(--ok);border-color:color-mix(in srgb, var(--ok) 35%, transparent);background:color-mix(in srgb, var(--ok) 10%, transparent)}
+.ggroup{
+  margin:10px 0 2px;font-size:11px;line-height:16px;text-transform:uppercase;
+  letter-spacing:.06em;font-weight:600;color:var(--txt-3);
+}
+.gwrap{padding:2px 0;border-bottom:1px dashed var(--line)}
+.gwrap:last-of-type{border-bottom:none}
+.gitem{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;min-height:24px}
+.gitem input{width:auto}
+.gitem .req{color:var(--ember);font-weight:600}
+.gwho{margin-left:auto;color:var(--txt-3);font-size:10px;white-space:nowrap}
+.gnote{width:100%;min-height:34px;margin:4px 0 2px;font-size:12px;resize:vertical}
+.gnote.miss{border-color:var(--warn)}
+.gblock{
+  margin-top:8px;font-size:12px;color:var(--warn);
+  background:color-mix(in srgb, var(--warn) 9%, transparent);
+  border:1px solid color-mix(in srgb, var(--warn) 32%, transparent);
+  border-radius:var(--radius);padding:8px 10px;
+}
+.gl{color:var(--txt-3)}                    /* gridline in .tlchart is positioned inline */
+.grphead{
+  display:flex;justify-content:space-between;align-items:flex-start;gap:8px;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);
+  padding:7px 10px;margin:8px 0 6px;
+}
+.grphead .m{color:var(--txt-3);font-size:11px;font-weight:400}
+.locked{color:var(--txt-3)}
+.done{color:var(--txt-2)}
+.miss{border-color:var(--warn)}
+
+/* --- 4.7 Build sheet & parts ----------------------------------------------- */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:0 10px;height:40px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{
+  color:var(--txt-3);font-size:11px;line-height:16px;font-weight:500;height:32px;
+  text-transform:uppercase;letter-spacing:.06em;background:var(--panel);
+  position:sticky;top:0;z-index:1;
+}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+tr.row{cursor:pointer;border-bottom:none}
+tr.row:hover td{background:var(--panel-2)}
+tr.row:last-child td{border-bottom:none}
+
+.ptcard{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);
+  transition:background .12s,border-color .12s;
+}
+.ptcard:hover{border-color:var(--line-strong);background:var(--panel-3)}
+.ptcard:focus-within{border-color:var(--info);box-shadow:0 0 0 1px var(--info) inset}
+.buildinfo{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);
+  padding:10px 12px;margin-bottom:12px;font-size:12px;display:none;
+}
+.buildinfo.show,.show{display:block}
+.buildinfo .bi-h,.bi-h{
+  font-size:11px;line-height:16px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--txt-3);margin-bottom:5px;
+}
+.buildinfo .bi-row,.bi-row{display:flex;justify-content:space-between;gap:10px;padding:2px 0;color:var(--txt-2)}
+.buildinfo .bi-row b,.bi-row b{color:var(--txt);font-weight:500}
+.copygrp>summary{list-style:none;cursor:pointer}
+.copygrp>summary::-webkit-details-marker{display:none}
+.copygrp>summary::marker{content:""}
+.count{color:var(--txt-3);font-variant-numeric:tabular-nums}
+.histitem{
+  display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;padding:4px 0;
+  font-size:12px;border-bottom:1px dashed var(--line);
+}
+.histitem:last-child{border-bottom:none}
+.histnote{flex-basis:100%;color:var(--txt-2);font-size:11px;padding-left:16px;white-space:pre-wrap}
+
+/* --- 4.8 Progress ---------------------------------------------------------- */
+.barwrap,.track,.bp-barwrap{
+  background:var(--panel-3);border-radius:20px;overflow:hidden;position:relative;
+}
+.barwrap{height:5px;margin-top:8px}
+.bar,.fill{height:100%;border-radius:20px;transition:width .3s ease}
+.bp-barwrap{height:10px;margin-top:8px}
+.bp-bar{height:100%;border-radius:20px;transition:width .3s ease}
+.bigprog{
+  margin:4px 0;background:var(--panel-2);border:1px solid var(--line);
+  border-radius:var(--radius);padding:12px;
+}
+.bp-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.bp-label,.fp-label{
+  font-size:11px;line-height:16px;color:var(--txt-3);text-transform:uppercase;letter-spacing:.06em;
+}
+.bp-pct{font-size:24px;line-height:28px;font-weight:650;font-variant-numeric:tabular-nums}
+.bp-sub,.fp-sub{font-size:11px;color:var(--txt-3);margin-top:6px}
+.fleetprog{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);
+  padding:10px 12px;margin:0 0 12px;
+}
+.fp-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.fp-pct{font-size:18px;line-height:22px;font-weight:650;font-variant-numeric:tabular-nums}
+.pct{font-variant-numeric:tabular-nums;color:var(--txt-3);font-size:11px}
+.prload{font-size:11px;color:var(--info);font-weight:600;margin-top:4px}
+.brow{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px}
+.brow .lab{width:118px;flex:none;color:var(--txt-2)}
+.brow .track{flex:1;height:8px}
+.brow .cap{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--txt)}
+.brow .num,.num{width:auto;text-align:right;color:var(--txt);font-weight:500;font-variant-numeric:tabular-nums}
+.brow .num{width:140px;flex:none}
+.goal{margin-bottom:14px}
+.goal .top{display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px}
+.goal .top b{font-weight:600}
+.goal .track{height:8px}
+.goal .fill{background:var(--ember)}
+
+/* --- 4.9 Calendar & scheduling (Production) -------------------------------- */
+.calwrap{overflow:auto;border:1px solid var(--line);border-radius:8px;scroll-behavior:smooth}
+table.cal{border-collapse:collapse;font-size:11px;width:max-content}
+table.cal th,table.cal td{border:1px solid var(--line);padding:0;height:auto}
+table.cal th{
+  padding:3px 0;text-align:center;color:var(--txt-3);font-weight:500;width:28px;
+  min-width:28px;position:relative;background:var(--panel);text-transform:none;letter-spacing:0;
+}
+table.cal td.cell{min-width:28px;width:28px;height:28px}
+table.cal th.we,td.cell.we{background:color-mix(in srgb, var(--bg) 60%, var(--panel))}
+table.cal th .mo,.mo{position:absolute;top:-2px;left:3px;color:var(--ember);font-size:9px;font-weight:600}
+td.pname,th.pname{
+  position:sticky;left:0;background:var(--panel);text-align:left;min-width:190px;
+  padding:6px 10px;z-index:1;border-right:1px solid var(--line-strong);
+}
+td.pname .pmeta{color:var(--txt-3);font-size:10px;margin-top:2px}
+td.cell.free{cursor:pointer;background:var(--bg)}
+td.cell.free:hover{background:var(--wash);outline:1px solid var(--ember);outline-offset:-1px}
+td.cell.locked{
+  background:repeating-linear-gradient(45deg,var(--panel),var(--panel) 4px,var(--panel-2) 4px,var(--panel-2) 8px);
+  cursor:not-allowed;
+}
+td.cell.busy{cursor:pointer}
+td.cell.busy:hover{filter:brightness(1.12)}
+td.cell.busy.ext{cursor:default;opacity:.85}
+td.cell .clab{
+  display:inline-block;white-space:nowrap;padding:0 4px;font-weight:600;color:var(--ink);
+  position:relative;z-index:2;pointer-events:none;font-size:10px;
+}
+.daygroup{margin-bottom:16px}
+.dayhd{
+  font-size:11px;line-height:16px;font-weight:600;color:var(--txt-3);
+  text-transform:uppercase;letter-spacing:.06em;margin:0 0 8px;
+}
+.time{color:var(--txt-3);font-size:11px;font-variant-numeric:tabular-nums}
+.tl{display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 0;border-bottom:1px solid var(--line)}
+.tl:last-child{border-bottom:none}
+.tl .dot{width:7px;height:7px;flex:none}
+.tl .pl,.pl{margin-left:auto;color:var(--txt-3);font-size:11px}
+.tlchart{position:relative;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.tlaxis{position:relative;height:20px;border-bottom:1px solid var(--line);background:var(--panel-2)}
+.tlaxis .mo{position:absolute;top:3px;font-size:10px;color:var(--txt-3);white-space:nowrap;transform:translateX(3px);left:auto}
+.tlchart .gl{position:absolute;top:0;bottom:0;width:1px;background:var(--line);opacity:.5;pointer-events:none}
+.tllegend{display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 10px;font-size:11px;color:var(--txt-2)}
+.tllegend span{display:flex;align-items:center;gap:5px}
+.tllegend i{width:9px;height:9px;border-radius:2px;display:inline-block}
+.tlrow{display:flex;align-items:stretch;border-top:1px solid var(--line)}
+.tlname{
+  flex:0 0 150px;max-width:150px;padding:6px 9px;font-size:12px;cursor:pointer;
+  border-right:1px solid var(--line);display:flex;align-items:center;overflow:hidden;
+  white-space:nowrap;text-overflow:ellipsis;font-weight:500;
+}
+.tlname:hover{color:var(--ember)}
+.tltrack{position:relative;flex:1;min-height:28px}
+.tlseg{position:absolute;top:7px;height:14px;border-radius:3px;opacity:.92}
+.tlseg.proj{
+  top:9px;height:10px;opacity:.9;
+  background:repeating-linear-gradient(45deg,var(--ember-dim),var(--ember-dim) 3px,transparent 3px,transparent 6px);
+  border:1px dashed var(--ember);
+}
+.tlnow{position:absolute;top:0;bottom:0;width:2px;background:var(--ember);opacity:.85;pointer-events:none}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 12px;font-size:11px;color:var(--txt-2);align-items:center}
+.winbox>summary{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;list-style:none}
+.winbox>summary::-webkit-details-marker{display:none}
+.winbox>summary::marker{content:""}
+.free{color:var(--ok)}
+.busy{color:var(--txt-2)}
+
+/* --- 4.10 Metrics & charts (Economics / Executive) ------------------------- */
+.kpis,.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0}
+.kpi,.metric{
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  padding:10px 12px;transition:border-color .12s,background .12s;
+}
+.kpi .k,.metric .k,.k{
+  color:var(--txt-3);font-size:11px;line-height:16px;text-transform:uppercase;letter-spacing:.06em;
+}
+.kpi .v,.metric .v,.v{font-size:22px;line-height:26px;font-weight:650;margin-top:3px;font-variant-numeric:tabular-nums;color:var(--txt)}
+.metric.click:hover,.kpi.click:hover{border-color:var(--line-strong);background:var(--panel-2)}
+.chartwrap{position:relative}
+svg.chart,.chart{width:100%;height:auto;display:block}
+.chartmeta{display:flex;justify-content:space-between;font-size:11px;color:var(--txt-3);margin-top:4px}
+.pies{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:4px 12px;font-size:12px}
+.kv .k{color:var(--txt-3);text-transform:none;letter-spacing:0;font-size:12px}
+.kv .v{color:var(--txt);white-space:pre-wrap;font-size:12px;font-weight:400;line-height:18px;margin-top:0}
+.crow{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px}
+.crow .lab{flex:1;color:var(--txt-2)}
+.crow .lab b{color:var(--txt);font-weight:500}
+.crow .amt,.amt{width:96px;text-align:right;font-weight:500;font-variant-numeric:tabular-nums}
+.crow .pct{width:46px;text-align:right}
+.crow .track{width:90px;height:6px;flex:none}
+.crow .fill{background:var(--ember)}
+.cur{color:var(--txt-3);font-size:11px}
+.total{border-top:1px solid var(--line);margin-top:6px;padding-top:10px}
+.total .lab b{font-weight:600}
+.disp{font-weight:600;letter-spacing:-.01em}
+.thin{color:var(--warn)}
+.assume{margin-top:6px;color:var(--txt-3);font-size:11px}
+.assume summary{cursor:pointer;color:var(--txt-2)}
+.lensdesc{
+  color:var(--txt-2);font-size:12px;margin:10px 0 14px;padding-left:10px;
+  border-left:2px solid var(--edge);
+}
+.sub{color:var(--txt-3);font-size:11px}
+.ms{display:flex;align-items:center;gap:8px;font-size:12px;padding:6px 0;border-bottom:1px solid var(--line)}
+.ms:last-child{border-bottom:none}
+.ms .dot{width:7px;height:7px;background:var(--ok);flex:none}
+
+/* --- 4.11 Requests / intake ------------------------------------------------ */
+.req{color:var(--ember);font-weight:600}
+.reqcard{
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:12px 14px;margin-bottom:10px;
+}
+.reqcard .rq-h,.rq-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.reqcard .rq-meta,.rq-meta{color:var(--txt-2);font-size:12px;margin-top:6px}
+.reqcard .rq-meta b,.rq-meta b{color:var(--txt);font-weight:500}
+.reqcard .rq-brief,.rq-brief{
+  white-space:pre-wrap;color:var(--txt-2);font-size:12px;margin-top:8px;
+  padding-top:8px;border-top:1px solid var(--line);
+}
+.reqbadge{
+  display:inline-block;background:var(--ember);color:var(--ink);border-radius:10px;
+  font-size:10px;font-weight:600;padding:0 6px;margin-left:4px;vertical-align:middle;
+  font-variant-numeric:tabular-nums;
+}
+
+/* --- 4.12 People ----------------------------------------------------------- */
+.av{
+  width:28px;height:28px;border-radius:50%;flex:none;display:flex;align-items:center;
+  justify-content:center;font-weight:600;font-size:12px;color:var(--ink);
+}
+.home .av{width:56px;height:56px;font-size:20px;margin:0 auto 12px}
+.nm{font-weight:500;color:var(--txt)}
+.stewline{font-size:11px;color:var(--txt-2);margin-top:6px}
+.stewline b{color:var(--txt);font-weight:500}
+.updates{margin-top:6px;border-top:1px solid var(--line);padding-top:12px}
+.upd{
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);
+  padding:8px 10px;margin-bottom:8px;font-size:12px;white-space:pre-wrap;
+}
+.upd .m{color:var(--txt-3);font-size:11px;margin-bottom:2px}
+
+/* --- 4.13 Disclosure & misc ------------------------------------------------ */
+details.snap,.snap{
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--panel-2);margin-top:10px;
+}
+details.snap summary{
+  cursor:pointer;padding:9px 12px;font-size:11px;color:var(--txt-2);font-weight:600;
+  letter-spacing:.06em;text-transform:uppercase;
+}
+details.snap summary:hover{color:var(--txt)}
+details.snap .snapbody,.snapbody{padding:2px 12px 12px}
+.showcase-box{
+  border:1px solid var(--edge);background:var(--wash);border-radius:var(--radius);
+  padding:12px;margin-top:6px;
+}
+.copygrp{border-radius:var(--radius)}
+
+/* =============================================================================
+   5. STATUS / SEMANTIC
+   Meanings are operational and fixed: ok=passed, warn=at-risk, red=blocked,
+   info=informational, ember=brand/primary action. Never used decoratively.
+   Each banner pairs a tinted border + 8-10% wash with a colored heading, so the
+   state is legible from hue AND from the words in .attn-h / .sev / .flagtag.
+   ============================================================================= */
+.ok,.good,.pos{color:var(--ok)}
+.warn{color:var(--warn)}
+.crit,.danger,.neg,.overdue{color:var(--red)}
+.overdue{color:var(--red)!important}
+.info{color:var(--info)}
+
+.kpi.good .v,.metric.good .v{color:var(--ok)}
+.kpi.warn .v,.metric.warn .v{color:var(--warn)}
+.kpi.alert .v,.metric.alert .v{color:var(--red)}
+
+/* Banners.
+   NOTE for maintainers: these are flex containers (icon + text), so a bare
+   sentence containing inline emphasis splits into one flex item per node and
+   renders as gapped columns. Wrap banner copy in a single child element
+   whenever it contains <b>, <a> or <span> mid-sentence. */
+.notice,.attn,.okbar,.alert{
+  border:1px solid var(--edge);background:var(--wash);border-radius:var(--radius);
+  padding:10px 12px;margin:12px 0;font-size:12px;color:var(--txt-2);
+  display:flex;gap:10px;align-items:flex-start;
+}
+.notice b{color:var(--ember)}
+.attn{display:block}
+.attn.crit,.alert{
+  border-color:color-mix(in srgb, var(--red) 35%, transparent);
+  background:color-mix(in srgb, var(--red) 9%, transparent);
+}
+.attn.ok,.okbar{
+  border-color:color-mix(in srgb, var(--ok) 35%, transparent);
+  background:color-mix(in srgb, var(--ok) 8%, transparent);
+  color:var(--ok);display:block;
+}
+.attn-h{
+  font-size:12px;line-height:16px;font-weight:600;color:var(--warn);margin-bottom:6px;
+}
+.attn.crit .attn-h{color:var(--red)}
+.attn.ok .attn-h{color:var(--ok)}
+.attn .warn-item:first-of-type{border-top:1px solid var(--line);margin-top:6px}
+
+.warn-item{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line)}
+.warn-item:last-child{border-bottom:none}
+.warn-item .b,.b{color:var(--txt);font-weight:500}
+.warn-item .d,.d{color:var(--txt-2);font-size:12px;margin-top:1px}
+.sev{
+  flex:none;font-size:10px;line-height:16px;font-weight:600;border-radius:4px;
+  padding:1px 7px;color:var(--ink);text-transform:uppercase;letter-spacing:.03em;
+}
+.risk{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:12px}
+.risk:last-child{border-bottom:none}
+.risk .b{color:var(--txt)}
+.risk .r{color:var(--txt-3);font-size:11px}
+.r{text-align:right}
+.star{color:var(--warn)}
+
+/* =============================================================================
+   6. STATES
+   Hover lightens the border one step; active darkens the fill; keyboard focus
+   is a 2px --info ring; disabled is 45% with no pointer; loading is a spinner
+   inside the control that caused the wait, or a shimmer over the region.
+   ============================================================================= */
+.btn:disabled,button:disabled,.signin:disabled,.rbtn:disabled,.vmui-btn:disabled{
+  opacity:.45;cursor:not-allowed;filter:saturate(.7);
+}
+.btn:disabled:hover,button:disabled:hover{background:var(--panel-2);border-color:var(--line)}
+[aria-disabled="true"]{opacity:.45;pointer-events:none}
+
+.btn:focus-visible,button:focus-visible,a:focus-visible,summary:focus-visible,
+.tab:focus-visible,.rbtn:focus-visible,.seg button:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--info);outline-offset:2px;
+}
+tr.row:focus-visible td{background:var(--panel-2);outline:2px solid var(--info);outline-offset:-2px}
+
+.empty{
+  color:var(--txt-3);text-align:center;padding:32px 12px;font-size:12px;
+  border:1px dashed var(--line);border-radius:var(--radius);
+}
+.pane .empty{border:none;padding:20px 8px}
+
+/* Loading: .prload marks a live print; a generic in-flight control uses .btn[data-loading] */
+.btn[data-loading]{color:transparent;position:relative;pointer-events:none}
+.btn[data-loading]::after{
+  content:"";position:absolute;width:12px;height:12px;border-radius:50%;
+  border:2px solid color-mix(in srgb, var(--txt) 25%, transparent);border-top-color:var(--txt);
+  animation:vspin .7s linear infinite;
+}
+.btn.primary[data-loading]::after{
+  border-color:color-mix(in srgb, var(--ink) 30%, transparent);border-top-color:var(--ink);
+}
+@keyframes vspin{to{transform:rotate(360deg)}}
+
+/* Utility states from the contract */
+.show{display:block}
+.on{border-color:var(--ember)}
+.ext{opacity:.85}
+.fa{color:var(--txt-2)}
+.m{color:var(--txt-3);font-size:11px}
+.fw{color:var(--txt)}
+.we{background:color-mix(in srgb, var(--bg) 60%, var(--panel))}
+
+/* =============================================================================
+   7. CINEMATIC SHELL
+   Surfaces you PASS THROUGH get depth, gradient and glow. Surfaces you WORK IN
+   (board, tables, dialog interiors, KPI cards, tab strip) are deliberately
+   absent from this section — see rule 4 in the header. If you find yourself
+   adding a glow to something in the calm register, the answer is no.
+   ============================================================================= */
+
+/* Sign-in — the first thing anyone sees, and the only full-screen moment. */
+.home{
+  position:relative;
+  background:
+    radial-gradient(140% 120% at 50% -20%, color-mix(in srgb, var(--biolum) 12%, transparent), transparent 62%),
+    linear-gradient(var(--panel), color-mix(in srgb, var(--panel) 70%, var(--bg)));
+  border:1px solid var(--line);
+  box-shadow:0 24px 70px rgba(0,0,0,.55), inset 0 1px 0 color-mix(in srgb, var(--biolum) 14%, transparent);
+  animation:gumareveal .62s cubic-bezier(.16,.84,.3,1) both;
+}
+.home::before{
+  content:"";position:absolute;left:50%;top:0;width:min(320px,72%);height:1px;transform:translateX(-50%);
+  background:linear-gradient(90deg,transparent,var(--biolum),transparent);opacity:.75;
+}
+.home .av{
+  box-shadow:0 0 26px color-mix(in srgb, var(--biolum) 40%, transparent);
+  animation:gumareveal .7s .08s cubic-bezier(.16,.84,.3,1) both;
+}
+.home h2,.home .sub,.home .fld,.home .signin,.home .note,.home .route{
+  animation:gumareveal .6s cubic-bezier(.16,.84,.3,1) both;
+}
+.home h2{animation-delay:.10s}
+.home .sub{animation-delay:.14s}
+.home .route{animation-delay:.16s}
+.home .fld{animation-delay:.18s}
+.home .signin{animation-delay:.24s}
+.home .note{animation-delay:.30s}
+
+/* Wall / floor display (additive .wall) — read from across a dim shop. Type is
+   stepped up wholesale; this is the one place glow is allowed to be generous. */
+.wall{
+  background:
+    radial-gradient(120% 90% at 50% -10%, color-mix(in srgb, var(--biolum) 10%, transparent), transparent 60%),
+    var(--bg);
+  min-height:100vh;padding:32px 40px;
+}
+.wall .bigcard,.wall .kpi,.wall .metric{
+  background:linear-gradient(color-mix(in srgb, var(--panel-2) 92%, var(--biolum)), var(--panel));
+  border-color:var(--line-strong);
+  box-shadow:inset 0 1px 0 color-mix(in srgb, var(--biolum) 12%, transparent);
+}
+.wall .bigcard .v,.wall .kpi .v,.wall .metric .v{font-size:44px;line-height:48px}
+.wall .bigcard .k,.wall .kpi .k,.wall .metric .k{font-size:13px;letter-spacing:.1em}
+.wall .col h3,.wall .pane h3{font-size:14px}
+.wall .card .nm,.wall .proj .pname{font-size:16px;line-height:21px}
+.wall .pmeta,.wall .card .sub{font-size:13px}
+
+/* Empty & error states — a shop floor reads these as "is it broken?", so they
+   get enough presence to look deliberate. */
+.empty{
+  background:
+    radial-gradient(90% 140% at 50% 0%, color-mix(in srgb, var(--biolum) 5%, transparent), transparent 70%);
+  border-color:var(--line);
+}
+.pane .empty{background:none}
+
+/* LIVE — the locked identity colour means "this is happening right now", and it
+   is the only thing in the calm register permitted to glow. The app adds .live. */
+.live,.bar.live,.fill.live,.bp-bar.live{
+  background:linear-gradient(90deg, var(--biolum), color-mix(in srgb, var(--biolum) 60%, var(--violet)));
+  box-shadow:0 0 12px color-mix(in srgb, var(--biolum) 45%, transparent);
+}
+.prload{color:var(--biolum);text-shadow:0 0 12px color-mix(in srgb, var(--biolum) 35%, transparent)}
+td.cell.busy.live,.tlseg.live{box-shadow:0 0 12px color-mix(in srgb, var(--biolum) 40%, transparent)}
+
+/* =============================================================================
+   8. MOTION
+   Five behaviours, deliberately chosen; nothing else animates. What is NOT here
+   is as considered as what is: no ambient background drift, no pulsing printer
+   dots, no route transitions — peripheral motion in a dense operational view is
+   fatigue, and this tool is looked at all day. Every rule below is switched off
+   wholesale by the prefers-reduced-motion block in §2.
+   ============================================================================= */
+
+/* 1 · Progress breathes WHILE filling, and only while filling. A finished bar is
+      still. Add .live for an in-flight print; remove it when it completes. */
+@keyframes gumabreathe{
+  0%,100%{filter:brightness(1) saturate(1)}
+  50%{filter:brightness(1.22) saturate(1.15)}
+}
+.bar.live,.fill.live,.bp-bar.live{animation:gumabreathe 3.2s ease-in-out infinite}
+.barwrap:has(.live),.track:has(.live),.bp-barwrap:has(.live){
+  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--biolum) 22%, transparent);
+}
+
+/* 2 · Card lift and settle. Lift is instant-feeling; the settle is a short
+      overshoot so a dropped card reads as landing rather than teleporting. */
+@keyframes gumasettle{
+  0%{transform:translateY(-6px) scale(1.035);box-shadow:var(--shadow-overlay)}
+  60%{transform:translateY(1px) scale(.996)}
+  100%{transform:none;box-shadow:none}
+}
+.proj.dragging,.proj[aria-grabbed="true"]{
+  transform:rotate(1.4deg) scale(1.03) translateY(-3px);
+  transition:transform .12s cubic-bezier(.2,.9,.3,1.4);
+}
+.proj.dropped{animation:gumasettle .34s cubic-bezier(.2,.85,.3,1) both}
+
+/* 3 · Stage advance. The gate has been cleared and the project moves — a single
+      sweep of the identity colour across the card and its new stage chip. */
+@keyframes gumasweep{
+  0%{background-position:-140% 0;opacity:0}
+  18%{opacity:1}
+  100%{background-position:140% 0;opacity:0}
+}
+.proj.advancing::after,.proj-dlg.advancing .dlg-head::after{
+  content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
+  background:linear-gradient(100deg,transparent 38%,color-mix(in srgb, var(--biolum) 40%, transparent) 50%,transparent 62%);
+  background-size:260% 100%;
+  animation:gumasweep .82s ease-out both;
+}
+.step.just-advanced{animation:gumapop .5s cubic-bezier(.2,.85,.3,1.35) both}
+.step.just-advanced i{box-shadow:0 0 14px color-mix(in srgb, var(--biolum) 60%, transparent)}
+@keyframes gumapop{
+  0%{transform:scale(.9);border-color:var(--biolum)}
+  55%{transform:scale(1.06)}
+  100%{transform:none}
+}
+
+/* 4 · Numbers roll up when they change. CSS cannot count — the app swaps the
+      text and adds .rolling for one frame; this carries the movement. */
+@keyframes gumaroll{
+  0%{transform:translateY(70%);opacity:0;filter:blur(1px)}
+  100%{transform:none;opacity:1;filter:none}
+}
+.v.rolling,.bp-pct.rolling,.fp-pct.rolling,.count.rolling,.amt.rolling,.num.rolling{
+  animation:gumaroll .34s cubic-bezier(.16,.84,.3,1) both;
+  display:inline-block;
+}
+
+/* 5 · Sign-in reveal — see .home in §7. */
+@keyframes gumareveal{
+  0%{opacity:0;transform:translateY(10px) scale(.985)}
+  100%{opacity:1;transform:none}
+}
+
+/* Print: the app is a screen tool, but quotes and build sheets get printed. */
+@media print{
+  :root{--bg:#fff;--panel:#fff;--panel-2:#fff;--panel-3:#fff;--line:#ccc;--txt:#000;--txt-2:#333;--txt-3:#555}
+  header.app,.tabs,.toolbar,.btnrow,.actions,.btn,footer.app{display:none!important}
+  body{background:#fff}
+  .pane,.card,.kpi{break-inside:avoid}
+}
