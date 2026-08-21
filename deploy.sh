@@ -22,7 +22,11 @@ die()  { printf "\n\033[31m✗ %s\033[0m\n\n" "$1" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || die "Node is not installed — https://nodejs.org"
 
 say "Testing the pricing engine"
-[ -d node_modules ] || npm install
+# Check the tools actually resolve rather than just that the folder exists —
+# node_modules carried over from an older copy can be present but incomplete.
+if [ ! -x node_modules/.bin/vitest ] || [ ! -x node_modules/.bin/vite ]; then
+  npm install
+fi
 npm test --silent || die "Pricing tests failed. Not shipping a quote calculator that does not add up."
 ok "23 tests pass"
 
