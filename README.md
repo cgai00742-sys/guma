@@ -1,21 +1,54 @@
 # Guma
 
-Print-shop operations. This build is the **"If you only get one day"** scope from
+Operations tool for the print shop. Live and in use.
+
+| | |
+|---|---|
+| **Live site** | https://guma-8jn.pages.dev |
+| **Cloudflare Pages project** | `guma` — note the project name is `guma`, the *subdomain* is `guma-8jn` |
+| **Supabase project** | `lvizayqnnvvruajjjldn` · us-west-1 · free tier |
+| **Sign in** | `cgai00742@gmail.com`, password. Magic link also works once SMTP is real. |
+
+This build is the **"If you only get one day"** scope from the original
 `DEPLOY.md`: Shop settings → Rates, Job intake & quote, and Send quote as PDF.
 
 The pipeline board, printer fleet, payments and wall display are designed and in
-the handoff package, but are deliberately not built yet — they describe work that
-has to exist first.
+the handoff package under `../design-package/`, but are deliberately not built —
+they describe work that has to exist first.
 
 ## Run it
 
 ```bash
 npm install
-cp .env.example .env      # fill in the Supabase URL and publishable key
-npm run dev               # http://localhost:5173
-npm test                  # the pricing tests
+npm run dev        # http://localhost:5173
+npm test           # the pricing tests
 npm run build
 ```
+
+`.env` already holds the Supabase URL and publishable key.
+
+## Ship a change
+
+From this folder:
+
+```bash
+./deploy.sh
+```
+
+That builds and pushes to the live site. Or by hand:
+
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name guma --branch main
+```
+
+**`--project-name guma`, not `guma-8jn`.** `*.pages.dev` subdomains are globally
+unique, so when `guma.pages.dev` was taken Cloudflare handed us
+`guma-8jn.pages.dev` while keeping the project named `guma`. Pointing wrangler at
+`guma-8jn` creates a second, empty project instead of deploying to this one.
+
+`main` is the production branch. Deploy prints a hash-prefixed preview URL as
+well; that is normal, the bare domain updates too.
 
 ## Shape
 
@@ -26,7 +59,7 @@ public/
   doc-page.js     the print engine. It owns ALL print geometry. There is no
                   @page rule and no print stylesheet anywhere in this repo
   brand/          the 16 production brand files, shipped as-is
-  _headers        Cloudflare Pages: a year of immutable caching on /brand/*
+  _headers        a year of immutable caching on /brand/*
   _redirects      SPA fallback. Without it a refresh on /settings 404s
 src/
   lib/pricing.ts       THE quote calculation. One copy, no second implementation
@@ -61,8 +94,7 @@ never written to the database and has no override column.
 
 ## Calculation order
 
-Written out in `pricing.ts` and enforced by tests. It is easy to break by
-accident:
+Written out in `pricing.ts` and enforced by tests. Easy to break by accident:
 
 1. the shop minimum applies to the raw subtotal, **before** rush and discount
 2. rush is a percentage of that subtotal
@@ -71,30 +103,32 @@ accident:
 5. the deposit is a percentage of the **final total, tax included**, and is
    waived entirely below the threshold
 
-## Deploy
+## Still open
 
-Two things that waste an afternoon if skipped:
+- **Shop details on the quote PDF are placeholders.** `Guma LLC · Maui, HI ·
+  hello@guma.co · (808) 555-0142 · GE-XXXXXXX` prints on every quote a client
+  signs. Fix in the Supabase SQL editor:
 
-- **Cloudflare → Speed → Optimization → Rocket Loader OFF.** It defers and
-  reorders scripts and breaks anything reading the DOM on load.
-- **Supabase → Authentication → URL Configuration.** Set Site URL to the
-  production domain and add every preview pattern plus `http://localhost:5173`
-  to the redirect allowlist, or every magic link goes to localhost.
+  ```sql
+  update shops set
+    legal_name = '…', address = '…', email = '…',
+    phone = '…', license_no = '…'
+  where slug = 'guma';
+  ```
 
-**Connect this repo to Pages** (recommended): build command `npm run build`,
-output directory `dist`. Nothing is uploaded by hand; Cloudflare builds on push.
-Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as Pages environment
-variables, **production and preview separately** — `.env` is gitignored, so
-without them the build produces an app that throws on load.
+- **Email is on Supabase's built-in mailer**, which allows a couple of messages
+  an hour and refuses any address outside the Supabase org. That is why password
+  sign-in exists. **Shop staff cannot sign in at all until real SMTP is set up**
+  (Resend or Postmark, at `/auth/smtp` in the Supabase dashboard).
 
-**Or upload directly:** run `npm run build` and drag the **`dist` folder**
-(its contents, not the source tree) into Pages → Create → Upload assets. With
-this route the two `VITE_` values are already baked into the bundle from your
-local `.env`, so Pages env vars do nothing — you rebuild and re-upload to change
-them.
+- **Site URL / redirect allowlist** is still Supabase's default
+  `http://localhost:3000`. Only affects magic links, not password sign-in. Fix at
+  Authentication → URL Configuration: Site URL `https://guma-8jn.pages.dev`, and
+  allow `https://guma-8jn.pages.dev/**`, `https://*.guma-8jn.pages.dev/**`,
+  `http://localhost:5173/**`.
 
-Either way `_headers` and `_redirects` end up at the deployed root, which is
-where Cloudflare reads them. The copy at `brand/_headers` is inert — it ships
-because `brand/` is shipped as-is, and Cloudflare only reads the root one.
+- **Rocket Loader** must be off if you attach a custom domain — it reorders
+  scripts and breaks the quote PDF. It does not apply to `*.pages.dev`.
 
-The service-role key never reaches the client.
+- **No card or online payment**, by decision. Cash, transfer, check, card in
+  person, recorded by hand.
