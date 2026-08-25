@@ -1,134 +1,113 @@
-# Guma
+<div align="center">
+  <img src="public/brand/guma-mark.svg" width="72" alt="">
+  <h1>Guma</h1>
+  <p><strong>Quoting, costing and margin for small 3D-print shops.</strong><br>
+  The business layer, not another printer dashboard.</p>
+</div>
 
-Operations tool for the print shop. Live and in use.
+---
 
-| | |
-|---|---|
-| **Live site** | https://guma-8jn.pages.dev |
-| **Cloudflare Pages project** | `guma` — note the project name is `guma`, the *subdomain* is `guma-8jn` |
-| **Supabase project** | `lvizayqnnvvruajjjldn` · us-west-1 · free tier |
-| **Sign in** | `cgai00742@gmail.com`, password. Magic link also works once SMTP is real. |
+Most print-farm software fights over controlling machines. OctoPrint, Klipper,
+Printago and SimplyPrint all do that, and some of them do it free.
 
-This build is the **"If you only get one day"** scope from the original
-`DEPLOY.md`: Shop settings → Rates, Job intake & quote, and Send quote as PDF.
+Almost nobody handles the part that decides whether the shop survives: what a
+job costs you, what you charge for it, what margin is left after you pay
+yourself, and the piece of paper the client signs. For most small shops that
+job is done by a spreadsheet, badly.
 
-The pipeline board, printer fleet, payments and wall display are designed and in
-the handoff package under `../design-package/`, but are deliberately not built —
-they describe work that has to exist first.
+Guma is that layer. It reads your machines; it does not drive them.
 
-## Run it
+## What it does today
+
+- **Live quoting.** Enter a job in front of the client and watch the price build
+  line by line — design time, material, machine time, wear, finishing.
+- **Cost and margin, for your eyes.** What the job costs *you*, with your own
+  hours counted at the rate you charge, so margin means what's left after
+  paying yourself.
+- **A quote PDF** with your logo, the arithmetic behind every line, the deposit,
+  your terms and a signature rule.
+- **Rates that live in the database.** Every rate, markup, minimum, deposit
+  percentage and tax figure is a row you edit in the app. None of them is a
+  constant in the code.
+
+Designed and still to build: the pipeline board, printer fleet, payments and
+wall display.
+
+## The one rule
+
+**The AI reads the mess. The math stays deterministic.**
+
+Language models are good at turning a rambling customer email and a photo of a
+snapped bracket into a filled-in job form. They have no business producing a
+number that lands on a document someone signs.
+
+So the pricing engine is one tested module with no model anywhere near it, and
+every figure traces back to a rate you set. AI features are optional, provider-
+agnostic, and degrade to the manual form when nothing is configured. **Guma
+never requires a GPU.**
+
+## Install
+
+You need Node 18+ and a Supabase project (the free tier is plenty).
 
 ```bash
+git clone <this repo> && cd guma
 npm install
-npm run dev        # http://localhost:5173
-npm test           # the pricing tests
-npm run build
+cp .env.example .env        # your Supabase URL and publishable key
 ```
 
-`.env` already holds the Supabase URL and publishable key.
-
-## Ship a change
-
-From this folder:
+Run the files in `supabase/migrations/` in order in the Supabase SQL editor,
+then:
 
 ```bash
-./deploy.sh
+npm run dev                 # http://localhost:5173
 ```
 
-That builds and pushes to the live site. Or by hand:
+Sign in. The first account to sign in runs the setup wizard — your shop, your
+currency, your tax, your rates, your first machine. Nothing is seeded for you.
 
 ```bash
-npm run build
-npx wrangler pages deploy dist --project-name guma --branch main
+npm test                    # the pricing tests
+npm run build               # production bundle in dist/
 ```
 
-**`--project-name guma`, not `guma-8jn`.** `*.pages.dev` subdomains are globally
-unique, so when `guma.pages.dev` was taken Cloudflare handed us
-`guma-8jn.pages.dev` while keeping the project named `guma`. Pointing wrangler at
-`guma-8jn` creates a second, empty project instead of deploying to this one.
+`dist/` is a static site. Any static host serves it.
 
-`main` is the production branch. Deploy prints a hash-prefixed preview URL as
-well; that is normal, the bare domain updates too.
+## How the money works
 
-## Shape
-
-```
-public/
-  guma.css        the design system, linked as-is from index.html — do not
-                  re-derive these tokens, and do not add a second styling system
-  doc-page.js     the print engine. It owns ALL print geometry. There is no
-                  @page rule and no print stylesheet anywhere in this repo
-  brand/          the 16 production brand files, shipped as-is
-  _headers        a year of immutable caching on /brand/*
-  _redirects      SPA fallback. Without it a refresh on /settings 404s
-src/
-  lib/pricing.ts       THE quote calculation. One copy, no second implementation
-  lib/pricing.test.ts  23 tests, including the fully worked example off the
-                       Quote PDF design file
-  lib/data.ts          every Supabase call
-  screens/             SignIn · Settings · Intake · QuoteDoc
-```
-
-## The rules this codebase holds
-
-**No hard-coded rates.** Every rate, the material markup, the deposit percentage,
-the shop minimum and the tax rate are rows in `rate_cards` / `materials` /
-`shops`. `pricing.ts` takes all of them as arguments and contains no pricing
-constant of any kind. Moving a rate is a database write, never a deploy.
-
-**Rates are versioned.** Saving the Rates tab **inserts a new `rate_cards` row**
-rather than updating the current one. Sending a quote freezes the whole rate set
-— plus the material and machine it used — onto `quotes.rates_snapshot`, and the
-PDF re-prices from that snapshot, never from today's rates. A rate change cannot
-move a number on a quote a client already holds.
-
-**Derive, don't store, money state.** Payments are append-only rows; owed amounts
-come from the `job_money` view. There is no `payment_status` column.
-
-**Inline styles or `guma.css` classes only.** No Tailwind, no second system.
-
-**The two registers.** The topbar and sign-in may glow. The settings screen and
-the quote screen are flat and calm: the only lit element on either is one
-`--lit-edge` border, and the only `--biolum` is the live total. `--biolum` is
-never written to the database and has no override column.
-
-## Calculation order
-
-Written out in `pricing.ts` and enforced by tests. Easy to break by accident:
+The calculation order is load-bearing and easy to break by accident, so it is
+written out once in `src/lib/pricing.ts` and enforced by tests:
 
 1. the shop minimum applies to the raw subtotal, **before** rush and discount
 2. rush is a percentage of that subtotal
 3. discount is a percentage of (subtotal + rush)
 4. tax applies **last**, to the discounted total
 5. the deposit is a percentage of the **final total, tax included**, and is
-   waived entirely below the threshold
+   waived below a threshold you set
 
-## Still open
+**Rates are versioned.** Saving the rates screen writes a new rate card rather
+than editing the old one. Sending a quote freezes the whole rate set onto it, and
+the PDF re-prices from that snapshot. Changing your rates can never move a
+number on a quote a client is already holding.
 
-- **Shop details on the quote PDF are placeholders.** `Guma LLC · Maui, HI ·
-  hello@guma.co · (808) 555-0142 · GE-XXXXXXX` prints on every quote a client
-  signs. Fix in the Supabase SQL editor:
+## Layout
 
-  ```sql
-  update shops set
-    legal_name = '…', address = '…', email = '…',
-    phone = '…', license_no = '…'
-  where slug = 'guma';
-  ```
+```
+public/guma.css       the design system. Do not re-derive these tokens.
+public/doc-page.js    the print engine. It owns all print geometry.
+src/lib/pricing.ts    THE quote calculation. One copy, no second implementation.
+src/lib/data.ts       every database call
+src/screens/          SignIn · Setup · Settings · Intake · QuoteDoc
+supabase/migrations/  schema, row-level security, the setup function
+```
 
-- **Email is on Supabase's built-in mailer**, which allows a couple of messages
-  an hour and refuses any address outside the Supabase org. That is why password
-  sign-in exists. **Shop staff cannot sign in at all until real SMTP is set up**
-  (Resend or Postmark, at `/auth/smtp` in the Supabase dashboard).
+## Contributing
 
-- **Site URL / redirect allowlist** is still Supabase's default
-  `http://localhost:3000`. Only affects magic links, not password sign-in. Fix at
-  Authentication → URL Configuration: Site URL `https://guma-8jn.pages.dev`, and
-  allow `https://guma-8jn.pages.dev/**`, `https://*.guma-8jn.pages.dev/**`,
-  `http://localhost:5173/**`.
+Read [CONTRIBUTING.md](CONTRIBUTING.md). The short version: no hard-coded rates,
+no model in the pricing path, sign your commits with `git commit -s`.
 
-- **Rocket Loader** must be off if you attach a custom domain — it reorders
-  scripts and breaks the quote PDF. It does not apply to `*.pages.dev`.
+## Licence
 
-- **No card or online payment**, by decision. Cash, transfer, check, card in
-  person, recorded by hand.
+See [LICENSE](LICENSE).
+
+<sub><em>Guma</em> is Chamoru for <em>house</em>.</sub>

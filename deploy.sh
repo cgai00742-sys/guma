@@ -1,49 +1,53 @@
 #!/usr/bin/env bash
-# Build and ship Guma to the live site.
+# Build and deploy Guma to Cloudflare Pages.
 #
 #   ./deploy.sh
 #
-# Run it from this folder. Nothing else to remember.
+# Instance-specific settings live in .deploy.env, which is NOT committed —
+# your Pages project name is yours, not the project's. Create it once:
+#
+#   PROJECT=my-guma
+#   SITE=https://my-guma.pages.dev
+#
+# Note the Pages project name and the *.pages.dev subdomain can differ:
+# subdomains are globally unique, so a taken name gets a suffix while the
+# project keeps the name you asked for. Deploying to the subdomain instead of
+# the project name creates a second, empty project.
 
 set -euo pipefail
 cd "$(cd "$(dirname "$0")" && pwd)"
 
-# The Pages project is named `guma`. The subdomain is guma-8jn.pages.dev because
-# pages.dev subdomains are globally unique and `guma.pages.dev` was taken.
-# Pointing wrangler at `guma-8jn` creates a SECOND, EMPTY project instead of
-# deploying to this one — that already happened once.
-PROJECT="guma"
-SITE="https://guma-8jn.pages.dev"
+[ -f .deploy.env ] && . ./.deploy.env
+PROJECT="${PROJECT:-}"
+SITE="${SITE:-}"
 
-say()  { printf "\n\033[36m==>\033[0m %s\n" "$1"; }
-ok()   { printf "  \033[32m✓\033[0m %s\n" "$1"; }
-die()  { printf "\n\033[31m✗ %s\033[0m\n\n" "$1" >&2; exit 1; }
+say() { printf "\n\033[36m==>\033[0m %s\n" "$1"; }
+ok()  { printf "  \033[32m✓\033[0m %s\n" "$1"; }
+die() { printf "\n\033[31m✗ %s\033[0m\n\n" "$1" >&2; exit 1; }
 
+[ -n "$PROJECT" ] || die "No PROJECT set. Create .deploy.env with PROJECT=your-pages-project"
 command -v node >/dev/null 2>&1 || die "Node is not installed — https://nodejs.org"
 
 say "Testing the pricing engine"
-# Check the tools actually resolve rather than just that the folder exists —
-# node_modules carried over from an older copy can be present but incomplete.
-if [ ! -x node_modules/.bin/vitest ] || [ ! -x node_modules/.bin/vite ]; then
-  npm install
-fi
+if [ ! -x node_modules/.bin/vitest ] || [ ! -x node_modules/.bin/vite ]; then npm install; fi
 npm test --silent || die "Pricing tests failed. Not shipping a quote calculator that does not add up."
-ok "23 tests pass"
+ok "tests pass"
 
 say "Building"
 npm run build >/dev/null
-[ -f dist/index.html ]  || die "No dist/index.html."
-[ -f dist/_redirects ]  || die "dist/_redirects missing — deep links would 404."
+[ -f dist/index.html ] || die "No dist/index.html."
+[ -f dist/_redirects ] || die "dist/_redirects missing — deep links would 404."
 ok "dist/ built"
 
-say "Deploying to Cloudflare Pages project '$PROJECT'"
+say "Deploying to Pages project '$PROJECT'"
 npx --yes wrangler@latest pages deploy dist --project-name "$PROJECT" --branch main
 
-say "Checking the live site"
-HOME_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$SITE/")
-DEEP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$SITE/settings")
-[ "$HOME_CODE" = "200" ] && ok "GET /          200" || printf "  \033[33m!\033[0m GET /          %s\n" "$HOME_CODE"
-[ "$DEEP_CODE" = "200" ] && ok "GET /settings  200 (SPA fallback works)" \
-                         || printf "  \033[33m!\033[0m GET /settings  %s — _redirects did not take\n" "$DEEP_CODE"
-
-printf "\n  Live at %s\n\n" "$SITE"
+if [ -n "$SITE" ]; then
+  say "Checking the live site"
+  H=$(curl -s -o /dev/null -w '%{http_code}' "$SITE/")
+  D=$(curl -s -o /dev/null -w '%{http_code}' "$SITE/settings")
+  [ "$H" = "200" ] && ok "GET /          200" || printf "  \033[33m!\033[0m GET /          %s\n" "$H"
+  [ "$D" = "200" ] && ok "GET /settings  200 (SPA fallback works)" \
+                   || printf "  \033[33m!\033[0m GET /settings  %s — _redirects did not take\n" "$D"
+  printf "\n  Live at %s\n\n" "$SITE"
+fi

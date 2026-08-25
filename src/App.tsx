@@ -2,8 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
-import { loadShopContext, type ShopContext } from './lib/data'
+import { loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
 import SignIn from './screens/SignIn'
+import Setup from './screens/Setup'
 import Settings from './screens/Settings'
 import Intake from './screens/Intake'
 import QuoteDoc from './screens/QuoteDoc'
@@ -13,6 +14,7 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [ctx, setCtx] = useState<ShopContext | null>(null)
   const [ctxError, setCtxError] = useState<string | null>(null)
+  const [needsSetup, setNeedsSetup] = useState(false)
   const location = useLocation()
 
   useEffect(() => {
@@ -28,8 +30,14 @@ export default function App() {
     try {
       setCtx(await loadShopContext())
       setCtxError(null)
+      setNeedsSetup(false)
     } catch (e) {
-      setCtxError(e instanceof Error ? e.message : String(e))
+      if (e instanceof NeedsSetup) {
+        setNeedsSetup(true)
+        setCtxError(null)
+      } else {
+        setCtxError(e instanceof Error ? e.message : String(e))
+      }
     }
   }, [])
 
@@ -45,6 +53,20 @@ export default function App() {
   const printing = location.pathname.startsWith('/quote/')
 
   if (!session) return <SignIn />
+
+  // A signed-in account with no shop is a fresh install, not an error.
+  if (needsSetup) {
+    return (
+      <Setup
+        fullName={
+          (session.user.user_metadata?.full_name as string) ||
+          session.user.email?.split('@')[0] ||
+          'Owner'
+        }
+        onDone={refresh}
+      />
+    )
+  }
 
   if (printing) {
     return (

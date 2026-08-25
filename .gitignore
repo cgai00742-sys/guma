@@ -2,3 +2,6 @@ node_modules
 dist
 .env
 .DS_Store
+
+# instance-specific deploy settings — never committed
+.deploy.env

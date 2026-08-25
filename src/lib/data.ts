@@ -13,6 +13,8 @@ export interface Shop {
   accent_alt: string
   tax_label: string
   tax_pct: number
+  currency: string
+  locale: string
   legal_name: string | null
   address: string | null
   email: string | null
@@ -73,7 +75,42 @@ export function toRateSet(card: RateCardRow, shop: Shop): RateSet {
     revisionHourly: card.revision_hourly == null ? null : Number(card.revision_hourly),
     taxLabel: shop.tax_label,
     taxPct: Number(shop.tax_pct),
+    currency: shop.currency || 'USD',
+    locale: shop.locale || 'en-US',
   }
+}
+
+/** Thrown when the signed-in account has no shop yet — the setup wizard's cue. */
+export class NeedsSetup extends Error {
+  constructor() {
+    super('no shop yet')
+    this.name = 'NeedsSetup'
+  }
+}
+
+export interface SetupPayload {
+  shop: Record<string, unknown>
+  rates: Record<string, unknown>
+  printer: Record<string, unknown> | null
+  materials: Record<string, unknown>[]
+  fullName: string
+}
+
+/**
+ * First run. A fresh install has no shop, so the first person to sign in has no
+ * profile and RLS denies them everything — `setup_shop` is the SECURITY DEFINER
+ * way out of that, and it refuses anyone who already belongs to a shop.
+ */
+export async function setupShop(p: SetupPayload): Promise<string> {
+  const { data, error } = await supabase.rpc('setup_shop', {
+    p_shop: p.shop,
+    p_rates: p.rates,
+    p_printer: p.printer,
+    p_materials: p.materials,
+    p_full_name: p.fullName,
+  })
+  if (error) throw error
+  return data as string
 }
 
 export async function loadShopContext(): Promise<ShopContext> {
@@ -84,8 +121,9 @@ export async function loadShopContext(): Promise<ShopContext> {
     .from('profiles')
     .select('id, shop_id, full_name, initials, role')
     .eq('id', auth.user.id)
-    .single()
+    .maybeSingle()
   if (pErr) throw pErr
+  if (!profile) throw new NeedsSetup()
 
   const [shopRes, rateRes, matRes, prnRes] = await Promise.all([
     supabase.from('shops').select('*').eq('id', profile.shop_id).single(),

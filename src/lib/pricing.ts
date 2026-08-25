@@ -35,6 +35,10 @@ export interface RateSet {
   revisionHourly: number | null
   taxLabel: string
   taxPct: number
+  /** ISO 4217, e.g. 'USD', 'EUR', 'GBP'. Set once in setup, never assumed. */
+  currency: string
+  /** BCP 47, e.g. 'en-US', 'de-DE'. Drives digit grouping and separators. */
+  locale: string
 }
 
 export interface MaterialRef {
@@ -130,12 +134,42 @@ export function sellPerUnit(material: MaterialRef, markup: number): number {
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
-const money = (n: number) =>
-  '$' + round2(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-const money0 = (n: number) => '$' + Math.round(n).toLocaleString('en-US')
+export interface MoneyFormat {
+  /** Two decimals — every figure a client sees. */
+  money: (n: number) => string
+  /** Whole units — rates in hints and basis lines, where cents are noise. */
+  money0: (n: number) => string
+}
+
+/**
+ * Currency formatting is per-shop, never global. A shop in Berlin gets
+ * "1.234,56 €" from the same code that gives a shop in Hilo "$1,234.56".
+ * Falls back to plain grouped digits if a locale or currency is not
+ * recognised, so a typo in setup degrades to something readable rather
+ * than throwing in front of a client.
+ */
+export function makeMoney(currency: string, locale: string): MoneyFormat {
+  let two: Intl.NumberFormat, zero: Intl.NumberFormat
+  try {
+    two = new Intl.NumberFormat(locale, {
+      style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2,
+    })
+    zero = new Intl.NumberFormat(locale, {
+      style: 'currency', currency, minimumFractionDigits: 0, maximumFractionDigits: 0,
+    })
+  } catch {
+    two = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    zero = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
+  }
+  return {
+    money: (n) => two.format(round2(n)),
+    money0: (n) => zero.format(Math.round(n)),
+  }
+}
+
 const trimNum = (n: number) =>
   Number(n.toFixed(2)).toLocaleString('en-US', { maximumFractionDigits: 2 })
-/** Percentages need three places — Maui's GET pass-on rate is 4.712%. */
+/** Percentages carry three places — some jurisdictions levy e.g. 4.712%. */
 const trimPct = (n: number) =>
   Number(n.toFixed(3)).toLocaleString('en-US', { maximumFractionDigits: 3 })
 
@@ -145,6 +179,7 @@ export function priceQuote(
   material: MaterialRef | null,
   printer: PrinterRef | null,
 ): PricedQuote {
+  const { money, money0 } = makeMoney(rates.currency, rates.locale)
   const qty = Math.max(1, input.quantity || 1)
   const needsDesign = input.assetOrigin !== 'ready'
 
@@ -372,4 +407,4 @@ export function ratesFromSnapshot(snap: RatesSnapshot): {
   }
 }
 
-export { money, money0, round2, trimNum, trimPct }
+export { round2, trimNum, trimPct }

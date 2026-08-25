@@ -22,8 +22,10 @@ const RATES: RateSet = {
   materialMarkup: 2,
   revisionsIncl: 2,
   revisionHourly: 85,
-  taxLabel: 'Guam GRT',
+  taxLabel: 'Sales tax',
   taxPct: 5,
+  currency: 'USD',
+  locale: 'en-US',
 }
 
 const PACF: MaterialRef = {
@@ -231,7 +233,7 @@ describe('no rate is a constant', () => {
   })
 })
 
-describe('Maui — Hawaii GET at 4.712%', () => {
+describe('a tax rate with three decimal places', () => {
   const HI: RateSet = { ...RATES, taxLabel: 'Hawaii GET', taxPct: 4.712 }
 
   it('carries three decimal places through the tax line', () => {

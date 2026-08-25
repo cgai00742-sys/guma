@@ -16,7 +16,7 @@ import { loadQuoteForPrint } from '../lib/data'
 import {
   priceQuote,
   ratesFromSnapshot,
-  money,
+  makeMoney,
   trimPct,
   type QuoteInputs,
   type RatesSnapshot,
@@ -135,6 +135,8 @@ export function QuoteDocument({ row }: { row: any }) {
   if (!priced) return null
 
   const { q, rates } = priced
+  // A reprinted quote formats in the currency it was PRICED in, not today's.
+  const { money } = makeMoney(rates.currency || 'USD', rates.locale || 'en-US')
   const shop = row.shops
   const job = row.jobs
   const client = job.clients

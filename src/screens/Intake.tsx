@@ -13,8 +13,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   buildRatesSnapshot,
-  money,
-  money0,
+  makeMoney,
   priceQuote,
   trimPct,
   type AssetOrigin,
@@ -45,6 +44,10 @@ const SOURCES = ['Word of mouth', 'Repeat client', 'Referral', 'Walk-in', 'Websi
 export default function Intake({ ctx }: { ctx: ShopContext }) {
   const navigate = useNavigate()
   const rates = useMemo(() => toRateSet(ctx.rateCard, ctx.shop), [ctx.rateCard, ctx.shop])
+  const { money, money0 } = useMemo(
+    () => makeMoney(rates.currency, rates.locale),
+    [rates.currency, rates.locale],
+  )
 
   const [ref, setRef] = useState<string>('…')
   useEffect(() => {

@@ -11,7 +11,7 @@
 import { useMemo, useState } from 'react'
 import {
   priceQuote,
-  money,
+  makeMoney,
   trimPct,
   type QuoteInputs,
   type RateSet,
@@ -60,6 +60,11 @@ const DEPOSIT_HINTS: Record<Draft['deposit_when'], string> = {
 
 export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
   const card = ctx.rateCard
+  // Currency comes from the shop record, not from the code.
+  const { money } = useMemo(
+    () => makeMoney(ctx.shop.currency || 'USD', ctx.shop.locale || 'en-US'),
+    [ctx.shop.currency, ctx.shop.locale],
+  )
   const [draft, setDraft] = useState<Draft>({
     design_hourly: Number(card.design_hourly),
     finishing_hourly: Number(card.finishing_hourly),
