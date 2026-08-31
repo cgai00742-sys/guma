@@ -26,6 +26,7 @@ const RATES: RateSet = {
   taxPct: 5,
   currency: 'USD',
   locale: 'en-US',
+  electricityRateKwh: null,
 }
 
 const PACF: MaterialRef = {
@@ -43,6 +44,7 @@ const XL: PrinterRef = {
   model: 'Prusa XL 2T',
   ratePerHour: 9,
   wearPerHour: 3,
+  watts: null,
 }
 
 /** The exact job on Quote PDF.dc.html. */
@@ -254,5 +256,50 @@ describe('margin', () => {
   it('goes negative when the rates do not cover the work', () => {
     const q = priceQuote(MAST_BRACKETS, { ...RATES, materialMarkup: 0.5 }, PACF, XL)
     expect(q.margin).toBeLessThan(0)
+  })
+
+  it('flags itself incomplete without a printer watt rating and a shop electricity rate', () => {
+    const q = priceQuote(MAST_BRACKETS, RATES, PACF, XL) // neither is set
+    expect(q.costsIncomplete).toBe(true)
+    expect(q.electricityCost).toBe(0)
+  })
+
+  it('does not flag a job that never touches a machine', () => {
+    const q = priceQuote({ ...MAST_BRACKETS, flatEach: 250 }, RATES, PACF, XL) // byPiece
+    expect(q.costsIncomplete).toBe(false)
+  })
+})
+
+describe('electricity cost', () => {
+  // A Prusa XL draws roughly this much mid-print; $0.15/kWh is a plausible
+  // US average. Neither number needs to be realistic to prove the arithmetic
+  // — only consistent.
+  const XL_METERED: PrinterRef = { ...XL, watts: 350 }
+  const RATES_METERED: RateSet = { ...RATES, electricityRateKwh: 0.15 }
+
+  it('costs watts × hours ÷ 1000 × the rate, once both are on file', () => {
+    const q = priceQuote(MAST_BRACKETS, RATES_METERED, PACF, XL_METERED)
+    // 21 h × 0.35 kW × $0.15/kWh
+    expect(round2(q.electricityCost)).toBe(1.1)
+    expect(q.costsIncomplete).toBe(false)
+  })
+
+  it('stays incomplete if only one of the two numbers is set', () => {
+    const onlyWatts = priceQuote(MAST_BRACKETS, RATES, PACF, XL_METERED)
+    expect(onlyWatts.costsIncomplete).toBe(true)
+    expect(onlyWatts.electricityCost).toBe(0)
+
+    const onlyRate = priceQuote(MAST_BRACKETS, RATES_METERED, PACF, XL)
+    expect(onlyRate.costsIncomplete).toBe(true)
+    expect(onlyRate.electricityCost).toBe(0)
+  })
+
+  it('replaces the machine pass-through in margin with the real power cost', () => {
+    const estimate = priceQuote(MAST_BRACKETS, RATES, PACF, XL)
+    const metered = priceQuote(MAST_BRACKETS, RATES_METERED, PACF, XL_METERED)
+    // Charging $9/h for power that costs five cents an hour is real margin —
+    // the old pass-through assumption was hiding it, not being conservative.
+    expect(round2(metered.margin)).toBe(258.2)
+    expect(metered.margin).toBeGreaterThan(estimate.margin)
   })
 })

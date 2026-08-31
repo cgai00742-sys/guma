@@ -774,7 +774,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 {money(q.yourHours)}
               </span>
               <span className="k" style={{ color: 'var(--txt-2)' }}>
-                Margin after costs
+                Margin after costs {q.costsIncomplete ? '(estimate)' : ''}
               </span>
               <span
                 className="v"
@@ -793,7 +793,9 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
               </span>
             </div>
             <div className="hint">
-              Your hours are counted at the rate you charge, so margin here is what's left over after paying yourself.
+              {q.costsIncomplete
+                ? "Your hours are counted at the rate you charge. Machine time is priced as break-even here because the printer's wattage or your electricity rate isn't set (Machines and Identity tabs in Settings) — the real margin is likely higher."
+                : "Your hours are counted at the rate you charge, so margin here is what's left over after paying yourself."}
             </div>
           </div>
 

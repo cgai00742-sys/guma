@@ -25,6 +25,8 @@ export interface Shop {
   payment_info: string | null
   quote_valid_days: number
   lead_days: number
+  /** $/kWh off the shop's own utility bill. Null until they supply it. */
+  electricity_rate_kwh: number | null
 }
 
 export interface RateCardRow {
@@ -43,6 +45,18 @@ export interface RateCardRow {
   revision_hourly: number | null
 }
 
+/** The raw printers row — the Machines tab needs the id and tech to edit it,
+ *  which PrinterRef (the pricing module's shape) deliberately doesn't carry. */
+export interface PrinterRow {
+  id: string
+  name: string
+  model: string
+  tech: 'fdm' | 'resin' | 'composite' | 'sls'
+  rate_hourly: number
+  wear_hourly: number
+  watts: number | null
+}
+
 export interface Profile {
   id: string
   shop_id: string
@@ -58,6 +72,7 @@ export interface ShopContext {
   rateCard: RateCardRow
   materials: MaterialRef[]
   printers: PrinterRef[]
+  printerRows: PrinterRow[]
 }
 
 /** The rate card and the shop's tax, in the shape the pricing module wants. */
@@ -77,6 +92,7 @@ export function toRateSet(card: RateCardRow, shop: Shop): RateSet {
     taxPct: Number(shop.tax_pct),
     currency: shop.currency || 'USD',
     locale: shop.locale || 'en-US',
+    electricityRateKwh: shop.electricity_rate_kwh == null ? null : Number(shop.electricity_rate_kwh),
   }
 }
 
@@ -168,8 +184,10 @@ export async function loadShopContext(): Promise<ShopContext> {
         model: p.model,
         ratePerHour: Number(p.rate_hourly),
         wearPerHour: Number(p.wear_hourly),
+        watts: p.watts == null ? null : Number(p.watts),
       }),
     ),
+    printerRows: (prnRes.data ?? []) as PrinterRow[],
   }
 }
 
@@ -202,6 +220,103 @@ export async function saveRateCard(
     .single()
   if (error) throw error
   return data as RateCardRow
+}
+
+/**
+ * The shop's identity — who it is, where it is, and its own electricity rate.
+ * Unlike rates, this is edited in place: it isn't versioned, because a quote
+ * already sent freezes its own copy in `rates_snapshot` regardless (currency,
+ * electricity rate and all), and a shop's address doesn't need history the
+ * way a price does.
+ *
+ * Every field is optional by design — see Setup.tsx and the Identity tab for
+ * why. Passing an empty string clears a field rather than leaving stale data
+ * behind.
+ */
+export interface ShopIdentityInput {
+  name: string
+  legal_name: string
+  address: string
+  email: string
+  phone: string
+  license_no: string
+  electricity_rate_kwh: number | null
+}
+
+export async function saveShopIdentity(shopId: string, next: ShopIdentityInput): Promise<Shop> {
+  const { data, error } = await supabase
+    .from('shops')
+    .update({
+      name: next.name.trim() || 'My shop',
+      legal_name: next.legal_name.trim() || null,
+      address: next.address.trim() || null,
+      email: next.email.trim() || null,
+      phone: next.phone.trim() || null,
+      license_no: next.license_no.trim() || null,
+      electricity_rate_kwh: next.electricity_rate_kwh,
+    })
+    .eq('id', shopId)
+    .select()
+    .single()
+  if (error) throw error
+  return data as Shop
+}
+
+/** Tax, validity windows, and the text printed on every quote's terms block. */
+export interface ShopQuoteTermsInput {
+  tax_label: string
+  tax_pct: number
+  quote_valid_days: number
+  lead_days: number
+  terms_text: string
+  revision_policy: string
+  payment_info: string
+}
+
+export async function saveShopQuoteTerms(shopId: string, next: ShopQuoteTermsInput): Promise<Shop> {
+  const { data, error } = await supabase
+    .from('shops')
+    .update({
+      tax_label: next.tax_label.trim() || 'Tax',
+      tax_pct: next.tax_pct,
+      quote_valid_days: next.quote_valid_days,
+      lead_days: next.lead_days,
+      terms_text: next.terms_text.trim() || null,
+      revision_policy: next.revision_policy.trim() || null,
+      payment_info: next.payment_info.trim() || null,
+    })
+    .eq('id', shopId)
+    .select()
+    .single()
+  if (error) throw error
+  return data as Shop
+}
+
+/**
+ * Adds a printer when `id` is omitted, otherwise updates the one it names.
+ * Printers aren't versioned like rate cards — a sent quote already freezes
+ * its own printer snapshot (including watts), so editing one in place cannot
+ * move a number on a quote a client already holds.
+ */
+export async function savePrinter(
+  shopId: string,
+  next: Omit<PrinterRow, 'id'> & { id?: string },
+): Promise<PrinterRow> {
+  const row = {
+    shop_id: shopId,
+    name: next.name.trim(),
+    model: next.model.trim() || '—',
+    tech: next.tech,
+    rate_hourly: next.rate_hourly,
+    wear_hourly: next.wear_hourly,
+    watts: next.watts,
+  }
+  const query = next.id
+    ? supabase.from('printers').update(row).eq('id', next.id)
+    : supabase.from('printers').insert(row)
+  const { data, error } = await query.select().single()
+  if (error) throw error
+  return data as PrinterRow
 }
 
 /** GUMA-2026-0184 — sequential within the year, per shop. */

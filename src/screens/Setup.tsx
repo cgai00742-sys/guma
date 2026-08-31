@@ -51,6 +51,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
   const [locale, setLocale] = useState('en-US')
   const [taxLabel, setTaxLabel] = useState('')
   const [taxPct, setTaxPct] = useState('')
+  const [electricityRate, setElectricityRate] = useState('')
 
   // step 2 — the rates
   const [designHourly, setDesignHourly] = useState('')
@@ -68,12 +69,22 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
   const [pTech, setPTech] = useState('fdm')
   const [pRate, setPRate] = useState('')
   const [pWear, setPWear] = useState('')
+  const [pWatts, setPWatts] = useState('')
 
   const { money } = useMemo(() => makeMoney(currency, locale), [currency, locale])
   const num = (v: string) => (v.trim() === '' ? 0 : Number(v))
+  // Distinct from num(): blank means "not supplied," not zero. Zero would
+  // falsely claim free electricity or a printer that draws no power at all,
+  // which would silently turn off the costsIncomplete flag pricing.ts relies
+  // on to say "this margin is an estimate" honestly.
+  const numOrNull = (v: string) => (v.trim() === '' ? null : Number(v))
 
-  const canNext =
-    step === 0 ? name.trim().length > 0 : step === 1 ? num(designHourly) > 0 : true
+  // Nothing on this screen blocks Continue. A shop without a name yet, or one
+  // that isn't ready to say where it operates, still gets a working tool —
+  // it just costs machine time as a break-even estimate until the numbers
+  // that would make it exact (address-driven context, electricity rate) are
+  // filled in. See pricing.ts's costsIncomplete.
+  const canNext = true
 
   async function finish(e: FormEvent) {
     e.preventDefault()
@@ -92,6 +103,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
           locale,
           tax_label: taxLabel.trim() || 'Tax',
           tax_pct: num(taxPct),
+          electricity_rate_kwh: numOrNull(electricityRate),
           quote_valid_days: 30,
           lead_days: 10,
         },
@@ -114,6 +126,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
               tech: pTech,
               rate_hourly: num(pRate),
               wear_hourly: num(pWear),
+              watts: numOrNull(pWatts),
             }
           : null,
         materials: materials
@@ -187,6 +200,10 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
               <div className="fld" style={{ marginTop: 10 }}>
                 <label className="lbl" htmlFor="w-addr">Address</label>
                 <input id="w-addr" value={address} onChange={(e) => setAddress(e.target.value)} />
+                <div className="hint">
+                  Optional — leave it blank if you're not ready to say. It just means Guma can't connect your
+                  machine costs to where you actually run them.
+                </div>
               </div>
 
               <div className="grid2" style={{ marginTop: 10 }}>
@@ -227,6 +244,25 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <label className="lbl" htmlFor="w-taxpct">Tax %</label>
                   <input id="w-taxpct" type="number" step="0.001" min="0" value={taxPct} onChange={(e) => setTaxPct(e.target.value)} placeholder="0" />
                   <div className="hint">Three decimals allowed. 0 if you don't charge it.</div>
+                </div>
+              </div>
+
+              <div className="fld" style={{ marginTop: 10 }}>
+                <label className="lbl" htmlFor="w-kwh">Your electricity rate, $/kWh</label>
+                <input
+                  id="w-kwh"
+                  type="number"
+                  step="0.0001"
+                  min="0"
+                  value={electricityRate}
+                  onChange={(e) => setElectricityRate(e.target.value)}
+                  placeholder="from your utility bill"
+                />
+                <div className="hint">
+                  Optional, but this is the one number location actually changes: power is often the biggest real
+                  cost behind your machine-time rate, and it varies by utility, not by guesswork. Leave it blank and
+                  Guma will still price every quote — it just can't tell you your real margin on machine time until
+                  this and each printer's wattage (next step) are both on file. It'll say so rather than pretend.
                 </div>
               </div>
             </>
@@ -343,6 +379,16 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <label className="lbl" htmlFor="w-pwear">Wear per hour</label>
                   <input id="w-pwear" type="number" min="0" value={pWear} onChange={(e) => setPWear(e.target.value)} />
                   <div className="hint">Machine price ÷ lifetime hours is a fair start.</div>
+                </div>
+              </div>
+
+              <div className="fld" style={{ marginTop: 10, maxWidth: 260 }}>
+                <label className="lbl" htmlFor="w-pwatts">Power draw while printing, watts</label>
+                <input id="w-pwatts" type="number" min="0" value={pWatts} onChange={(e) => setPWatts(e.target.value)} placeholder="from the spec sheet" />
+                <div className="hint">
+                  Optional. Paired with your electricity rate above, this is what turns "machine time" from a guess
+                  into an actual cost — without it Guma prices the job the same either way, it just can't show you
+                  the real margin on it.
                 </div>
               </div>
 

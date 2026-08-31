@@ -39,6 +39,14 @@ export interface RateSet {
   currency: string
   /** BCP 47, e.g. 'en-US', 'de-DE'. Drives digit grouping and separators. */
   locale: string
+  /**
+   * What the shop's own utility charges, in $/kWh, straight off their bill.
+   * Never looked up or assumed from location — electricity rates vary by
+   * utility, not just region, and a wrong guess baked into someone's margin
+   * is worse than an honest blank. Null until the shop supplies it; margin
+   * falls back to treating machine time as break-even until they do.
+   */
+  electricityRateKwh: number | null
 }
 
 export interface MaterialRef {
@@ -58,6 +66,9 @@ export interface PrinterRef {
   model: string
   ratePerHour: number
   wearPerHour: number
+  /** Rated power draw while printing, in watts. Null until the shop measures
+   *  or looks up the machine's spec — optional, same as everything else here. */
+  watts: number | null
 }
 
 /** Exactly the fields on the intake screen. */
@@ -104,6 +115,18 @@ export interface PricedQuote {
   materialCost: number
   machineAmt: number
   wearAmt: number
+  /** Actual power cost for the machine hours on this job — watts × hours ÷
+   *  1000 × the shop's $/kWh. Zero when that data is not both set; see
+   *  `costsIncomplete` to tell "genuinely free" from "not measured yet". */
+  electricityCost: number
+  /**
+   * True when this job burned machine time but the shop hasn't supplied both
+   * the printer's wattage and its own electricity rate. Margin still
+   * computes — as the old break-even assumption, machine time costing
+   * exactly what it's charged — but it is an estimate, not a real number,
+   * and the UI should say so rather than imply precision that isn't there.
+   */
+  costsIncomplete: boolean
   finishingAmt: number
   pieceAmt: number
   byPiece: boolean
@@ -305,7 +328,25 @@ export function priceQuote(
   const yourHours =
     (needsDesign && input.designBilling === 'hourly' ? (input.designQty || 0) * rates.designHourly : 0) +
     (input.finishingHrs || 0) * rates.finishingHourly
-  const margin = total - tax - materialCost - machineAmt - wearAmt - yourHours
+
+  // Machine time actually costs the shop electricity, not whatever rate_hourly
+  // happens to be — rate_hourly is a PRICE the shop chose, not a cost. Wear is
+  // billed separately as its own reserve line and stays a straight cost either
+  // way. Until both the printer's wattage and the shop's own $/kWh are on
+  // file, there is no honest number to compute, so margin falls back to the
+  // old, conservative assumption (machine time costs exactly what it's
+  // charged) and `costsIncomplete` says so rather than presenting a guess as
+  // fact.
+  const needsElectricityData = !byPiece && machineHours > 0
+  const hasElectricityData =
+    needsElectricityData && printer?.watts != null && rates.electricityRateKwh != null
+  const electricityCost = hasElectricityData
+    ? machineHours * ((printer!.watts as number) / 1000) * (rates.electricityRateKwh as number)
+    : 0
+  const costsIncomplete = needsElectricityData && !hasElectricityData
+  const margin = hasElectricityData
+    ? total - tax - materialCost - electricityCost - wearAmt - yourHours
+    : total - tax - materialCost - machineAmt - wearAmt - yourHours
 
   return {
     lines,
@@ -315,6 +356,8 @@ export function priceQuote(
     materialCost,
     machineAmt,
     wearAmt,
+    electricityCost,
+    costsIncomplete,
     finishingAmt,
     pieceAmt,
     byPiece,
@@ -370,6 +413,7 @@ export function buildRatesSnapshot(
           model: printer.model,
           rate_hourly: printer.ratePerHour,
           wear_hourly: printer.wearPerHour,
+          watts: printer.watts,
         }
       : null,
   }
@@ -402,6 +446,10 @@ export function ratesFromSnapshot(snap: RatesSnapshot): {
           model: snap.printer.model,
           ratePerHour: snap.printer.rate_hourly,
           wearPerHour: snap.printer.wear_hourly,
+          // Older snapshots, sent before wattage existed, simply don't have
+          // this key — undefined reads the same as "not measured" everywhere
+          // costsIncomplete is checked.
+          watts: (snap.printer as { watts?: number | null }).watts ?? null,
         }
       : null,
   }
