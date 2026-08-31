@@ -23,7 +23,7 @@
  * is checked off.
  */
 import Database from '@tauri-apps/plugin-sql'
-import type { MaterialRef, PrinterRef, RateSet } from './pricing'
+import type { MaterialRef, PrinterRef } from './pricing'
 import type {
   Shop,
   RateCardRow,
