@@ -48,10 +48,28 @@ never requires a GPU.**
 
 ## Install
 
-You need Node 18+ and a Supabase project (the free tier is plenty).
+**The simple way.** Click the green "Code" button above → "Download ZIP" →
+unzip it. Then:
+
+- **Mac:** double-click `install.command`. If macOS says it's from an
+  unidentified developer, right-click it → Open → Open — that confirmation is
+  only needed the first time.
+- **Windows:** double-click `install.bat`.
+
+Either one checks for Node, installs Guma's dependencies, walks you through
+creating a free Supabase project (that's Guma's database — yours alone, never
+shared), and starts Guma at `http://localhost:5173`. It tells you in plain
+language if something's missing rather than failing silently. Leave that
+window open while you use Guma; closing it stops the shop.
+
+Node itself is the one thing the installer can't do for you — if you don't
+have it, it'll point you to https://nodejs.org (the free LTS version) and ask
+you to run the installer again once it's in.
+
+**The developer way**, if you'd rather drive it yourself:
 
 ```bash
-git clone <this repo> && cd guma
+git clone https://github.com/cgai00742-sys/guma.git && cd guma
 npm install
 cp .env.example .env        # your Supabase URL and publishable key
 ```
@@ -64,7 +82,9 @@ npm run dev                 # http://localhost:5173
 ```
 
 Sign in. The first account to sign in runs the setup wizard — your shop, your
-currency, your tax, your rates, your first machine. Nothing is seeded for you.
+currency, your tax, your rates, your first machine, your electricity rate.
+Nothing is seeded for you, and nothing here is required to get started —
+skip anything you're not ready to decide and fill it in later.
 
 ```bash
 npm test                    # the pricing tests
