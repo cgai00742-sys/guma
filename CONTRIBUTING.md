@@ -39,13 +39,39 @@ otherwise.
 
 ```bash
 npm install
-cp .env.example .env     # point at your own Supabase project
-npm run dev
 npm test
 ```
 
-You need your own Supabase project. Run the files in `supabase/migrations/` in
-order, then sign in — the first account runs the setup wizard.
+From there it depends which build you're working on — `src/lib/data.ts`
+picks one of two backends at runtime (see its own comment), and most
+contributions only touch one side of that split:
+
+**Working on the desktop app** (`src-tauri/`, `src/lib/data.local.ts`, or
+anything that doesn't care which backend is active): no account needed.
+
+```bash
+npm run desktop:dev      # opens the native app window, SQLite backend
+```
+
+**Working on the hosted/browser build** (`src/lib/data.supabase.ts`,
+`src/screens/SignIn.tsx`, or Supabase-specific behavior): you need your own
+Supabase project.
+
+```bash
+cp .env.example .env     # point at your own Supabase project
+```
+
+Run the files in `supabase/migrations/` in order, then:
+
+```bash
+npm run dev               # http://localhost:5173, sign in to run the setup wizard
+```
+
+If your change touches `src/lib/data.local.ts`, see `src/lib/data.local.test.ts`
+— it runs the real SQL against a real SQLite engine (Node's built-in
+`node:sqlite`) rather than mocking the database, which is worth matching for
+new backend code rather than trusting that a query is correct because it
+looks right.
 
 ## Sign-off
 
