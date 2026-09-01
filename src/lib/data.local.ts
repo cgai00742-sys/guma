@@ -24,6 +24,7 @@
  */
 import Database from '@tauri-apps/plugin-sql'
 import type { MaterialRef, PrinterRef } from './pricing'
+import { NeedsSetup } from './data.types'
 import type {
   Shop,
   RateCardRow,
@@ -35,8 +36,9 @@ import type {
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
-} from './data'
+} from './data.types'
 
+export { NeedsSetup, toRateSet } from './data.types'
 export type {
   Shop,
   RateCardRow,
@@ -48,16 +50,7 @@ export type {
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
-}
-export { toRateSet } from './data'
-
-/** Thrown when the local database has no shop yet — the setup wizard's cue. */
-export class NeedsSetup extends Error {
-  constructor() {
-    super('no shop yet')
-    this.name = 'NeedsSetup'
-  }
-}
+} from './data.types'
 
 let dbPromise: Promise<Database> | null = null
 function db(): Promise<Database> {

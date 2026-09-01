@@ -1,15 +1,36 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
-import { supabase } from './lib/supabase'
+import { isTauri } from '@tauri-apps/api/core'
 import { loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
-import SignIn from './screens/SignIn'
 import Setup from './screens/Setup'
 import Settings from './screens/Settings'
 import Intake from './screens/Intake'
 import QuoteDoc from './screens/QuoteDoc'
 
+// SignIn is the ONE screen that still statically imports supabase.ts (it
+// calls signInWithPassword/signInWithOtp directly). A desktop build never
+// renders it, but a plain top-level `import SignIn from './screens/SignIn'`
+// would still pull supabase.ts's throw-on-missing-env-vars code into the
+// same eagerly-evaluated bundle as this file, defeating the whole point of
+// the isTauri() branch below. Loading it with React.lazy keeps it — and
+// supabase.ts — out of that eager chunk; the desktop app never fetches or
+// evaluates either.
+const SignIn = lazy(() => import('./screens/SignIn'))
+
 export default function App() {
+  // Desktop builds have no accounts and no sign-in — one install is one
+  // shop. Computed once per render rather than stored in state: isTauri()
+  // is a cheap, side-effect-free runtime check (see data.ts for the same
+  // pattern), so there's no reason to let it drift across renders.
+  //
+  // `./lib/supabase` is only ever reached through a dynamic import below,
+  // never a top-level one — a static import would evaluate supabase.ts
+  // (which throws if its env vars are missing) on every load of this file,
+  // including inside the desktop app, which is exactly the situation this
+  // guards against once the desktop build stops carrying Supabase secrets.
+  const desktop = isTauri()
+
   const [session, setSession] = useState<Session | null>(null)
   const [ready, setReady] = useState(false)
   const [ctx, setCtx] = useState<ShopContext | null>(null)
@@ -18,13 +39,28 @@ export default function App() {
   const location = useLocation()
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session)
+    if (desktop) {
+      // No account, so nothing to load — go straight to loading the shop.
       setReady(true)
+      return
+    }
+    let unsubscribe: (() => void) | undefined
+    let cancelled = false
+    import('./lib/supabase').then(({ supabase }) => {
+      if (cancelled) return
+      supabase.auth.getSession().then(({ data }) => {
+        if (cancelled) return
+        setSession(data.session)
+        setReady(true)
+      })
+      const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
+      unsubscribe = () => sub.subscription.unsubscribe()
     })
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
-    return () => sub.subscription.unsubscribe()
-  }, [])
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [desktop])
 
   const refresh = useCallback(async () => {
     try {
@@ -42,9 +78,9 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (session) void refresh()
+    if (desktop || session) void refresh()
     else setCtx(null)
-  }, [session, refresh])
+  }, [desktop, session, refresh])
 
   if (!ready) return null
 
@@ -52,16 +88,25 @@ export default function App() {
   // surface behind it. doc-page.js owns everything inside it.
   const printing = location.pathname.startsWith('/quote/')
 
-  if (!session) return <SignIn />
+  if (!desktop && !session) {
+    return (
+      <Suspense fallback={null}>
+        <SignIn />
+      </Suspense>
+    )
+  }
 
-  // A signed-in account with no shop is a fresh install, not an error.
+  // A signed-in account (or, on desktop, a fresh install) with no shop yet
+  // is a first run, not an error.
   if (needsSetup) {
     return (
       <Setup
         fullName={
-          (session.user.user_metadata?.full_name as string) ||
-          session.user.email?.split('@')[0] ||
-          'Owner'
+          desktop
+            ? 'Owner'
+            : (session!.user.user_metadata?.full_name as string) ||
+              session!.user.email?.split('@')[0] ||
+              'Owner'
         }
         onDone={refresh}
       />
@@ -78,7 +123,7 @@ export default function App() {
 
   return (
     <>
-      <TopBar ctx={ctx} />
+      <TopBar ctx={ctx} desktop={desktop} />
       <main className="app-main">
         {ctxError ? (
           <div className="wrap">
@@ -104,7 +149,7 @@ export default function App() {
   )
 }
 
-function TopBar({ ctx }: { ctx: ShopContext | null }) {
+function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean }) {
   const { pathname } = useLocation()
   const tab = (to: string, label: string) => (
     <Link
@@ -137,9 +182,18 @@ function TopBar({ ctx }: { ctx: ShopContext | null }) {
           <span className="who">
             <b>{ctx?.profile.full_name ?? ''}</b>
           </span>
-          <button type="button" className="btn sm ghost" onClick={() => supabase.auth.signOut()}>
-            Sign out
-          </button>
+          {/* No account on desktop, so nothing to sign out of. */}
+          {!desktop && (
+            <button
+              type="button"
+              className="btn sm ghost"
+              onClick={() => {
+                void import('./lib/supabase').then(({ supabase }) => supabase.auth.signOut())
+              }}
+            >
+              Sign out
+            </button>
+          )}
         </div>
       </div>
     </header>
