@@ -6,12 +6,16 @@ name: release desktop app
 # hand from the Actions tab, without needing a tag, while we're still
 # testing this pipeline.
 #
-# This first version still wraps the Supabase-backed web app (src-tauri/
-# just gives it a native window) - it needs the same two secrets the web
-# build needs, added once under Settings -> Secrets and variables ->
-# Actions: VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY. Swapping in the
-# local SQLite data layer (src/lib/data.local.ts) later removes that
-# requirement; this workflow won't need to change when that happens.
+# Desktop builds no longer need the two Supabase secrets below to succeed —
+# src/lib/data.ts picks the local SQLite backend (src/lib/data.local.ts) at
+# runtime whenever the app is running inside Tauri, and never even loads the
+# Supabase client in that case (it's reached only through a dynamic import,
+# so a fork with no Supabase project configured builds and runs the desktop
+# app fine with these two secrets simply unset — confirmed by a full
+# `tauri build` with no VITE_SUPABASE_* env vars present at all). They're
+# still passed through here, harmlessly, in case a later feature wants an
+# optional cloud-sync mode available from the desktop app too; nothing
+# today depends on them being set.
 #
 # Unsigned for now (see the project board's Phase 4 "code-signing budget"
 # task): Mac will show an "unidentified developer" warning and Windows may
@@ -75,7 +79,7 @@ jobs:
           tagName: guma-v__VERSION__
           releaseName: 'Guma v__VERSION__'
           releaseBody: |
-            Early desktop build. Unsigned - see the README for the
+            Early desktop build. Unsigned — see the README for the
             "unidentified developer" / SmartScreen workaround on first open.
           releaseDraft: true
           prerelease: true
