@@ -79,8 +79,12 @@ jobs:
           tagName: guma-v__VERSION__
           releaseName: 'Guma v__VERSION__'
           releaseBody: |
-            Early desktop build. Unsigned — see the README for the
-            "unidentified developer" / SmartScreen workaround on first open.
+            Early desktop build. No account or internet connection needed —
+            your shop lives in one local file on this computer. First launch
+            goes straight into the setup wizard.
+
+            Unsigned for now — see the README for the "unidentified
+            developer" / SmartScreen workaround on first open.
           releaseDraft: true
           prerelease: true
           args: ${{ matrix.args }}
