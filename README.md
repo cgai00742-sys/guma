@@ -48,8 +48,22 @@ never requires a GPU.**
 
 ## Install
 
-**The simple way.** Click the green "Code" button above → "Download ZIP" →
-unzip it. Then:
+**The desktop app (recommended).** Grab the installer for your OS from the
+[Releases page](https://github.com/cgai00742-sys/guma/releases) — no Node, no
+terminal, no account of any kind. Double-click it, and the first launch runs
+the setup wizard straight away: your shop, your currency, your tax, your
+rates, your first machine. Everything lives in one file on your own computer
+(currently: one install, one computer — no sync between machines yet).
+
+These builds are unsigned for now — code-signing has a real recurring cost,
+and that's a call worth making once real users are testing this, not before.
+Expect one warning on first open: macOS will call it "from an unidentified
+developer" (right-click → Open → Open); Windows may show a SmartScreen
+warning ("More info" → "Run anyway").
+
+**Running it in a browser instead**, self-hosted with your own Supabase
+project: click the green "Code" button above → "Download ZIP" → unzip it,
+then:
 
 - **Mac:** double-click `install.command`. If macOS says it's from an
   unidentified developer, right-click it → Open → Open — that confirmation is
@@ -113,12 +127,17 @@ number on a quote a client is already holding.
 ## Layout
 
 ```
-public/guma.css       the design system. Do not re-derive these tokens.
-public/doc-page.js    the print engine. It owns all print geometry.
-src/lib/pricing.ts    THE quote calculation. One copy, no second implementation.
-src/lib/data.ts       every database call
-src/screens/          SignIn · Setup · Settings · Intake · QuoteDoc
-supabase/migrations/  schema, row-level security, the setup function
+public/guma.css            the design system. Do not re-derive these tokens.
+public/doc-page.js         the print engine. It owns all print geometry.
+src/lib/pricing.ts         THE quote calculation. One copy, no second implementation.
+src/lib/data.ts            picks a backend at runtime: local SQLite in the
+                           desktop app, hosted Supabase in the browser.
+                           Screens only ever import from here.
+src/lib/data.local.ts      every database call, against the SQLite file the desktop app owns
+src/lib/data.supabase.ts   every database call, against your hosted Supabase project
+src/screens/               Setup · Settings · Intake · QuoteDoc (+ SignIn, browser build only)
+src-tauri/                 the desktop app shell (Tauri) and its SQLite schema
+supabase/migrations/       schema, row-level security, the setup function — browser build only
 ```
 
 ## Contributing
