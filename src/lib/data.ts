@@ -59,6 +59,9 @@ import type {
   ProjectActuals,
   WorkKind,
   RunOutcome,
+  PartRow,
+  PartInput,
+  PartStatus,
   QuoteInputsRow,
   PrintRunRow,
   PrintRunInput,
@@ -80,6 +83,8 @@ export {
   PAYMENT_METHOD_LABEL,
   WORK_KINDS,
   WORK_KIND_LABEL,
+  PART_STATUSES,
+  PART_STATUS_LABEL,
 } from './data.types'
 export type {
   Shop,
@@ -114,6 +119,9 @@ export type {
   ProjectActuals,
   WorkKind,
   RunOutcome,
+  PartRow,
+  PartInput,
+  PartStatus,
   QuoteInputsRow,
   PrintRunRow,
   PrintRunInput,
@@ -300,4 +308,35 @@ export async function logWork(
 
 export async function deleteWorkEntry(shopId: string, entryId: string): Promise<void> {
   return (await backend()).deleteWorkEntry(shopId, entryId)
+}
+
+export async function addPart(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: PartInput,
+): Promise<string> {
+  return (await backend()).addPart(shopId, jobId, actorId, input)
+}
+
+export async function setPartStatus(
+  shopId: string,
+  partId: string,
+  actorId: string,
+  status: PartStatus,
+  note: string | null,
+): Promise<void> {
+  return (await backend()).setPartStatus(shopId, partId, actorId, status, note)
+}
+
+export async function updatePart(
+  shopId: string,
+  partId: string,
+  input: PartInput,
+): Promise<void> {
+  return (await backend()).updatePart(shopId, partId, input)
+}
+
+export async function deletePart(shopId: string, partId: string): Promise<void> {
+  return (await backend()).deletePart(shopId, partId)
 }

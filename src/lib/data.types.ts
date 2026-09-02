@@ -298,6 +298,17 @@ export interface ProjectFacts {
   actualRuns: number
   /** Design + finishing + admin hours logged. */
   actualHours: number
+  /** Build-sheet rollup. `parts` is zero for a project that does not use
+   *  one, which is what lets the QC gate fall back to a manual tick rather
+   *  than becoming permanently unclearable. */
+  parts: number
+  partsPrinted: number
+  partsPassed: number
+  partsReprint: number
+  /** How many times anything has been sent back, ever. A part reprinted
+   *  twice and then passed costs the shop twice and would otherwise leave
+   *  no trace. */
+  reprintsEver: number
 }
 
 export interface JobListRow {
@@ -365,6 +376,7 @@ export interface ProjectDetail {
   quoteInputs: QuoteInputsRow | null
   runs: PrintRunRow[]
   work: WorkEntryRow[]
+  parts: PartRow[]
 }
 
 /** The pricing inputs stored on a quote row, plus its frozen rate snapshot. */
@@ -671,3 +683,51 @@ export function runEventBody(input: PrintRunInput): string {
 }
 
 
+
+
+/* ------------------------------------------------------------------ */
+/* The build sheet                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Voltage's four statuses, kept exactly: a part is waiting, off the
+ * machine, checked and good, or going back. Proven in a real shop, and
+ * there was no reason to invent a fifth.
+ */
+export const PART_STATUSES = ['pending', 'printed', 'passed', 'reprint'] as const
+export type PartStatus = (typeof PART_STATUSES)[number]
+
+export const PART_STATUS_LABEL: Record<PartStatus, string> = {
+  pending: 'Not printed',
+  printed: 'Printed, not checked',
+  passed: 'Passed QC',
+  reprint: 'Going back',
+}
+
+export interface PartRow {
+  id: string
+  label: string
+  qty: number
+  status: PartStatus
+  note: string | null
+  sort: number
+  /** Newest first. Empty until something has happened to this part. */
+  history: PartEvent[]
+}
+
+export interface PartEvent {
+  id: number
+  kind: 'status' | 'note'
+  fromStatus: PartStatus | null
+  toStatus: PartStatus | null
+  note: string | null
+  actor: string | null
+  at: string
+}
+
+export interface PartInput {
+  label: string
+  qty: number
+  note?: string | null
+  sort?: number
+}

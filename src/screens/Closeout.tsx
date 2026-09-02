@@ -25,11 +25,10 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import {
-  PHASE_LABEL,
-} from '../lib/gates'
+import { PHASE_LABEL } from '../lib/gates'
 import { buildComparison } from '../lib/actuals'
 import {
+  PART_STATUS_LABEL,
   loadProjectDetail,
   loadShopContext,
   toRateSet,
@@ -252,6 +251,49 @@ export function CloseoutDocument({
           />
         </Grid>
       </Block>
+
+      {detail.parts.length > 0 && (
+        <Block title="What was made">
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr>
+                <Th align="left">Part</Th>
+                <Th align="right">Copies</Th>
+                <Th align="left">Outcome</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.parts.map((p) => {
+                const sentBack = p.history.filter((h) => h.toStatus === 'reprint').length
+                return (
+                  <tr key={p.id}>
+                    <Td>{p.label}</Td>
+                    <Td align="right" mono>
+                      {p.qty}
+                    </Td>
+                    <Td muted={p.status !== 'passed'}>
+                      {p.status === 'passed' ? 'Passed QC' : PART_STATUS_LABEL[p.status]}
+                      {sentBack > 0 && (
+                        <span style={{ color: MUTED }}>
+                          {' '}
+                          · reprinted {sentBack} time{sentBack === 1 ? '' : 's'}
+                        </span>
+                      )}
+                    </Td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {detail.facts.reprintsEver > 0 && (
+            <p style={{ fontSize: 10, color: MUTED, marginTop: 6 }}>
+              {detail.facts.reprintsEver} reprint
+              {detail.facts.reprintsEver === 1 ? '' : 's'} across the build. Each one is material and
+              machine time spent twice, and is already counted in the figures below.
+            </p>
+          )}
+        </Block>
+      )}
 
       {showCosts && comparison && (
         <Block title="Quoted against actual">

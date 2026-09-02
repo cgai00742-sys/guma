@@ -27,10 +27,16 @@ export interface GateItem {
   needsNote?: boolean
   /**
    * Satisfied by a fact the app already holds rather than by a human tick.
-   * Returning null means "this fact isn't knowable yet" and the item falls
-   * back to a manual tick; returning a boolean locks the checkbox.
+   * Returning a boolean locks the checkbox; returning NULL means the app
+   * cannot know, and the item falls back to a manual tick.
+   *
+   * That fallback is load-bearing for anything optional. The QC item below
+   * reads the build sheet — but a shop that never adds parts would then
+   * have an item it could never clear, so with no parts on file the answer
+   * is null and a person ticks it, exactly as before the build sheet
+   * existed. A feature nobody opted into must never become a blocker.
    */
-  auto?: (f: ProjectFacts) => boolean
+  auto?: (f: ProjectFacts) => boolean | null
   /** Caption for an auto item — where the answer came from. */
   autoFrom?: string
 }
@@ -144,6 +150,8 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       key: 'started',
       label: 'The run has actually started',
       why: 'A project sitting in In build with nothing on a machine is the most expensive kind of lie.',
+      auto: (f) => (f.parts === 0 ? null : f.partsPrinted > 0),
+      autoFrom: 'from the build sheet',
     },
     {
       key: 'failures',
@@ -163,7 +171,11 @@ export const GATES: Record<JobPhase, GateItem[]> = {
     {
       key: 'qc',
       label: 'Every part checked against the brief',
-      why: 'The client will do this. Better it is you, before it ships.',
+      why: 'The client will do this. Better it is you, before it ships — and a part that failed twice for the same reason is a design problem, not bad luck.',
+      // Reads the build sheet when there is one, and steps out of the way
+      // when there is not.
+      auto: (f) => (f.parts === 0 ? null : f.partsPassed === f.parts),
+      autoFrom: 'from the build sheet',
     },
     {
       key: 'finishing',
@@ -240,8 +252,11 @@ export function gateStatus(
 ): GateStatus {
   const items: ResolvedGateItem[] = GATES[phase].map((item) => {
     const answer = answers[item.key]
-    const automatic = typeof item.auto === 'function'
-    const checked = automatic ? item.auto!(facts) : (answer?.checked ?? false)
+    // An auto item that returns null is not automatic today — the app has
+    // no way to know, so the human answer stands.
+    const derived = typeof item.auto === 'function' ? item.auto(facts) : null
+    const automatic = derived !== null
+    const checked = automatic ? derived : (answer?.checked ?? false)
     const note = answer?.note ?? null
     return {
       ...item,

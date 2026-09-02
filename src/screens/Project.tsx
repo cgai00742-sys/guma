@@ -26,7 +26,7 @@
  * facts the data layer already loaded, so this file holds no rules of its
  * own about what "ready to advance" means.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   JOB_PHASES,
@@ -35,9 +35,14 @@ import {
   PAYMENT_KIND_LABEL,
   PAYMENT_METHODS,
   PAYMENT_METHOD_LABEL,
+  PART_STATUSES,
+  PART_STATUS_LABEL,
   WORK_KINDS,
   WORK_KIND_LABEL,
+  addPart,
   addProjectNote,
+  deletePart,
+  setPartStatus,
   deletePrintRun,
   deleteWorkEntry,
   loadProjectDetail,
@@ -50,6 +55,8 @@ import {
   type PaymentInput,
   type PaymentKind,
   type PaymentMethod,
+  type PartRow,
+  type PartStatus,
   type PrintRunInput,
   type ProjectDetail,
   type ProjectFieldsInput,
@@ -551,6 +558,37 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         </div>
       </section>
 
+      {/* ---- the build sheet ---- */}
+      <section className="sec">
+        <div className="sechead">
+          <h4>Build sheet</h4>
+          <span
+            className={`secstat ${
+              detail.parts.length === 0
+                ? ''
+                : facts.partsReprint > 0
+                  ? 'warn'
+                  : facts.partsPassed === facts.parts
+                    ? 'ok'
+                    : ''
+            }`}
+          >
+            {detail.parts.length === 0
+              ? 'not used on this project'
+              : `${facts.partsPassed} of ${facts.parts} passed` +
+                (facts.partsReprint > 0 ? ` · ${facts.partsReprint} going back` : '')}
+          </span>
+        </div>
+        <BuildSheet
+          ctx={ctx}
+          detail={detail}
+          locked={phaseIndex(detail.phase) >= phaseIndex('review')}
+          busy={busy}
+          onChanged={reload}
+          setError={setError}
+        />
+      </section>
+
       {/* ---- what it actually took ---- */}
       <section className="sec">
         <div className="sechead">
@@ -994,6 +1032,317 @@ function Variance({ comparison, money }: { comparison: Comparison; money: (n: nu
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * The build sheet: what is being made, and where each piece has got to.
+ *
+ * Ported from Voltage, including the rule that matters most — from Review
+ * onwards the sheet LOCKS to QC. You can pass a part or send it back; you
+ * cannot add, rename or remove one. Once you are checking work against a
+ * list, a list that can still change is not a check, and a shop that can
+ * quietly delete the part it broke has no build sheet at all.
+ *
+ * Guma's own addition is the line at the bottom. Voltage treats a reprint
+ * as a status; here it is a cost, because 0006 knows what a build consumed
+ * and a part going back means material and machine time spent twice on a
+ * project whose margin is already being watched. That is the only reason a
+ * money layer wants a build sheet in the first place.
+ *
+ * A project that never adds a part is not penalised anywhere: the two gate
+ * items that read this return null with no parts on file and fall back to
+ * a manual tick. A feature nobody opted into must never become a blocker.
+ */
+function BuildSheet({
+  ctx,
+  detail,
+  locked,
+  busy,
+  onChanged,
+  setError,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  locked: boolean
+  busy: boolean
+  onChanged: () => Promise<void>
+  setError: (m: string | null) => void
+}) {
+  const [label, setLabel] = useState('')
+  const [qty, setQty] = useState('1')
+  const [saving, setSaving] = useState(false)
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [reprintFor, setReprintFor] = useState<string | null>(null)
+  const [why, setWhy] = useState('')
+
+  async function guard(fn: () => Promise<unknown>) {
+    setSaving(true)
+    setError(null)
+    try {
+      await fn()
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function move(part: PartRow, status: PartStatus) {
+    if (status === 'reprint') {
+      setReprintFor(part.id)
+      setWhy('')
+      return
+    }
+    await guard(() => setPartStatus(ctx.shop.id, part.id, ctx.profile.id, status, null))
+  }
+
+  return (
+    <div className="pane" style={{ marginBottom: 0 }}>
+      {detail.parts.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
+          Nothing listed. A build sheet is worth keeping when a project is more than one object —
+          it is what turns &ldquo;is it done?&rdquo; into a countable answer, and it is where a part
+          that keeps coming back stops looking like bad luck. Projects that do not need one are not
+          penalised: the gate items that read this step aside when it is empty.
+        </div>
+      ) : (
+        <div className="sheetwrap" style={{ maxHeight: 'none' }}>
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: '46%' }}>Part</th>
+                <th className="r">Copies</th>
+                <th style={{ width: 190 }}>Status</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {detail.parts.map((p) => (
+                <Fragment key={p.id}>
+                  <tr>
+                    <td>
+                      <span className="pn">{p.label}</span>
+                      {p.history.length > 1 && (
+                        <button
+                          type="button"
+                          className="linkbtn"
+                          style={{ marginLeft: 8, fontSize: 10 }}
+                          onClick={() => setOpenId(openId === p.id ? null : p.id)}
+                        >
+                          history ({p.history.length})
+                        </button>
+                      )}
+                      {p.note && <div className="pmeta">{p.note}</div>}
+                    </td>
+                    <td className="r mono">×{p.qty}</td>
+                    <td>
+                      {/* Same fixed two-slot grammar as the board card and
+                          the design package: square = printed, disc = QC. */}
+                      <span className="pstat" aria-hidden="true">
+                        <i
+                          className={`s-print ${p.status === 'pending' ? '' : 'on'}`.trim()}
+                        />
+                        <i
+                          className={`s-qc ${
+                            p.status === 'passed' ? 'on' : p.status === 'reprint' ? 'on fail' : ''
+                          }`.trim()}
+                        />
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color:
+                            p.status === 'reprint'
+                              ? 'var(--red)'
+                              : p.status === 'passed'
+                                ? 'var(--ok)'
+                                : p.status === 'printed'
+                                  ? 'var(--warn)'
+                                  : 'var(--txt-3)',
+                        }}
+                      >
+                        {PART_STATUS_LABEL[p.status]}
+                      </span>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                        {PART_STATUSES.filter((st) => st !== p.status && st !== 'pending').map(
+                          (st) => (
+                            <button
+                              key={st}
+                              type="button"
+                              className="btn sm ghost"
+                              disabled={busy || saving}
+                              style={{ fontSize: 10 }}
+                              onClick={() => void move(p, st)}
+                            >
+                              {st === 'printed' ? 'Printed' : st === 'passed' ? 'Pass' : 'Send back'}
+                            </button>
+                          ),
+                        )}
+                        {!locked && (
+                          <button
+                            type="button"
+                            className="linkbtn"
+                            style={{ fontSize: 10 }}
+                            disabled={busy || saving}
+                            onClick={() => void guard(() => deletePart(ctx.shop.id, p.id))}
+                          >
+                            remove
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {reprintFor === p.id && (
+                    <tr>
+                      <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
+                        <div className="fld" style={{ margin: 0 }}>
+                          <label className="lbl" htmlFor={`why-${p.id}`}>
+                            What went wrong
+                          </label>
+                          <input
+                            id={`why-${p.id}`}
+                            value={why}
+                            autoFocus
+                            placeholder="Layer shift at 40mm, warped corner, wrong colour…"
+                            onChange={(e) => setWhy(e.target.value)}
+                          />
+                        </div>
+                        <div className="btnrow" style={{ marginTop: 6, alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="btn sm primary"
+                            disabled={!why.trim() || saving}
+                            onClick={() =>
+                              void guard(async () => {
+                                await setPartStatus(
+                                  ctx.shop.id,
+                                  p.id,
+                                  ctx.profile.id,
+                                  'reprint',
+                                  why,
+                                )
+                                setReprintFor(null)
+                              })
+                            }
+                          >
+                            Send it back
+                          </button>
+                          <button
+                            type="button"
+                            className="btn sm ghost"
+                            onClick={() => setReprintFor(null)}
+                          >
+                            Cancel
+                          </button>
+                          <span className="hint" style={{ marginTop: 0 }}>
+                            A reason is required here and nowhere else. &ldquo;Passed&rdquo; explains
+                            itself; a reprint never does, and the same reason twice is a design
+                            problem rather than bad luck.
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  {openId === p.id && (
+                    <tr>
+                      <td colSpan={4} style={{ background: 'var(--panel-2)' }}>
+                        {p.history.map((h) => (
+                          <div key={h.id} className="histitem">
+                            <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt-3)' }}>
+                              {h.at.slice(0, 10)}
+                            </span>
+                            <span style={{ color: 'var(--txt-2)' }}>
+                              {h.fromStatus
+                                ? `${PART_STATUS_LABEL[h.fromStatus]} → ${PART_STATUS_LABEL[h.toStatus ?? 'pending']}`
+                                : PART_STATUS_LABEL[h.toStatus ?? 'pending']}
+                            </span>
+                            {h.actor && (
+                              <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>{h.actor}</span>
+                            )}
+                            {h.note && <div className="histnote">{h.note}</div>}
+                          </div>
+                        ))}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {detail.parts.length > 0 && (
+        <div className="sheetsum">
+          <span>Square = printed · disc = passed QC · red = going back</span>
+          <span style={{ marginLeft: 'auto' }}>
+            {detail.facts.parts} part{detail.facts.parts === 1 ? '' : 's'} ·{' '}
+            {detail.parts.reduce((n, p) => n + p.qty, 0)} copies
+            {detail.facts.reprintsEver > 0 && (
+              <span style={{ color: 'var(--warn)' }}>
+                {' '}
+                · sent back {detail.facts.reprintsEver} time
+                {detail.facts.reprintsEver === 1 ? '' : 's'} so far
+              </span>
+            )}
+          </span>
+        </div>
+      )}
+
+      {locked ? (
+        <div className="hint" style={{ marginTop: 10 }}>
+          The sheet is locked from Review onwards — pass a part or send it back, but the list itself
+          no longer moves. Checking work against a list that can still change is not checking.
+        </div>
+      ) : (
+        <div className="btnrow" style={{ marginTop: 10, alignItems: 'flex-end' }}>
+          <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
+            <label className="lbl" htmlFor="part-label">
+              Part
+            </label>
+            <input
+              id="part-label"
+              value={label}
+              placeholder="Mast bracket, left"
+              onChange={(e) => setLabel(e.target.value)}
+            />
+          </div>
+          <div className="fld" style={{ margin: 0, width: 90 }}>
+            <label className="lbl" htmlFor="part-qty">
+              Copies
+            </label>
+            <input
+              id="part-qty"
+              type="number"
+              min="1"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            className="btn sm primary"
+            disabled={busy || saving || !label.trim()}
+            onClick={() =>
+              void guard(async () => {
+                await addPart(ctx.shop.id, detail.jobId, ctx.profile.id, {
+                  label,
+                  qty: Number(qty) || 1,
+                })
+                setLabel('')
+                setQty('1')
+              })
+            }
+          >
+            Add
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 

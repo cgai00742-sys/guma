@@ -34,6 +34,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { priceQuote, round2, type RateSet } from './pricing'
 import type { SaveQuoteArgs, SetupPayload } from './data.types'
 import { flagsFor, gateStatus } from './gates'
+import type { GateAnswer } from './data.types'
+
+/** Stored gate answers, for asserting that an automatic item ignores them. */
+const ticked = (...keys: string[]): Record<string, GateAnswer> =>
+  Object.fromEntries(keys.map((k) => [k, { checked: true, note: 'done' } as GateAnswer]))
 
 const here = dirname(fileURLToPath(import.meta.url))
 const MIGRATIONS_DIR = join(here, '../../src-tauri/migrations')
@@ -48,6 +53,7 @@ const MIGRATION_SQL = [
   '0004_partners_gates.sql',
   '0005_material_purchases.sql',
   '0006_actuals.sql',
+  '0007_parts.sql',
 ]
   .map((f) => readFileSync(join(MIGRATIONS_DIR, f), 'utf8'))
   .join('\n')
@@ -1377,5 +1383,168 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(cmp).not.toBeNull()
     expect(cmp!.quotedCost).toBeGreaterThan(0)
     expect(cmp!.hasActuals).toBe(false)
+  })
+
+  /* ---------------------------------------------------------------- */
+  /* The build sheet                                                   */
+  /* ---------------------------------------------------------------- */
+
+  it('adds parts, moves them through QC, and keeps every move', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+    const add = (label: string, qty: number) =>
+      local.addPart(shopId, saved.jobId, ctx.profile.id, { label, qty })
+
+    const bracket = await add('Mast bracket, left', 2)
+    await add('Mast bracket, right', 2)
+    await add('Spacer', 8)
+
+    let d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.parts.map((p) => p.label)).toEqual([
+      'Mast bracket, left',
+      'Mast bracket, right',
+      'Spacer',
+    ])
+    expect(d.parts.every((p) => p.status === 'pending')).toBe(true)
+    expect(d.facts.parts).toBe(3)
+    expect(d.facts.partsPassed).toBe(0)
+    // Adding a part is itself an event, so nothing is ever undated.
+    expect(d.parts[0].history).toHaveLength(1)
+
+    await local.setPartStatus(shopId, bracket, ctx.profile.id, 'printed', null)
+    await local.setPartStatus(shopId, bracket, ctx.profile.id, 'passed', null)
+
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    const b = d.parts.find((p) => p.id === bracket)!
+    expect(b.status).toBe('passed')
+    expect(b.history).toHaveLength(3)
+    expect(b.history[0].fromStatus).toBe('printed')
+    expect(b.history[0].toStatus).toBe('passed')
+    expect(b.history[0].actor).toBe('Owner')
+    expect(d.facts.partsPrinted).toBe(1)
+    expect(d.facts.partsPassed).toBe(1)
+
+    // Moving to the status it already has is a no-op, not a duplicate event.
+    await local.setPartStatus(shopId, bracket, ctx.profile.id, 'passed', null)
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.parts.find((p) => p.id === bracket)!.history).toHaveLength(3)
+  })
+
+  it('will not send a part back without a reason', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+    const part = await local.addPart(shopId, saved.jobId, ctx.profile.id, { label: 'Cowl', qty: 1 })
+
+    await expect(
+      local.setPartStatus(shopId, part, ctx.profile.id, 'reprint', null),
+    ).rejects.toThrow(/what went wrong/)
+    await expect(
+      local.setPartStatus(shopId, part, ctx.profile.id, 'reprint', '   '),
+    ).rejects.toThrow(/what went wrong/)
+    // Passing needs no explanation. Only going back does.
+    await expect(
+      local.setPartStatus(shopId, part, ctx.profile.id, 'passed', null),
+    ).resolves.toBeUndefined()
+
+    await local.setPartStatus(shopId, part, ctx.profile.id, 'reprint', 'Layer shift at 40mm')
+    const d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.parts[0].status).toBe('reprint')
+    expect(d.parts[0].history[0].note).toBe('Layer shift at 40mm')
+  })
+
+  it('counts every trip back, not just the parts sitting in reprint', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+    const part = await local.addPart(shopId, saved.jobId, ctx.profile.id, { label: 'Rib', qty: 1 })
+
+    await local.setPartStatus(shopId, part, ctx.profile.id, 'reprint', 'warped')
+    await local.setPartStatus(shopId, part, ctx.profile.id, 'printed', null)
+    await local.setPartStatus(shopId, part, ctx.profile.id, 'reprint', 'warped again')
+    await local.setPartStatus(shopId, part, ctx.profile.id, 'printed', null)
+    await local.setPartStatus(shopId, part, ctx.profile.id, 'passed', null)
+
+    const [row] = await local.listJobs(shopId)
+    // Nothing is in reprint now, and the sheet reads 1 of 1 passed...
+    expect(row.facts.partsReprint).toBe(0)
+    expect(row.facts.partsPassed).toBe(1)
+    // ...but it cost the shop two extra prints, and that is the number a
+    // margin conversation actually needs.
+    expect(row.facts.reprintsEver).toBe(2)
+  })
+
+  it('the QC and started gate items read the sheet, and step aside without one', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+
+    // A project with no build sheet: both items stay manual, exactly as
+    // they were before the sheet existed. A feature nobody opted into must
+    // never become a blocker.
+    const { saved: plain } = await seedProject(local, shopId, { title: 'No sheet' })
+    const bare = await local.loadProjectDetail(shopId, plain.jobId)
+    const bareQc = gateStatus('review', {}, bare.facts).items.find((i) => i.key === 'qc')!
+    expect(bareQc.automatic).toBe(false)
+    expect(gateStatus('review', ticked('qc'), bare.facts).items.find((i) => i.key === 'qc')!.checked).toBe(
+      true,
+    )
+
+    // A project that uses one: the item is read, not asked.
+    const { saved } = await seedProject(local, shopId, { title: 'With a sheet' })
+    const a = await local.addPart(shopId, saved.jobId, ctx.profile.id, { label: 'A', qty: 1 })
+    const b = await local.addPart(shopId, saved.jobId, ctx.profile.id, { label: 'B', qty: 1 })
+
+    let d = await local.loadProjectDetail(shopId, saved.jobId)
+    let qc = gateStatus('review', d.gates.review ?? {}, d.facts).items.find((i) => i.key === 'qc')!
+    expect(qc.automatic).toBe(true)
+    expect(qc.checked).toBe(false)
+    // ...and a stored tick from before cannot override the sheet.
+    expect(
+      gateStatus('review', ticked('qc'), d.facts).items.find((i) => i.key === 'qc')!.checked,
+    ).toBe(false)
+
+    await local.setPartStatus(shopId, a, ctx.profile.id, 'passed', null)
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    qc = gateStatus('review', {}, d.facts).items.find((i) => i.key === 'qc')!
+    expect(qc.checked).toBe(false)
+
+    await local.setPartStatus(shopId, b, ctx.profile.id, 'passed', null)
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(gateStatus('review', {}, d.facts).items.find((i) => i.key === 'qc')!.checked).toBe(true)
+    // The in-build item cleared as soon as anything came off a machine.
+    expect(
+      gateStatus('building', {}, d.facts).items.find((i) => i.key === 'started')!.checked,
+    ).toBe(true)
+  })
+
+  it('refuses a part with no name or no copies, and edits one in place', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+
+    await expect(
+      local.addPart(shopId, saved.jobId, ctx.profile.id, { label: '  ', qty: 1 }),
+    ).rejects.toThrow(/needs a name/)
+    await expect(
+      local.addPart(shopId, saved.jobId, ctx.profile.id, { label: 'Cowl', qty: 0 }),
+    ).rejects.toThrow(/at least one copy/)
+
+    const part = await local.addPart(shopId, saved.jobId, ctx.profile.id, { label: 'Cowl', qty: 1 })
+    await local.updatePart(shopId, part, { label: 'Cowl, revised', qty: 3, note: 'thicker wall' })
+    let d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.parts[0].label).toBe('Cowl, revised')
+    expect(d.parts[0].qty).toBe(3)
+    expect(d.parts[0].note).toBe('thicker wall')
+
+    await local.deletePart(shopId, part)
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.parts).toEqual([])
+    expect(d.facts.parts).toBe(0)
   })
 })

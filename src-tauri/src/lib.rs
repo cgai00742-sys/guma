@@ -41,6 +41,12 @@ pub fn run() {
       sql: include_str!("../migrations/0006_actuals.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 7,
+      description: "build sheet: parts, per-part QC, and their history",
+      sql: include_str!("../migrations/0007_parts.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

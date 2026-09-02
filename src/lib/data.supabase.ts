@@ -58,6 +58,9 @@ export type {
   PrintRunInput,
   WorkEntryRow,
   WorkEntryInput,
+  PartRow,
+  PartInput,
+  PartStatus,
   QuoteStatus,
 } from './data.types'
 import type {
@@ -87,6 +90,9 @@ import type {
   PrintRunInput,
   WorkEntryRow,
   WorkEntryInput,
+  PartRow,
+  PartInput,
+  PartStatus,
   QuoteStatus,
 } from './data.types'
 
@@ -351,6 +357,7 @@ const JOB_SELECT = `id, ref, title, brief, created_at, updated_at, phase, priori
             material_id, printer_id, units_per_part, print_hrs_part, finishing_hrs,
             rush, flat_each, discount_pct, rates_snapshot ),
    job_money ( deposit_due, deposit_owed, balance_owed ),
+   job_parts_summary ( parts, printed, passed, reprint, reprints_ever ),
    job_actuals ( material_cost, machine_cost, power_cost, wear_cost, runs,
                  design_hours, finishing_hours, admin_hours, material_units,
                  failed_units, machine_hours, failed_runs ),
@@ -424,6 +431,11 @@ function factsFrom(
       acts.runs > 0 || acts.designHours + acts.finishingHours + acts.adminHours > 0,
     actualRuns: acts.runs,
     actualHours: acts.designHours + acts.finishingHours + acts.adminHours,
+    parts: Number(r.job_parts_summary?.[0]?.parts ?? 0),
+    partsPrinted: Number(r.job_parts_summary?.[0]?.printed ?? 0),
+    partsPassed: Number(r.job_parts_summary?.[0]?.passed ?? 0),
+    partsReprint: Number(r.job_parts_summary?.[0]?.reprint ?? 0),
+    reprintsEver: Number(r.job_parts_summary?.[0]?.reprints_ever ?? 0),
   }
 }
 
@@ -653,7 +665,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   const r = data as any
   if (!r) throw new Error('That project no longer exists.')
 
-  const [gates, rates, events, payments, runs, work] = await Promise.all([
+  const [gates, rates, events, payments, runs, work, parts, partHistory] = await Promise.all([
     loadGateAnswers([jobId]),
     currentRates(shopId),
     supabase
@@ -679,11 +691,23 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .select('id, kind, hours, worked_on, note, profiles ( full_name )')
       .eq('job_id', jobId)
       .order('worked_on', { ascending: false }),
+    supabase
+      .from('job_parts')
+      .select('id, label, qty, status, note, sort')
+      .eq('job_id', jobId)
+      .order('sort'),
+    supabase
+      .from('part_events')
+      .select('id, part_id, kind, from_status, to_status, note, at, profiles ( full_name )')
+      .eq('job_id', jobId)
+      .order('at', { ascending: false }),
   ])
   if (events.error) throw events.error
   if (payments.error) throw payments.error
   if (runs.error) throw runs.error
   if (work.error) throw work.error
+  if (parts.error) throw parts.error
+  if (partHistory.error) throw partHistory.error
 
   const quote = r.quotes?.[0] ?? null
   return {
@@ -734,6 +758,27 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         workedOn: x.worked_on,
         note: x.note ?? null,
         actor: x.profiles?.full_name ?? null,
+      }),
+    ),
+    parts: ((parts.data ?? []) as any[]).map(
+      (x): PartRow => ({
+        id: x.id,
+        label: x.label,
+        qty: Number(x.qty),
+        status: x.status,
+        note: x.note ?? null,
+        sort: Number(x.sort ?? 0),
+        history: ((partHistory.data ?? []) as any[])
+          .filter((e) => e.part_id === x.id)
+          .map((e) => ({
+            id: e.id,
+            kind: e.kind,
+            fromStatus: e.from_status ?? null,
+            toStatus: e.to_status ?? null,
+            note: e.note ?? null,
+            actor: e.profiles?.full_name ?? null,
+            at: e.at,
+          })),
       }),
     ),
     gates: gates[jobId] ?? {},
@@ -1161,5 +1206,112 @@ export async function logWork(
 
 export async function deleteWorkEntry(shopId: string, entryId: string): Promise<void> {
   const { error } = await supabase.from('work_log').delete().eq('id', entryId).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+/* ------------------------------------------------------------------ */
+/* The build sheet                                                     */
+/* ------------------------------------------------------------------ */
+
+/** See data.local.ts's addPart. */
+export async function addPart(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: PartInput,
+): Promise<string> {
+  const label = input.label.trim()
+  if (!label) throw new Error('A part needs a name.')
+  const qty = Math.floor(Number(input.qty))
+  if (!Number.isFinite(qty) || qty < 1) throw new Error('A part needs at least one copy.')
+
+  const { data: last } = await supabase
+    .from('job_parts')
+    .select('sort')
+    .eq('job_id', jobId)
+    .order('sort', { ascending: false })
+    .limit(1)
+
+  const { data, error } = await supabase
+    .from('job_parts')
+    .insert({
+      shop_id: shopId,
+      job_id: jobId,
+      label,
+      qty,
+      note: input.note ?? null,
+      sort: input.sort ?? Number(last?.[0]?.sort ?? -1) + 1,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+
+  const { error: evErr } = await supabase.from('part_events').insert({
+    part_id: data.id,
+    job_id: jobId,
+    kind: 'status',
+    to_status: 'pending',
+    note: 'Added to the build sheet',
+    actor_id: actorId,
+  })
+  if (evErr) throw evErr
+  return data.id as string
+}
+
+/** See data.local.ts's setPartStatus, including why a reprint needs a note. */
+export async function setPartStatus(
+  shopId: string,
+  partId: string,
+  actorId: string,
+  status: PartStatus,
+  note: string | null,
+): Promise<void> {
+  const { data: part, error: readErr } = await supabase
+    .from('job_parts')
+    .select('job_id, status')
+    .eq('id', partId)
+    .eq('shop_id', shopId)
+    .single()
+  if (readErr) throw readErr
+  if (!part) throw new Error('That part no longer exists.')
+  if (status === 'reprint' && !(note ?? '').trim()) {
+    throw new Error('Say what went wrong before sending a part back.')
+  }
+  if (part.status === status) return
+
+  const { error } = await supabase
+    .from('job_parts')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', partId)
+    .eq('shop_id', shopId)
+  if (error) throw error
+
+  const { error: evErr } = await supabase.from('part_events').insert({
+    part_id: partId,
+    job_id: part.job_id,
+    kind: 'status',
+    from_status: part.status,
+    to_status: status,
+    note: note?.trim() || null,
+    actor_id: actorId,
+  })
+  if (evErr) throw evErr
+}
+
+export async function updatePart(shopId: string, partId: string, input: PartInput): Promise<void> {
+  const label = input.label.trim()
+  if (!label) throw new Error('A part needs a name.')
+  const qty = Math.floor(Number(input.qty))
+  if (!Number.isFinite(qty) || qty < 1) throw new Error('A part needs at least one copy.')
+  const { error } = await supabase
+    .from('job_parts')
+    .update({ label, qty, note: input.note ?? null, updated_at: new Date().toISOString() })
+    .eq('id', partId)
+    .eq('shop_id', shopId)
+  if (error) throw error
+}
+
+export async function deletePart(shopId: string, partId: string): Promise<void> {
+  const { error } = await supabase.from('job_parts').delete().eq('id', partId).eq('shop_id', shopId)
   if (error) throw error
 }

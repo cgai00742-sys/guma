@@ -43,6 +43,11 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     hasActuals: false,
     actualRuns: 0,
     actualHours: 0,
+    parts: 0,
+    partsPrinted: 0,
+    partsPassed: 0,
+    partsReprint: 0,
+    reprintsEver: 0,
     ...over,
   }
 }

@@ -58,6 +58,9 @@ import type {
   PrintRunInput,
   WorkEntryRow,
   WorkEntryInput,
+  PartRow,
+  PartInput,
+  PartStatus,
   QuoteStatus,
 } from './data.types'
 
@@ -105,6 +108,9 @@ export type {
   PrintRunInput,
   WorkEntryRow,
   WorkEntryInput,
+  PartRow,
+  PartInput,
+  PartStatus,
   QuoteStatus,
 } from './data.types'
 
@@ -479,6 +485,11 @@ const JOB_LIST_SQL = `
            + coalesce(a.design_hours, 0) * coalesce(rc.design_hourly, 0)
            + (coalesce(a.finishing_hours, 0) + coalesce(a.admin_hours, 0))
              * coalesce(rc.finishing_hourly, 0) as actual_cost,
+         coalesce(ps.parts, 0) as parts,
+         coalesce(ps.printed, 0) as parts_printed,
+         coalesce(ps.passed, 0) as parts_passed,
+         coalesce(ps.reprint, 0) as parts_reprint,
+         coalesce(ps.reprints_ever, 0) as reprints_ever,
          coalesce(a.runs, 0) as actual_runs,
          coalesce(a.design_hours, 0) + coalesce(a.finishing_hours, 0)
            + coalesce(a.admin_hours, 0) as actual_hours,
@@ -487,6 +498,7 @@ const JOB_LIST_SQL = `
              + coalesce(a.admin_hours, 0) > 0) as has_actuals
   from jobs j
   left join job_actuals a on a.job_id = j.id
+  left join job_parts_summary ps on ps.job_id = j.id
   left join rate_cards rc on rc.id = (select id from rate_cards
                                        where shop_id = j.shop_id
                                        order by effective_from desc limit 1)
@@ -530,6 +542,11 @@ interface JobListSqlRow {
   has_actuals: number
   actual_runs: number
   actual_hours: number
+  parts: number
+  parts_printed: number
+  parts_passed: number
+  parts_reprint: number
+  reprints_ever: number
 }
 
 function factsFrom(r: JobListSqlRow): ProjectFacts {
@@ -561,6 +578,11 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     hasActuals: Number(r.has_actuals) === 1,
     actualRuns: Number(r.actual_runs ?? 0),
     actualHours: Number(r.actual_hours ?? 0),
+    parts: Number(r.parts ?? 0),
+    partsPrinted: Number(r.parts_printed ?? 0),
+    partsPassed: Number(r.parts_passed ?? 0),
+    partsReprint: Number(r.parts_reprint ?? 0),
+    reprintsEver: Number(r.reprints_ever ?? 0),
   }
 }
 
@@ -850,6 +872,33 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
     [jobId],
   )
 
+  const partRows = await d.select<
+    { id: string; label: string; qty: number; status: PartStatus; note: string | null; sort: number }[]
+  >(
+    'select id, label, qty, status, note, sort from job_parts where job_id = ? order by sort, created_at',
+    [jobId],
+  )
+  const partHistory = await d.select<
+    {
+      id: number
+      part_id: string
+      kind: 'status' | 'note'
+      from_status: PartStatus | null
+      to_status: PartStatus | null
+      note: string | null
+      actor: string | null
+      at: string
+    }[]
+  >(
+    `select e.id, e.part_id, e.kind, e.from_status, e.to_status, e.note, e.at,
+            p.full_name as actor
+       from part_events e
+       left join profiles p on p.id = e.actor_id
+      where e.job_id = ?
+      order by e.at desc, e.id desc`,
+    [jobId],
+  )
+
   const work = await d.select<
     { id: string; kind: WorkEntryRow['kind']; hours: number; worked_on: string; note: string | null; actor: string | null }[]
   >(
@@ -951,6 +1000,27 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         workedOn: x.worked_on,
         note: x.note,
         actor: x.actor,
+      }),
+    ),
+    parts: partRows.map(
+      (x): PartRow => ({
+        id: x.id,
+        label: x.label,
+        qty: Number(x.qty),
+        status: x.status,
+        note: x.note,
+        sort: Number(x.sort),
+        history: partHistory
+          .filter((e) => e.part_id === x.id)
+          .map((e) => ({
+            id: e.id,
+            kind: e.kind,
+            fromStatus: e.from_status,
+            toStatus: e.to_status,
+            note: e.note,
+            actor: e.actor,
+            at: e.at,
+          })),
       }),
     ),
     gates: gatesByPhase,
@@ -1538,4 +1608,113 @@ export async function logWork(
 export async function deleteWorkEntry(shopId: string, entryId: string): Promise<void> {
   const d = await db()
   await d.execute('delete from work_log where id = ? and shop_id = ?', [entryId, shopId])
+}
+
+/* ------------------------------------------------------------------ */
+/* The build sheet                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Add a part to the sheet.
+ *
+ * Parts can only be added, renamed or removed while the project is still
+ * being built. From Review onwards the sheet is locked to QC — Voltage's
+ * rule, and a good one: once you are checking work against a list, a list
+ * that can still change is not a check. That rule is enforced in the
+ * screen rather than here, because the data layer has no business deciding
+ * that a shop cannot correct a typo it just noticed.
+ */
+export async function addPart(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: PartInput,
+): Promise<string> {
+  const label = input.label.trim()
+  if (!label) throw new Error('A part needs a name.')
+  const qty = Math.floor(Number(input.qty))
+  if (!Number.isFinite(qty) || qty < 1) throw new Error('A part needs at least one copy.')
+  const id = crypto.randomUUID()
+  const d = await db()
+  const next = await d.select<{ n: number }[]>(
+    'select coalesce(max(sort), -1) + 1 as n from job_parts where job_id = ?',
+    [jobId],
+  )
+  await d.execute(
+    `insert into job_parts (id, shop_id, job_id, label, qty, note, sort)
+     values (?, ?, ?, ?, ?, ?, ?)`,
+    [id, shopId, jobId, label, qty, input.note ?? null, input.sort ?? next[0]?.n ?? 0],
+  )
+  await d.execute(
+    `insert into part_events (part_id, job_id, kind, to_status, note, actor_id)
+     values (?, ?, 'status', 'pending', ?, ?)`,
+    [id, jobId, 'Added to the build sheet', actorId],
+  )
+  return id
+}
+
+/**
+ * Move a part between states, and say why.
+ *
+ * A note is required to send something back, and only then. Everywhere
+ * else it is optional, because "passed" explains itself and "reprint" never
+ * does — a part that failed twice for the same reason is a design problem
+ * rather than bad luck, and the only way anyone notices is if the reasons
+ * were written down at the time.
+ */
+export async function setPartStatus(
+  shopId: string,
+  partId: string,
+  actorId: string,
+  status: PartStatus,
+  note: string | null,
+): Promise<void> {
+  const d = await db()
+  const rows = await d.select<{ job_id: string; status: PartStatus }[]>(
+    'select job_id, status from job_parts where id = ? and shop_id = ?',
+    [partId, shopId],
+  )
+  const part = rows[0]
+  if (!part) throw new Error('That part no longer exists.')
+  if (status === 'reprint' && !(note ?? '').trim()) {
+    throw new Error('Say what went wrong before sending a part back.')
+  }
+  if (part.status === status) return
+
+  await d.execute(
+    `update job_parts set status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     where id = ? and shop_id = ?`,
+    [status, partId, shopId],
+  )
+  await d.execute(
+    `insert into part_events (part_id, job_id, kind, from_status, to_status, note, actor_id)
+     values (?, ?, 'status', ?, ?, ?, ?)`,
+    [partId, part.job_id, part.status, status, note?.trim() || null, actorId],
+  )
+}
+
+/** Rename a part or change how many copies of it there are. */
+export async function updatePart(
+  shopId: string,
+  partId: string,
+  input: PartInput,
+): Promise<void> {
+  const label = input.label.trim()
+  if (!label) throw new Error('A part needs a name.')
+  const qty = Math.floor(Number(input.qty))
+  if (!Number.isFinite(qty) || qty < 1) throw new Error('A part needs at least one copy.')
+  const d = await db()
+  await d.execute(
+    `update job_parts set label = ?, qty = ?, note = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     where id = ? and shop_id = ?`,
+    [label, qty, input.note ?? null, partId, shopId],
+  )
+}
+
+/** Remove a part. Its history goes with it — there is nothing left to be
+ *  the history of. */
+export async function deletePart(shopId: string, partId: string): Promise<void> {
+  const d = await db()
+  await d.execute('delete from job_parts where id = ? and shop_id = ?', [partId, shopId])
 }
