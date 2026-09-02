@@ -11,7 +11,7 @@
  * on it.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { loadQuoteForPrint } from '../lib/data'
 import {
   priceQuote,
@@ -103,7 +103,9 @@ export function QuoteDocument({ row }: { row: any }) {
     sheets.forEach(({ el }) => el.remove())
 
     const style = document.createElement('style')
-    style.textContent = 'doc-page:not(:defined){visibility:hidden}body{margin:0;background:#fff}'
+    style.textContent =
+      'doc-page:not(:defined){visibility:hidden}body{margin:0;background:#fff}' +
+      '@media print{.no-print{display:none !important}}'
     document.head.appendChild(style)
 
     return () => {
@@ -142,7 +144,57 @@ export function QuoteDocument({ row }: { row: any }) {
   const client = job.clients
 
   return (
-    <doc-page margin="0.7in">
+    <>
+      <div
+        className="no-print"
+        style={{
+          position: 'fixed',
+          top: 16,
+          right: 16,
+          display: 'flex',
+          gap: 8,
+          zIndex: 10,
+          fontFamily: 'system-ui,-apple-system,sans-serif',
+        }}
+      >
+        <Link
+          to="/intake"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            height: 30,
+            padding: '0 12px',
+            fontSize: 12,
+            color: '#16222E',
+            background: '#fff',
+            border: '1px solid #D6DEE6',
+            borderRadius: 6,
+            textDecoration: 'none',
+          }}
+        >
+          ← Back to intake
+        </Link>
+        <button
+          type="button"
+          onClick={() => window.print()}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            height: 30,
+            padding: '0 12px',
+            fontSize: 12,
+            fontWeight: 600,
+            color: '#fff',
+            background: '#16222E',
+            border: '1px solid #16222E',
+            borderRadius: 6,
+            cursor: 'pointer',
+          }}
+        >
+          Save as PDF
+        </button>
+      </div>
+      <doc-page margin="0.7in">
       {/* ------------------------------------------------- repeating header */}
       <div
         slot="header"
@@ -572,6 +624,7 @@ export function QuoteDocument({ row }: { row: any }) {
           </div>
         </div>
       </div>
-    </doc-page>
+      </doc-page>
+    </>
   )
 }

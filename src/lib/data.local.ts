@@ -83,8 +83,8 @@ export async function setupShop(p: SetupPayload): Promise<string> {
   await d.execute(
     `insert into shops
       (id, name, slug, currency, locale, tax_label, tax_pct, legal_name, address,
-       email, phone, license_no, quote_valid_days, lead_days, electricity_rate_kwh)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       state, email, phone, license_no, quote_valid_days, lead_days, electricity_rate_kwh)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       shopId,
       (shop.name as string) || 'My shop',
@@ -95,6 +95,7 @@ export async function setupShop(p: SetupPayload): Promise<string> {
       (shop.tax_pct as number) ?? 0,
       (shop.legal_name as string) || null,
       (shop.address as string) || null,
+      (shop.state as string) || null,
       (shop.email as string) || null,
       (shop.phone as string) || null,
       (shop.license_no as string) || null,
@@ -163,9 +164,15 @@ export async function setupShop(p: SetupPayload): Promise<string> {
 
 export async function loadShopContext(): Promise<ShopContext> {
   const d = await db()
-  const shops = await d.select<Shop[]>('select * from shops limit 1')
-  const shop = shops[0]
-  if (!shop) throw new NeedsSetup()
+  const shops = await d.select<(Omit<Shop, 'show_welcome'> & { show_welcome: number })[]>(
+    'select * from shops limit 1',
+  )
+  const shopRow = shops[0]
+  if (!shopRow) throw new NeedsSetup()
+  // SQLite has no boolean type -- see 0002_show_welcome.sql -- so this is
+  // the one place that 0/1 becomes a real boolean before anything else in
+  // the app has to think about it.
+  const shop: Shop = { ...shopRow, show_welcome: Boolean(shopRow.show_welcome) }
 
   const profiles = await d.select<Profile[]>(
     'select * from profiles where shop_id = ? limit 1',
@@ -255,12 +262,13 @@ export async function saveRateCard(
 export async function saveShopIdentity(shopId: string, next: ShopIdentityInput): Promise<Shop> {
   const d = await db()
   await d.execute(
-    `update shops set name = ?, legal_name = ?, address = ?, email = ?, phone = ?,
+    `update shops set name = ?, legal_name = ?, address = ?, state = ?, email = ?, phone = ?,
        license_no = ?, electricity_rate_kwh = ? where id = ?`,
     [
       next.name.trim() || 'My shop',
       next.legal_name.trim() || null,
       next.address.trim() || null,
+      next.state.trim() || null,
       next.email.trim() || null,
       next.phone.trim() || null,
       next.license_no.trim() || null,
@@ -290,6 +298,13 @@ export async function saveShopQuoteTerms(shopId: string, next: ShopQuoteTermsInp
   )
   const rows = await d.select<Shop[]>('select * from shops where id = ?', [shopId])
   return rows[0]
+}
+
+/** The desktop welcome dialog's own "don't show this again". Nothing
+ *  fancier than a flag on the one shop row this install has. */
+export async function dismissWelcome(shopId: string): Promise<void> {
+  const d = await db()
+  await d.execute('update shops set show_welcome = 0 where id = ?', [shopId])
 }
 
 export async function savePrinter(
@@ -455,8 +470,23 @@ export async function loadQuoteForPrint(quoteId: string) {
   ])
   const shop = shops[0]
 
+  // SQLite has no jsonb — rates_snapshot is stored as a TEXT column holding
+  // a JSON string (see 0001_initial.sql's header note). The hosted/Supabase
+  // backend's jsonb column comes back through PostgREST already parsed into
+  // an object, and QuoteDoc.tsx relies on that shape (`snap.rates`,
+  // `snap.material`, ...) without ever parsing it itself. Forgetting to
+  // parse it back out here was exactly why the print/PDF view rendered
+  // blank on desktop: `ratesFromSnapshot()` received a raw string, every
+  // field on it read back `undefined`, and the resulting arithmetic threw
+  // during render — with no error boundary anywhere in the app to catch it
+  // and show a message instead of a blank screen.
+  const rates_snapshot = quote.rates_snapshot
+    ? JSON.parse(quote.rates_snapshot as string)
+    : null
+
   return {
     ...quote,
+    rates_snapshot,
     jobs: job ? { ...job, clients: client } : null,
     shops: shop,
   }

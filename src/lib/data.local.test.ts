@@ -31,14 +31,18 @@ import { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { priceQuote, round2 } from './pricing'
+import { priceQuote, round2, type RateSet } from './pricing'
 import type { SaveQuoteArgs, SetupPayload } from './data.types'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const MIGRATION_SQL = readFileSync(
-  join(here, '../../src-tauri/migrations/0001_initial.sql'),
-  'utf8',
-)
+const MIGRATIONS_DIR = join(here, '../../src-tauri/migrations')
+// Every migration file the app itself applies, in the same order Tauri's
+// migration runner would -- not just 0001. A test that only ran the first
+// file would silently drift from the real schema the moment a second one
+// (like 0002_show_welcome.sql) shipped.
+const MIGRATION_SQL = ['0001_initial.sql', '0002_show_welcome.sql', '0003_shop_state.sql']
+  .map((f) => readFileSync(join(MIGRATIONS_DIR, f), 'utf8'))
+  .join('\n')
 
 // A fresh in-memory SQLite database per test, wrapped in the same
 // execute()/select() shape @tauri-apps/plugin-sql's Database exposes (see
@@ -248,17 +252,24 @@ describe('data.local.ts against a real SQLite database', () => {
     const printed = (await local.loadQuoteForPrint(saved.quoteId)) as unknown as {
       total: number
       deposit_due: number
-      rates_snapshot: string
+      rates_snapshot: RateSet
       jobs: { clients: { name: string } }
       shops: { name: string }
     }
     expect(printed.total).toBe(q.total)
     expect(printed.deposit_due).toBe(q.deposit)
-    // rates_snapshot round-trips as a JSON string (SQLite has no jsonb) —
-    // the exact same shape the printed contract on data.supabase.ts relies
-    // on, just stored differently.
-    const snapshot = JSON.parse(printed.rates_snapshot)
-    const reprised = priceQuote(MAST_BRACKETS, snapshot, material, printer)
+    // SQLite has no jsonb, so rates_snapshot is stored as a TEXT column
+    // holding a JSON string — but loadQuoteForPrint parses it back to an
+    // object before returning, the same shape QuoteDoc.tsx's
+    // `snap.rates`/`snap.material` reads expect and the same shape
+    // PostgREST hands back for the hosted backend's jsonb column. An
+    // earlier version of this test asserted the opposite — that
+    // rates_snapshot came back as a raw string the caller had to
+    // JSON.parse itself — which is exactly the bug that made the desktop
+    // quote/PDF view render blank: this test passed while the real
+    // consumer crashed, because the test was parsing what the app forgot
+    // to.
+    const reprised = priceQuote(MAST_BRACKETS, printed.rates_snapshot, material, printer)
     expect(round2(reprised.total)).toBe(round2(q.total))
     expect(printed.jobs.clients.name).toBe('Acme Co')
     expect(printed.shops.name).toBe('Test Shop')
