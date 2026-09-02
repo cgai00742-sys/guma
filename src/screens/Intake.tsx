@@ -841,7 +841,21 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           <div className="pane" style={{ margin: 0 }}>
             <h3>What this project costs you</h3>
             <div className="kv" style={{ gridTemplateColumns: '1fr auto', gap: '6px 12px' }}>
-              <span className="k">Material at cost</span>
+              {/* The margin below is only as honest as this line. A material
+                  whose cost was typed at setup and never checked against a
+                  receipt is a guess, and saying so here is cheaper than
+                  discovering it a year of quotes later. */}
+              <span className="k">
+                Material at cost
+                {material?.costBasis === 'estimate' && (
+                  <span
+                    style={{ color: 'var(--warn)', fontSize: 10, marginLeft: 6 }}
+                    title="Nothing has been logged for this material, so this is the figure typed at setup. Log a spool purchase in Shop settings → Materials and Guma prices off what you actually paid."
+                  >
+                    estimated
+                  </span>
+                )}
+              </span>
               <span className="v" style={{ fontFamily: 'var(--mono)', textAlign: 'right' }}>
                 {money(q.materialCost)}
               </span>

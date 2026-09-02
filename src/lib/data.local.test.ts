@@ -46,6 +46,7 @@ const MIGRATION_SQL = [
   '0002_show_welcome.sql',
   '0003_shop_state.sql',
   '0004_partners_gates.sql',
+  '0005_material_purchases.sql',
 ]
   .map((f) => readFileSync(join(MIGRATIONS_DIR, f), 'utf8'))
   .join('\n')
@@ -781,4 +782,191 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(d.payments.map((p) => p.kind).sort()).toEqual(['deposit', 'refund'])
   })
 
+
+  /* ---------------------------------------------------------------- */
+  /* Materials: what the shop actually paid                            */
+  /* ---------------------------------------------------------------- */
+
+  it('costs a material at the typed figure until a purchase is logged', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+
+    const [m] = await local.listMaterials(shopId)
+    expect(m.name).toBe('PA-CF black')
+    expect(m.costPerUnit).toBe(0.095)
+    expect(m.avgCostPerUnit).toBe(0.095)
+    expect(m.costBasis).toBe('estimate')
+    expect(m.purchases).toBe(0)
+
+    // ...and that is what a quote prices against.
+    const ctx = await local.loadShopContext()
+    expect(ctx.materials[0].costPerUnit).toBe(0.095)
+    expect(ctx.materials[0].costBasis).toBe('estimate')
+  })
+
+  it('weights the cost across every purchase, and says so', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx0 = await local.loadShopContext()
+    const materialId = ctx0.materials[0].id
+
+    // A 1 kg spool at 24, then 3 kg at 60. Weighted: 84 / 4000 = 0.021,
+    // which is neither of the two prices and neither is their plain mean.
+    await local.recordMaterialPurchase(shopId, materialId, ctx0.profile.id, {
+      purchasedOn: '2026-01-10',
+      qty: 1000,
+      totalCost: 24,
+      supplier: 'Filament Co',
+      note: null,
+    })
+    await local.recordMaterialPurchase(shopId, materialId, ctx0.profile.id, {
+      purchasedOn: '2026-06-01',
+      qty: 3000,
+      totalCost: 60,
+      supplier: 'Filament Co',
+      note: 'box of three',
+    })
+
+    const [m] = await local.listMaterials(shopId)
+    expect(m.avgCostPerUnit).toBeCloseTo(0.021, 10)
+    expect(m.avgCostPerUnit).not.toBe((0.024 + 0.02) / 2)
+    expect(m.costBasis).toBe('purchases')
+    expect(m.purchases).toBe(2)
+    expect(m.purchasedQty).toBe(4000)
+    expect(m.purchasedSpend).toBe(84)
+    expect(m.lastCostPerUnit).toBeCloseTo(0.02, 10)
+    expect(m.lastPurchasedOn).toBe('2026-06-01')
+    // The typed figure survives as the comparison, not overwritten.
+    expect(m.costPerUnit).toBe(0.095)
+
+    // Purchases put material on the shelf.
+    expect(m.onHand).toBe(4000)
+
+    // And the quote now prices against the measurement, not the guess.
+    const ctx = await local.loadShopContext()
+    expect(ctx.materials[0].costPerUnit).toBeCloseTo(0.021, 10)
+    expect(ctx.materials[0].costBasis).toBe('purchases')
+  })
+
+  it('a purchase changes the material cost on a quote, and the shop is cheaper than it thought', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const before = await local.loadShopContext()
+    const guessed = priceQuote(
+      MAST_BRACKETS,
+      local.toRateSet(before.rateCard, before.shop),
+      before.materials[0],
+      before.printers[0],
+    )
+    expect(round2(guessed.materialSell)).toBe(140.6)
+
+    await local.recordMaterialPurchase(shopId, before.materials[0].id, before.profile.id, {
+      purchasedOn: '2026-01-10',
+      qty: 1000,
+      totalCost: 24,
+      supplier: null,
+      note: null,
+    })
+
+    const after = await local.loadShopContext()
+    const real = priceQuote(
+      MAST_BRACKETS,
+      local.toRateSet(after.rateCard, after.shop),
+      after.materials[0],
+      after.printers[0],
+    )
+    // 740 g at 0.024 x 2 markup = 35.52, against 140.60 on the setup guess
+    // of 0.095/g. The shop had been quoting nearly four times its real
+    // filament cost -- which is exactly the kind of thing a purchase log
+    // exists to find.
+    expect(round2(real.materialSell)).toBe(35.52)
+    expect(real.total).toBeLessThan(guessed.total)
+  })
+
+  it('refuses a purchase with no quantity, and one with a negative cost', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const id = ctx.materials[0].id
+    const base = { purchasedOn: '2026-01-10', supplier: null, note: null }
+
+    await expect(
+      local.recordMaterialPurchase(shopId, id, ctx.profile.id, { ...base, qty: 0, totalCost: 24 }),
+    ).rejects.toThrow(/greater than zero/)
+    await expect(
+      local.recordMaterialPurchase(shopId, id, ctx.profile.id, { ...base, qty: 1000, totalCost: -5 }),
+    ).rejects.toThrow(/zero or more/)
+    expect(await local.listMaterialPurchases(shopId, id)).toEqual([])
+    // A zero-quantity purchase would have divided the weighted average by
+    // nothing, so this guard is load-bearing, not decorative.
+    expect((await local.listMaterials(shopId))[0].costBasis).toBe('estimate')
+  })
+
+  it('deleting a purchase reverses both the average and the stock', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const id = ctx.materials[0].id
+
+    const first = await local.recordMaterialPurchase(shopId, id, ctx.profile.id, {
+      purchasedOn: '2026-01-10',
+      qty: 1000,
+      totalCost: 24,
+      supplier: null,
+      note: null,
+    })
+    await local.recordMaterialPurchase(shopId, id, ctx.profile.id, {
+      purchasedOn: '2026-06-01',
+      qty: 3000,
+      totalCost: 60,
+      supplier: null,
+      note: null,
+    })
+    expect((await local.listMaterialPurchases(shopId, id))).toHaveLength(2)
+
+    await local.deleteMaterialPurchase(shopId, first)
+    const [m] = await local.listMaterials(shopId)
+    expect(m.purchases).toBe(1)
+    expect(m.avgCostPerUnit).toBeCloseTo(0.02, 10)
+    expect(m.onHand).toBe(3000)
+
+    // Delete the last one and the typed figure takes over again.
+    const [remaining] = await local.listMaterialPurchases(shopId, id)
+    await local.deleteMaterialPurchase(shopId, remaining.id)
+    const [back] = await local.listMaterials(shopId)
+    expect(back.costBasis).toBe('estimate')
+    expect(back.avgCostPerUnit).toBe(0.095)
+    expect(back.onHand).toBe(0)
+  })
+
+  it('creates and edits materials, and keeps archived ones visible on the materials screen', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+
+    const created = await local.saveMaterial(shopId, {
+      name: 'PETG clear',
+      kind: 'filament',
+      swatch: '#88CCEE',
+      unit: 'g',
+      costPerUnit: 0.028,
+      sellOverride: null,
+      onHand: 0,
+      reorderAt: 500,
+    })
+    expect(created.id).toBeTruthy()
+    expect(created.costBasis).toBe('estimate')
+
+    await local.saveMaterial(shopId, { ...created, name: 'PETG clear (v2)', archived: true })
+    const all = await local.listMaterials(shopId)
+    // Archived rows still listed here -- this is where you go to un-archive.
+    expect(all.map((m) => m.name)).toContain('PETG clear (v2)')
+    expect(all.find((m) => m.name === 'PETG clear (v2)')!.archived).toBe(true)
+    // ...but the pricing context leaves them out.
+    const ctx = await local.loadShopContext()
+    expect(ctx.materials.map((m) => m.name)).not.toContain('PETG clear (v2)')
+
+    await expect(
+      local.saveMaterial(shopId, { ...created, name: '   ' }),
+    ).rejects.toThrow(/needs a name/)
+  })
 })

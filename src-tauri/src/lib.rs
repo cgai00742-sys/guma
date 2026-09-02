@@ -29,6 +29,12 @@ pub fn run() {
       sql: include_str!("../migrations/0004_partners_gates.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 5,
+      description: "material purchase log and weighted-average cost",
+      sql: include_str!("../migrations/0005_material_purchases.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

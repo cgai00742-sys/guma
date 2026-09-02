@@ -52,6 +52,10 @@ import type {
   PaymentInput,
   PaymentKind,
   PaymentMethod,
+  MaterialRow,
+  MaterialInput,
+  MaterialPurchaseRow,
+  MaterialPurchaseInput,
   QuoteStatus,
 } from './data.types'
 
@@ -93,6 +97,10 @@ export type {
   PaymentInput,
   PaymentKind,
   PaymentMethod,
+  MaterialRow,
+  MaterialInput,
+  MaterialPurchaseRow,
+  MaterialPurchaseInput,
   QuoteStatus,
 }
 
@@ -220,4 +228,32 @@ export async function recordPayment(
   input: PaymentInput,
 ): Promise<string> {
   return (await backend()).recordPayment(shopId, jobId, actorId, input)
+}
+
+export async function listMaterials(shopId: string): Promise<MaterialRow[]> {
+  return (await backend()).listMaterials(shopId)
+}
+
+export async function saveMaterial(shopId: string, next: MaterialInput): Promise<MaterialRow> {
+  return (await backend()).saveMaterial(shopId, next)
+}
+
+export async function recordMaterialPurchase(
+  shopId: string,
+  materialId: string,
+  actorId: string,
+  input: MaterialPurchaseInput,
+): Promise<string> {
+  return (await backend()).recordMaterialPurchase(shopId, materialId, actorId, input)
+}
+
+export async function listMaterialPurchases(
+  shopId: string,
+  materialId: string,
+): Promise<MaterialPurchaseRow[]> {
+  return (await backend()).listMaterialPurchases(shopId, materialId)
+}
+
+export async function deleteMaterialPurchase(shopId: string, purchaseId: string): Promise<void> {
+  return (await backend()).deleteMaterialPurchase(shopId, purchaseId)
 }

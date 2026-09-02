@@ -440,3 +440,78 @@ export interface PaymentInput {
   /** The quote this is being paid against, when there is one. */
   quoteId: string | null
 }
+
+/* ------------------------------------------------------------------ */
+/* Materials                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One material as the Materials screen sees it: the row a shop can edit,
+ * plus what the purchase log says it actually costs.
+ *
+ * Same split as PrinterRef / PrinterRow above -- MaterialRef (in
+ * pricing.ts) is the narrow shape the pricing engine wants; this is the
+ * wide one, with the id, the stock figures and the cost provenance the
+ * pricing engine has no business knowing about.
+ */
+export interface MaterialRow {
+  id: string
+  name: string
+  kind: string
+  swatch: string
+  unit: 'g' | 'ml'
+  /** The figure typed at setup. Kept even once purchases exist: it is the
+   *  fallback if every purchase is later deleted, and the comparison that
+   *  tells a shop how wrong its original guess was. */
+  costPerUnit: number
+  /** Charge this instead of cost x markup, when the shop has a set price. */
+  sellOverride: number | null
+  onHand: number
+  reorderAt: number
+  archived: boolean
+  /* --- from the material_costs view --- */
+  /** Weighted average of everything actually paid, or costPerUnit if nothing
+   *  has been logged yet. This is what quotes are priced against. */
+  avgCostPerUnit: number
+  costBasis: 'purchases' | 'estimate'
+  purchases: number
+  purchasedQty: number
+  purchasedSpend: number
+  lastCostPerUnit: number | null
+  lastPurchasedOn: string | null
+}
+
+export interface MaterialInput {
+  id?: string
+  name: string
+  kind: string
+  swatch: string
+  unit: 'g' | 'ml'
+  costPerUnit: number
+  sellOverride: number | null
+  onHand: number
+  reorderAt: number
+  archived?: boolean
+}
+
+export interface MaterialPurchaseRow {
+  id: string
+  materialId: string
+  purchasedOn: string
+  /** In the material's own unit -- grams for filament, mL for resin. */
+  qty: number
+  totalCost: number
+  /** Derived, not stored: totalCost / qty. */
+  costPerUnit: number
+  supplier: string | null
+  note: string | null
+  recordedBy: string | null
+}
+
+export interface MaterialPurchaseInput {
+  purchasedOn: string
+  qty: number
+  totalCost: number
+  supplier: string | null
+  note: string | null
+}

@@ -9,7 +9,7 @@
  * migration — this screen just never grew the UI to reach them until now.
  * Nothing here is a constant in the code — that is the whole point.
  */
-import { useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import {
   priceQuote,
   makeMoney,
@@ -22,11 +22,18 @@ import {
   saveShopIdentity,
   saveShopQuoteTerms,
   savePrinter,
+  listMaterials,
+  saveMaterial,
+  recordMaterialPurchase,
+  listMaterialPurchases,
+  deleteMaterialPurchase,
   toRateSet,
   type ShopContext,
   type ShopIdentityInput,
   type ShopQuoteTermsInput,
   type PrinterRow,
+  type MaterialRow,
+  type MaterialPurchaseRow,
 } from '../lib/data'
 import { taxHintFor, US_STATES } from '../lib/taxHelp'
 import TaxNameHint from '../components/TaxNameHint'
@@ -71,7 +78,7 @@ const DEPOSIT_HINTS: Record<Draft['deposit_when'], string> = {
   none: "Only if every client is someone you'd lend a truck to.",
 }
 
-type Tab = 'rates' | 'identity' | 'terms' | 'machines'
+type Tab = 'rates' | 'identity' | 'terms' | 'machines' | 'materials'
 
 export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
   const [tab, setTab] = useState<Tab>('rates')
@@ -181,10 +188,8 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
         <button
           type="button"
           className="tab"
-          aria-selected="false"
-          disabled
-          title="Designed, not in this build."
-          style={{ opacity: 0.4, cursor: 'not-allowed' }}
+          aria-selected={tab === 'materials'}
+          onClick={() => setTab('materials')}
         >
           Materials
         </button>
@@ -199,6 +204,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
       {tab === 'identity' && <IdentityPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'terms' && <QuoteTermsPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'machines' && <MachinesPane ctx={ctx} onSaved={onSaved} />}
+      {tab === 'materials' && <MaterialsPane ctx={ctx} onSaved={onSaved} />}
 
       {tab === 'rates' && error && (
         <div className="alert">
@@ -988,6 +994,609 @@ function MachinesPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
           + Add a machine
         </button>
       )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Materials                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Materials, and what they actually cost.
+ *
+ * Ported in spirit from Voltage's material purchase log (its phase 15),
+ * because it solves a problem Guma had and had not noticed: cost_per_unit
+ * was a number somebody typed once during setup, and every margin figure in
+ * the tool rests on it. Filament prices move. Suppliers change. A shop buys
+ * a ten-spool box at a discount. The quote goes on using last year's guess.
+ *
+ * So the screen shows two costs side by side and never pretends they are
+ * the same kind of thing: what you typed, and what you have actually paid,
+ * weighted across every purchase. Until the first purchase is logged the
+ * typed figure stands and is labelled an estimate, so nothing breaks and
+ * nobody has to backfill a year of receipts before the app is useful.
+ */
+function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
+  const rates = useMemo(() => toRateSet(ctx.rateCard, ctx.shop), [ctx.rateCard, ctx.shop])
+  const { money } = useMemo(() => makeMoney(rates.currency, rates.locale), [rates])
+  const [rows, setRows] = useState<MaterialRow[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
+
+  const reload = () =>
+    listMaterials(ctx.shop.id)
+      .then(setRows)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+
+  useEffect(() => {
+    void reload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.shop.id])
+
+  function patch(id: string, field: keyof MaterialRow, value: string) {
+    setRows((rs) =>
+      (rs ?? []).map((r) =>
+        r.id === id
+          ? {
+              ...r,
+              [field]:
+                field === 'name' || field === 'kind' || field === 'swatch' || field === 'unit'
+                  ? value
+                  : field === 'sellOverride'
+                    ? value.trim() === ''
+                      ? null
+                      : Number(value)
+                    : Number(value) || 0,
+            }
+          : r,
+      ),
+    )
+  }
+
+  async function saveRow(row: MaterialRow) {
+    setSavingId(row.id)
+    setError(null)
+    try {
+      await saveMaterial(ctx.shop.id, {
+        id: row.id,
+        name: row.name,
+        kind: row.kind,
+        swatch: row.swatch,
+        unit: row.unit,
+        costPerUnit: row.costPerUnit,
+        sellOverride: row.sellOverride,
+        onHand: row.onHand,
+        reorderAt: row.reorderAt,
+        archived: row.archived,
+      })
+      await reload()
+      onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  if (!rows) {
+    return <div style={{ fontSize: 12, color: 'var(--txt-3)' }}>Loading…</div>
+  }
+
+  const measured = rows.filter((r) => r.costBasis === 'purchases').length
+
+  return (
+    <>
+      {error && (
+        <div className="alert" style={{ marginBottom: 10 }}>
+          <span>{error}</span>
+        </div>
+      )}
+
+      <div className="pane">
+        <h3>What your material actually costs</h3>
+        <p style={{ fontSize: 12, color: 'var(--txt-2)', margin: '0 0 4px' }}>
+          {measured === 0
+            ? 'Every material here is priced off a figure typed during setup. Log one spool purchase and Guma starts pricing off what you actually paid instead — weighted across every purchase, not just the last one.'
+            : `${measured} of ${rows.length} material${rows.length === 1 ? '' : 's'} priced off real purchases. The rest are still running on the figure typed at setup.`}
+        </p>
+        <div className="hint">
+          On hand rises when you log a purchase and never falls on its own — Guma does not watch your
+          machines, so it cannot know what a print consumed. Correct the count yourself after you
+          weigh a spool. A number that only ever goes up would be worse than no number.
+        </div>
+      </div>
+
+      <div className="pane" style={{ padding: 0, overflowX: 'auto' }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Material</th>
+              <th>Unit</th>
+              <th className="r">Costing at</th>
+              <th className="r">You typed</th>
+              <th className="r">On hand</th>
+              <th className="r">Reorder at</th>
+              <th>Purchases</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((m) => (
+              <Fragment key={m.id}>
+                <tr style={m.archived ? { opacity: 0.5 } : undefined}>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <i
+                        style={{
+                          width: 12,
+                          height: 12,
+                          borderRadius: 3,
+                          background: m.swatch,
+                          flex: 'none',
+                          border: '1px solid var(--line)',
+                        }}
+                      />
+                      <input
+                        value={m.name}
+                        style={{ width: 150 }}
+                        onChange={(e) => patch(m.id, 'name', e.target.value)}
+                      />
+                    </div>
+                    <div className="pmeta" style={{ paddingLeft: 20 }}>
+                      {m.kind}
+                      {m.archived ? ' · archived' : ''}
+                    </div>
+                  </td>
+                  <td style={{ fontFamily: 'var(--mono)', fontSize: 11 }}>{m.unit}</td>
+                  <td className="r">
+                    <div style={{ fontFamily: 'var(--mono)' }}>{money(m.avgCostPerUnit)}</div>
+                    <span
+                      className="chip"
+                      style={
+                        m.costBasis === 'purchases'
+                          ? { color: 'var(--ok)', borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }
+                          : { color: 'var(--warn)', borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }
+                      }
+                      title={
+                        m.costBasis === 'purchases'
+                          ? `Weighted across ${m.purchases} purchase${m.purchases === 1 ? '' : 's'} of ${m.purchasedQty.toLocaleString()}${m.unit} for ${money(m.purchasedSpend)}.`
+                          : 'Nothing has been logged for this material, so quotes are priced off the figure typed at setup.'
+                      }
+                    >
+                      {m.costBasis === 'purchases' ? 'measured' : 'estimate'}
+                    </span>
+                  </td>
+                  <td className="r">
+                    <input
+                      type="number"
+                      step="0.001"
+                      min="0"
+                      value={m.costPerUnit}
+                      style={{ width: 90, textAlign: 'right' }}
+                      onChange={(e) => patch(m.id, 'costPerUnit', e.target.value)}
+                    />
+                  </td>
+                  <td className="r">
+                    <input
+                      type="number"
+                      min="0"
+                      value={m.onHand}
+                      style={{
+                        width: 90,
+                        textAlign: 'right',
+                        color: m.reorderAt > 0 && m.onHand <= m.reorderAt ? 'var(--warn)' : undefined,
+                      }}
+                      onChange={(e) => patch(m.id, 'onHand', e.target.value)}
+                    />
+                  </td>
+                  <td className="r">
+                    <input
+                      type="number"
+                      min="0"
+                      value={m.reorderAt}
+                      style={{ width: 80, textAlign: 'right' }}
+                      onChange={(e) => patch(m.id, 'reorderAt', e.target.value)}
+                    />
+                  </td>
+                  <td style={{ fontSize: 11, color: 'var(--txt-3)' }}>
+                    {m.purchases === 0
+                      ? 'none yet'
+                      : `${m.purchases} · last ${m.lastPurchasedOn}`}
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        type="button"
+                        className="btn sm"
+                        onClick={() => setOpenId(openId === m.id ? null : m.id)}
+                      >
+                        {openId === m.id ? 'Close' : 'Purchases'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn sm primary"
+                        disabled={savingId === m.id}
+                        onClick={() => void saveRow(m)}
+                      >
+                        {savingId === m.id ? '…' : 'Save'}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                {openId === m.id && (
+                  <tr>
+                    <td colSpan={8} style={{ background: 'var(--panel-2)', padding: '12px 14px' }}>
+                      <PurchaseLog
+                        ctx={ctx}
+                        material={m}
+                        money={money}
+                        onChanged={async () => {
+                          await reload()
+                          onSaved()
+                        }}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {adding ? (
+        <NewMaterial
+          ctx={ctx}
+          onCancel={() => setAdding(false)}
+          onSaved={async () => {
+            setAdding(false)
+            await reload()
+            onSaved()
+          }}
+        />
+      ) : (
+        <button type="button" className="btn" style={{ marginTop: 10 }} onClick={() => setAdding(true)}>
+          Add a material
+        </button>
+      )}
+    </>
+  )
+}
+
+/** One material's purchase history, and the form that adds to it. */
+function PurchaseLog({
+  ctx,
+  material,
+  money,
+  onChanged,
+}: {
+  ctx: ShopContext
+  material: MaterialRow
+  money: (n: number) => string
+  onChanged: () => Promise<void>
+}) {
+  const [log, setLog] = useState<MaterialPurchaseRow[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  // Filament is bought by the kilo and priced by the gram. Rather than make
+  // someone do that arithmetic (and get it wrong once, silently, forever),
+  // the form takes whichever unit they are holding.
+  const [bulk, setBulk] = useState(material.unit === 'g')
+  const [qty, setQty] = useState(material.unit === 'g' ? '1' : '1000')
+  const [cost, setCost] = useState('')
+  const [when, setWhen] = useState(() => new Date().toISOString().slice(0, 10))
+  const [supplier, setSupplier] = useState('')
+  const [note, setNote] = useState('')
+
+  const load = () =>
+    listMaterialPurchases(ctx.shop.id, material.id)
+      .then(setLog)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [material.id])
+
+  const baseQty = Number(qty) * (bulk ? 1000 : 1)
+  const unitCost = baseQty > 0 && Number(cost) > 0 ? Number(cost) / baseQty : null
+  const valid = baseQty > 0 && Number(cost) >= 0 && cost.trim() !== ''
+
+  async function add() {
+    setBusy(true)
+    setError(null)
+    try {
+      await recordMaterialPurchase(ctx.shop.id, material.id, ctx.profile.id, {
+        purchasedOn: when,
+        qty: baseQty,
+        totalCost: Number(cost),
+        supplier: supplier.trim() || null,
+        note: note.trim() || null,
+      })
+      setCost('')
+      setNote('')
+      await load()
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function remove(id: string) {
+    setBusy(true)
+    try {
+      await deleteMaterialPurchase(ctx.shop.id, id)
+      await load()
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      {error && (
+        <div className="alert" style={{ marginBottom: 8 }}>
+          <span>{error}</span>
+        </div>
+      )}
+
+      <div className="grid3">
+        <div className="fld">
+          <label className="lbl" htmlFor={`mp-qty-${material.id}`}>
+            How much
+          </label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              id={`mp-qty-${material.id}`}
+              type="number"
+              min="0"
+              step="0.01"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+            />
+            <select
+              value={bulk ? 'bulk' : 'base'}
+              style={{ width: 'auto' }}
+              onChange={(e) => setBulk(e.target.value === 'bulk')}
+            >
+              <option value="base">{material.unit}</option>
+              <option value="bulk">{material.unit === 'g' ? 'kg' : 'L'}</option>
+            </select>
+          </div>
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor={`mp-cost-${material.id}`}>
+            What you paid, all in
+          </label>
+          <input
+            id={`mp-cost-${material.id}`}
+            type="number"
+            min="0"
+            step="0.01"
+            value={cost}
+            placeholder="Including shipping and tax"
+            onChange={(e) => setCost(e.target.value)}
+          />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor={`mp-when-${material.id}`}>
+            When
+          </label>
+          <input
+            id={`mp-when-${material.id}`}
+            type="date"
+            value={when}
+            onChange={(e) => setWhen(e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="grid2">
+        <div className="fld">
+          <label className="lbl" htmlFor={`mp-sup-${material.id}`}>
+            Supplier
+          </label>
+          <input
+            id={`mp-sup-${material.id}`}
+            value={supplier}
+            onChange={(e) => setSupplier(e.target.value)}
+          />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor={`mp-note-${material.id}`}>
+            Note
+          </label>
+          <input
+            id={`mp-note-${material.id}`}
+            value={note}
+            placeholder="Batch, colour, sale price…"
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="btnrow" style={{ alignItems: 'center' }}>
+        <button type="button" className="btn sm primary" disabled={busy || !valid} onClick={() => void add()}>
+          Log this purchase
+        </button>
+        <span className="hint" style={{ marginTop: 0 }}>
+          {unitCost
+            ? `${money(unitCost)} per ${material.unit}. Currently costing at ${money(material.avgCostPerUnit)}.`
+            : 'Include shipping and tax — that is what the material actually cost you to have in the building.'}
+        </span>
+      </div>
+
+      <div className="updates" style={{ marginTop: 12 }}>
+        {log === null ? (
+          <div style={{ fontSize: 12, color: 'var(--txt-3)' }}>Loading…</div>
+        ) : log.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--txt-3)' }}>
+            Nothing logged yet, so quotes price this at the {money(material.costPerUnit)} typed at
+            setup.
+          </div>
+        ) : (
+          log.map((p) => (
+            <div key={p.id} className="histitem">
+              <span style={{ fontFamily: 'var(--mono)' }}>{money(p.costPerUnit)}</span>
+              <span style={{ color: 'var(--txt-2)' }}>
+                per {material.unit} · {p.qty.toLocaleString()}
+                {material.unit} for {money(p.totalCost)}
+              </span>
+              <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>
+                {p.purchasedOn}
+                {p.supplier ? ` · ${p.supplier}` : ''}
+                {p.recordedBy ? ` · ${p.recordedBy}` : ''}
+              </span>
+              <button
+                type="button"
+                className="linkbtn"
+                style={{ marginLeft: 'auto', fontSize: 11 }}
+                disabled={busy}
+                title="Remove this purchase. Its quantity comes back off the stock count and the average re-weights."
+                onClick={() => void remove(p.id)}
+              >
+                remove
+              </button>
+              {p.note && <div className="histnote">{p.note}</div>}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NewMaterial({
+  ctx,
+  onCancel,
+  onSaved,
+}: {
+  ctx: ShopContext
+  onCancel: () => void
+  onSaved: () => Promise<void>
+}) {
+  const [draft, setDraft] = useState({
+    name: '',
+    kind: 'filament',
+    swatch: '#6E8298',
+    unit: 'g' as 'g' | 'ml',
+    costPerUnit: 0,
+    sellOverride: null as number | null,
+    onHand: 0,
+    reorderAt: 0,
+  })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <div className="pane" style={{ marginTop: 10 }}>
+      <h3>Add a material</h3>
+      {error && (
+        <div className="alert" style={{ marginBottom: 8 }}>
+          <span>{error}</span>
+        </div>
+      )}
+      <div className="grid3">
+        <div className="fld">
+          <label className="lbl" htmlFor="nm-name">
+            Name
+          </label>
+          <input
+            id="nm-name"
+            value={draft.name}
+            placeholder="PLA matte black"
+            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+          />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor="nm-kind">
+            Kind
+          </label>
+          <input
+            id="nm-kind"
+            value={draft.kind}
+            onChange={(e) => setDraft((d) => ({ ...d, kind: e.target.value }))}
+          />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor="nm-unit">
+            Sold and sliced by
+          </label>
+          <select
+            id="nm-unit"
+            value={draft.unit}
+            onChange={(e) => setDraft((d) => ({ ...d, unit: e.target.value as 'g' | 'ml' }))}
+          >
+            <option value="g">grams</option>
+            <option value="ml">millilitres</option>
+          </select>
+        </div>
+      </div>
+      <div className="grid3">
+        <div className="fld">
+          <label className="lbl" htmlFor="nm-cost">
+            Cost per {draft.unit}, for now
+          </label>
+          <input
+            id="nm-cost"
+            type="number"
+            step="0.001"
+            min="0"
+            value={draft.costPerUnit}
+            onChange={(e) => setDraft((d) => ({ ...d, costPerUnit: Number(e.target.value) || 0 }))}
+          />
+          <div className="hint">A starting guess. Log a purchase and this stops mattering.</div>
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor="nm-reorder">
+            Tell me to reorder below
+          </label>
+          <input
+            id="nm-reorder"
+            type="number"
+            min="0"
+            value={draft.reorderAt}
+            onChange={(e) => setDraft((d) => ({ ...d, reorderAt: Number(e.target.value) || 0 }))}
+          />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor="nm-swatch">
+            Colour
+          </label>
+          <input
+            id="nm-swatch"
+            type="color"
+            value={draft.swatch}
+            onChange={(e) => setDraft((d) => ({ ...d, swatch: e.target.value }))}
+          />
+        </div>
+      </div>
+      <div className="btnrow">
+        <button
+          type="button"
+          className="btn primary"
+          disabled={busy || !draft.name.trim()}
+          onClick={() => {
+            setBusy(true)
+            setError(null)
+            saveMaterial(ctx.shop.id, draft)
+              .then(() => onSaved())
+              .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+              .finally(() => setBusy(false))
+          }}
+        >
+          {busy ? 'Saving…' : 'Add it'}
+        </button>
+        <button type="button" className="btn ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
     </div>
   )
 }

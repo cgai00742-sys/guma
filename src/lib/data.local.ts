@@ -48,6 +48,10 @@ import type {
   ClientEditInput,
   PaymentRow,
   PaymentInput,
+  MaterialRow,
+  MaterialInput,
+  MaterialPurchaseRow,
+  MaterialPurchaseInput,
   QuoteStatus,
 } from './data.types'
 
@@ -85,6 +89,10 @@ export type {
   ClientEditInput,
   PaymentRow,
   PaymentInput,
+  MaterialRow,
+  MaterialInput,
+  MaterialPurchaseRow,
+  MaterialPurchaseInput,
   QuoteStatus,
 } from './data.types'
 
@@ -222,8 +230,16 @@ export async function loadShopContext(): Promise<ShopContext> {
       'select * from rate_cards where shop_id = ? order by effective_from desc limit 1',
       [shop.id],
     ),
+    // Joined to material_costs so a quote is priced against what the shop
+    // actually paid, not the figure it typed at setup. The view falls back
+    // to that figure until a purchase is logged, so a fresh install prices
+    // exactly as it did before this existed.
     d.select<PrinterRow[] & { archived: number }[]>(
-      'select * from materials where shop_id = ? and archived = 0 order by name',
+      `select m.*, c.avg_cost_per_unit, c.basis
+         from materials m
+         join material_costs c on c.material_id = m.id
+        where m.shop_id = ? and m.archived = 0
+        order by m.name`,
       [shop.id],
     ),
     d.select<PrinterRow[]>('select * from printers where shop_id = ? order by name', [shop.id]),
@@ -241,7 +257,8 @@ export async function loadShopContext(): Promise<ShopContext> {
         id: m.id as string,
         name: m.name as string,
         unit: m.unit as 'g' | 'ml',
-        costPerUnit: Number(m.cost_per_unit),
+        costPerUnit: Number(m.avg_cost_per_unit ?? m.cost_per_unit),
+        costBasis: (m.basis as 'purchases' | 'estimate') ?? 'estimate',
         sellOverride: m.sell_override == null ? null : Number(m.sell_override),
         swatch: m.swatch as string,
       }),
@@ -1053,4 +1070,216 @@ export async function recordPayment(
     [jobId, actorId, `${input.kind} of ${amount.toFixed(2)} by ${input.method}${input.note ? ` — ${input.note}` : ''}`],
   )
   return id
+}
+
+/* ------------------------------------------------------------------ */
+/* Materials and what they actually cost                               */
+/* ------------------------------------------------------------------ */
+
+const MATERIAL_SELECT = `
+  select m.id, m.name, m.kind, m.swatch, m.unit, m.cost_per_unit, m.sell_override,
+         m.on_hand, m.reorder_at, m.archived,
+         c.avg_cost_per_unit, c.basis, c.purchases, c.purchased_qty,
+         c.purchased_spend, c.last_cost_per_unit, c.last_purchased_on
+  from materials m
+  join material_costs c on c.material_id = m.id
+  where m.shop_id = ?`
+
+interface MaterialSqlRow {
+  id: string
+  name: string
+  kind: string
+  swatch: string
+  unit: 'g' | 'ml'
+  cost_per_unit: number
+  sell_override: number | null
+  on_hand: number
+  reorder_at: number
+  archived: number
+  avg_cost_per_unit: number
+  basis: 'purchases' | 'estimate'
+  purchases: number
+  purchased_qty: number
+  purchased_spend: number
+  last_cost_per_unit: number | null
+  last_purchased_on: string | null
+}
+
+function toMaterialRow(m: MaterialSqlRow): MaterialRow {
+  return {
+    id: m.id,
+    name: m.name,
+    kind: m.kind,
+    swatch: m.swatch,
+    unit: m.unit,
+    costPerUnit: Number(m.cost_per_unit),
+    sellOverride: m.sell_override == null ? null : Number(m.sell_override),
+    onHand: Number(m.on_hand ?? 0),
+    reorderAt: Number(m.reorder_at ?? 0),
+    archived: Number(m.archived) === 1,
+    avgCostPerUnit: Number(m.avg_cost_per_unit),
+    costBasis: m.basis,
+    purchases: Number(m.purchases ?? 0),
+    purchasedQty: Number(m.purchased_qty ?? 0),
+    purchasedSpend: Number(m.purchased_spend ?? 0),
+    lastCostPerUnit: m.last_cost_per_unit == null ? null : Number(m.last_cost_per_unit),
+    lastPurchasedOn: m.last_purchased_on,
+  }
+}
+
+/** Every material, archived ones included — the Materials screen is where
+ *  you go to un-archive one, so hiding them there would be a trap. */
+export async function listMaterials(shopId: string): Promise<MaterialRow[]> {
+  const d = await db()
+  const rows = await d.select<MaterialSqlRow[]>(
+    `${MATERIAL_SELECT} order by m.archived, m.name collate nocase`,
+    [shopId],
+  )
+  return rows.map(toMaterialRow)
+}
+
+/**
+ * Create or update one material.
+ *
+ * on_hand is writable by hand on purpose. Guma does not watch machines, so
+ * it can never draw stock down the way a tool wired into the printers
+ * could — purchases push the figure up and nothing pushes it back down.
+ * A running total that only ever rises is a lie, so the shop has to be able
+ * to correct it after weighing a spool. The screen says as much.
+ */
+export async function saveMaterial(shopId: string, next: MaterialInput): Promise<MaterialRow> {
+  const d = await db()
+  const id = next.id ?? crypto.randomUUID()
+  const name = next.name.trim()
+  if (!name) throw new Error('A material needs a name.')
+  if (next.id) {
+    await d.execute(
+      `update materials set name = ?, kind = ?, swatch = ?, unit = ?, cost_per_unit = ?,
+              sell_override = ?, on_hand = ?, reorder_at = ?, archived = ?
+       where id = ? and shop_id = ?`,
+      [
+        name,
+        next.kind,
+        next.swatch,
+        next.unit,
+        next.costPerUnit,
+        next.sellOverride,
+        next.onHand,
+        next.reorderAt,
+        next.archived ? 1 : 0,
+        id,
+        shopId,
+      ],
+    )
+  } else {
+    await d.execute(
+      `insert into materials (id, shop_id, name, kind, swatch, unit, cost_per_unit,
+                              sell_override, on_hand, reorder_at, archived)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        shopId,
+        name,
+        next.kind,
+        next.swatch,
+        next.unit,
+        next.costPerUnit,
+        next.sellOverride,
+        next.onHand,
+        next.reorderAt,
+        next.archived ? 1 : 0,
+      ],
+    )
+  }
+  const rows = await d.select<MaterialSqlRow[]>(`${MATERIAL_SELECT} and m.id = ?`, [shopId, id])
+  return toMaterialRow(rows[0])
+}
+
+/**
+ * Log what a spool actually cost.
+ *
+ * Quantity is in the material's own unit — grams for filament, mL for
+ * resin — because that is the unit cost_per_unit is in and the unit the
+ * slicer reports. The form does the kilogram arithmetic; the database
+ * stores one unit, not two.
+ */
+export async function recordMaterialPurchase(
+  shopId: string,
+  materialId: string,
+  actorId: string,
+  input: MaterialPurchaseInput,
+): Promise<string> {
+  const qty = Number(input.qty)
+  const cost = Number(input.totalCost)
+  if (!Number.isFinite(qty) || qty <= 0) {
+    throw new Error('A purchase needs a quantity greater than zero.')
+  }
+  if (!Number.isFinite(cost) || cost < 0) {
+    throw new Error('A purchase needs a cost of zero or more.')
+  }
+  const id = crypto.randomUUID()
+  const d = await db()
+  await d.execute(
+    `insert into material_purchases
+       (id, shop_id, material_id, purchased_on, qty, total_cost, supplier, note, recorded_by)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, shopId, materialId, input.purchasedOn, qty, cost, input.supplier, input.note, actorId],
+  )
+  return id
+}
+
+export async function listMaterialPurchases(
+  shopId: string,
+  materialId: string,
+): Promise<MaterialPurchaseRow[]> {
+  const d = await db()
+  const rows = await d.select<
+    {
+      id: string
+      material_id: string
+      purchased_on: string
+      qty: number
+      total_cost: number
+      supplier: string | null
+      note: string | null
+      recorded_by_name: string | null
+    }[]
+  >(
+    `select p.id, p.material_id, p.purchased_on, p.qty, p.total_cost, p.supplier, p.note,
+            pr.full_name as recorded_by_name
+     from material_purchases p
+     left join profiles pr on pr.id = p.recorded_by
+     where p.shop_id = ? and p.material_id = ?
+     order by p.purchased_on desc, p.created_at desc`,
+    [shopId, materialId],
+  )
+  return rows.map((r) => ({
+    id: r.id,
+    materialId: r.material_id,
+    purchasedOn: r.purchased_on,
+    qty: Number(r.qty),
+    totalCost: Number(r.total_cost),
+    costPerUnit: Number(r.qty) > 0 ? Number(r.total_cost) / Number(r.qty) : 0,
+    supplier: r.supplier,
+    note: r.note,
+    recordedBy: r.recorded_by_name,
+  }))
+}
+
+/**
+ * Delete a purchase. The stock trigger reverses its quantity.
+ *
+ * Deliberately unlike payments, which are append-only and corrected with a
+ * refund. A payment is a client-facing financial record where the audit
+ * trail is the point. A purchase log is the shop's own cost book, and a
+ * mistyped spool price silently skews the weighted average behind every
+ * future quote — leaving that in place to preserve a trail nobody will ever
+ * read is the worse trade.
+ */
+export async function deleteMaterialPurchase(shopId: string, purchaseId: string): Promise<void> {
+  const d = await db()
+  await d.execute('delete from material_purchases where id = ? and shop_id = ?', [
+    purchaseId,
+    shopId,
+  ])
 }

@@ -39,6 +39,11 @@ vi.mock('./data.local', () => ({
   listClients: vi.fn(),
   updateClientRecord: vi.fn(),
   recordPayment: vi.fn(),
+  listMaterials: vi.fn(),
+  saveMaterial: vi.fn(),
+  recordMaterialPurchase: vi.fn(),
+  listMaterialPurchases: vi.fn(),
+  deleteMaterialPurchase: vi.fn(),
   saveQuote: vi.fn(),
   loadQuoteForPrint: vi.fn(),
 }))
@@ -61,6 +66,11 @@ vi.mock('./data.supabase', () => ({
   listClients: vi.fn(),
   updateClientRecord: vi.fn(),
   recordPayment: vi.fn(),
+  listMaterials: vi.fn(),
+  saveMaterial: vi.fn(),
+  recordMaterialPurchase: vi.fn(),
+  listMaterialPurchases: vi.fn(),
+  deleteMaterialPurchase: vi.fn(),
   saveQuote: vi.fn(),
   loadQuoteForPrint: vi.fn(),
 }))

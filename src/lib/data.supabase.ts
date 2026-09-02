@@ -46,6 +46,10 @@ export type {
   ClientEditInput,
   PaymentRow,
   PaymentInput,
+  MaterialRow,
+  MaterialInput,
+  MaterialPurchaseRow,
+  MaterialPurchaseInput,
   QuoteStatus,
 } from './data.types'
 import type {
@@ -65,6 +69,10 @@ import type {
   ClientEditInput,
   PaymentRow,
   PaymentInput,
+  MaterialRow,
+  MaterialInput,
+  MaterialPurchaseRow,
+  MaterialPurchaseInput,
   QuoteStatus,
 } from './data.types'
 
@@ -106,9 +114,11 @@ export async function loadShopContext(): Promise<ShopContext> {
       .order('effective_from', { ascending: false })
       .limit(1)
       .single(),
+    // material_costs embeds so a quote is priced against what the shop
+    // actually paid. See data.local.ts's loadShopContext for the reasoning.
     supabase
       .from('materials')
-      .select('*')
+      .select('*, material_costs ( avg_cost_per_unit, basis )')
       .eq('shop_id', profile.shop_id)
       .eq('archived', false)
       .order('name'),
@@ -128,7 +138,8 @@ export async function loadShopContext(): Promise<ShopContext> {
         id: m.id,
         name: m.name,
         unit: m.unit,
-        costPerUnit: Number(m.cost_per_unit),
+        costPerUnit: Number(m.material_costs?.[0]?.avg_cost_per_unit ?? m.cost_per_unit),
+        costBasis: (m.material_costs?.[0]?.basis as 'purchases' | 'estimate') ?? 'estimate',
         sellOverride: m.sell_override == null ? null : Number(m.sell_override),
         swatch: m.swatch,
       }),
@@ -803,4 +814,140 @@ export async function recordPayment(
   })
   if (evErr) throw evErr
   return data.id as string
+}
+
+/* ------------------------------------------------------------------ */
+/* Materials and what they actually cost                               */
+/* ------------------------------------------------------------------ */
+
+const MATERIAL_SELECT = `id, name, kind, swatch, unit, cost_per_unit, sell_override,
+   on_hand, reorder_at, archived,
+   material_costs ( avg_cost_per_unit, basis, purchases, purchased_qty,
+                    purchased_spend, last_cost_per_unit, last_purchased_on )`
+
+function toMaterialRow(m: any): MaterialRow {
+  const c = m.material_costs?.[0] ?? {}
+  return {
+    id: m.id,
+    name: m.name,
+    kind: m.kind,
+    swatch: m.swatch,
+    unit: m.unit,
+    costPerUnit: Number(m.cost_per_unit),
+    sellOverride: m.sell_override == null ? null : Number(m.sell_override),
+    onHand: Number(m.on_hand ?? 0),
+    reorderAt: Number(m.reorder_at ?? 0),
+    archived: m.archived === true,
+    avgCostPerUnit: Number(c.avg_cost_per_unit ?? m.cost_per_unit),
+    costBasis: (c.basis as 'purchases' | 'estimate') ?? 'estimate',
+    purchases: Number(c.purchases ?? 0),
+    purchasedQty: Number(c.purchased_qty ?? 0),
+    purchasedSpend: Number(c.purchased_spend ?? 0),
+    lastCostPerUnit: c.last_cost_per_unit == null ? null : Number(c.last_cost_per_unit),
+    lastPurchasedOn: c.last_purchased_on ?? null,
+  }
+}
+
+/** See data.local.ts's listMaterials — archived rows included on purpose. */
+export async function listMaterials(shopId: string): Promise<MaterialRow[]> {
+  const { data, error } = await supabase
+    .from('materials')
+    .select(MATERIAL_SELECT)
+    .eq('shop_id', shopId)
+    .order('archived')
+    .order('name')
+  if (error) throw error
+  return ((data ?? []) as any[]).map(toMaterialRow)
+}
+
+/** See data.local.ts's saveMaterial, including why on_hand is writable. */
+export async function saveMaterial(shopId: string, next: MaterialInput): Promise<MaterialRow> {
+  const name = next.name.trim()
+  if (!name) throw new Error('A material needs a name.')
+  const row = {
+    shop_id: shopId,
+    name,
+    kind: next.kind,
+    swatch: next.swatch,
+    unit: next.unit,
+    cost_per_unit: next.costPerUnit,
+    sell_override: next.sellOverride,
+    on_hand: next.onHand,
+    reorder_at: next.reorderAt,
+    archived: next.archived === true,
+  }
+  const query = next.id
+    ? supabase.from('materials').update(row).eq('id', next.id).eq('shop_id', shopId)
+    : supabase.from('materials').insert(row)
+  const { data, error } = await query.select(MATERIAL_SELECT).single()
+  if (error) throw error
+  return toMaterialRow(data)
+}
+
+/** See data.local.ts's recordMaterialPurchase. */
+export async function recordMaterialPurchase(
+  shopId: string,
+  materialId: string,
+  actorId: string,
+  input: MaterialPurchaseInput,
+): Promise<string> {
+  const qty = Number(input.qty)
+  const cost = Number(input.totalCost)
+  if (!Number.isFinite(qty) || qty <= 0) {
+    throw new Error('A purchase needs a quantity greater than zero.')
+  }
+  if (!Number.isFinite(cost) || cost < 0) {
+    throw new Error('A purchase needs a cost of zero or more.')
+  }
+  const { data, error } = await supabase
+    .from('material_purchases')
+    .insert({
+      shop_id: shopId,
+      material_id: materialId,
+      purchased_on: input.purchasedOn,
+      qty,
+      total_cost: cost,
+      supplier: input.supplier,
+      note: input.note,
+      recorded_by: actorId,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  return data.id as string
+}
+
+export async function listMaterialPurchases(
+  shopId: string,
+  materialId: string,
+): Promise<MaterialPurchaseRow[]> {
+  const { data, error } = await supabase
+    .from('material_purchases')
+    .select('id, material_id, purchased_on, qty, total_cost, supplier, note, profiles ( full_name )')
+    .eq('shop_id', shopId)
+    .eq('material_id', materialId)
+    .order('purchased_on', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as any[]).map((r) => ({
+    id: r.id,
+    materialId: r.material_id,
+    purchasedOn: r.purchased_on,
+    qty: Number(r.qty),
+    totalCost: Number(r.total_cost),
+    costPerUnit: Number(r.qty) > 0 ? Number(r.total_cost) / Number(r.qty) : 0,
+    supplier: r.supplier ?? null,
+    note: r.note ?? null,
+    recordedBy: r.profiles?.full_name ?? null,
+  }))
+}
+
+/** See data.local.ts's deleteMaterialPurchase for why this one deletes
+ *  where payments refund. */
+export async function deleteMaterialPurchase(shopId: string, purchaseId: string): Promise<void> {
+  const { error } = await supabase
+    .from('material_purchases')
+    .delete()
+    .eq('id', purchaseId)
+    .eq('shop_id', shopId)
+  if (error) throw error
 }

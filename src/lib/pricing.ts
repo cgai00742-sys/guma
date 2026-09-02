@@ -53,8 +53,14 @@ export interface MaterialRef {
   id: string
   name: string
   unit: 'g' | 'ml'
-  /** what the shop pays, per gram or per mL */
+  /** What the shop pays, per gram or per mL. Once purchases have been
+   *  logged this is the weighted average of what was actually paid; until
+   *  then it is the figure typed at setup. `costBasis` says which. */
   costPerUnit: number
+  /** 'purchases' = measured from the purchase log, 'estimate' = typed by
+   *  hand and never checked against a receipt. Screens that show a margin
+   *  should say which one they are standing on. */
+  costBasis?: 'purchases' | 'estimate'
   /** pins this material away from the shop-wide multiplier when set */
   sellOverride: number | null
   swatch: string
