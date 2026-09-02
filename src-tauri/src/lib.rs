@@ -35,6 +35,12 @@ pub fn run() {
       sql: include_str!("../migrations/0005_material_purchases.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 6,
+      description: "build runs, work log, and what a project actually cost",
+      sql: include_str!("../migrations/0006_actuals.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

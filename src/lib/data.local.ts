@@ -24,7 +24,7 @@
  */
 import Database from '@tauri-apps/plugin-sql'
 import type { MaterialRef, PrinterRef } from './pricing'
-import { NeedsSetup, asClientKind } from './data.types'
+import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody } from './data.types'
 import type {
   Shop,
   RateCardRow,
@@ -52,6 +52,12 @@ import type {
   MaterialInput,
   MaterialPurchaseRow,
   MaterialPurchaseInput,
+  ProjectActuals,
+  QuoteInputsRow,
+  PrintRunRow,
+  PrintRunInput,
+  WorkEntryRow,
+  WorkEntryInput,
   QuoteStatus,
 } from './data.types'
 
@@ -93,6 +99,12 @@ export type {
   MaterialInput,
   MaterialPurchaseRow,
   MaterialPurchaseInput,
+  ProjectActuals,
+  QuoteInputsRow,
+  PrintRunRow,
+  PrintRunInput,
+  WorkEntryRow,
+  WorkEntryInput,
   QuoteStatus,
 } from './data.types'
 
@@ -457,8 +469,27 @@ const JOB_LIST_SQL = `
          (select max(at) from job_events e where e.job_id = j.id) as last_activity_at,
          coalesce((select minimum_order from rate_cards
                    where shop_id = j.shop_id
-                   order by effective_from desc limit 1), 0) as minimum_order
+                   order by effective_from desc limit 1), 0) as minimum_order,
+         -- What has actually been spent, on the same terms actuals.ts uses:
+         -- power when wattage and $/kWh are both on file, the machine rate
+         -- as the conservative fallback when they are not.
+         coalesce(a.material_cost, 0)
+           + coalesce(case when a.power_cost > 0 then a.power_cost else a.machine_cost end, 0)
+           + coalesce(a.wear_cost, 0)
+           + coalesce(a.design_hours, 0) * coalesce(rc.design_hourly, 0)
+           + (coalesce(a.finishing_hours, 0) + coalesce(a.admin_hours, 0))
+             * coalesce(rc.finishing_hourly, 0) as actual_cost,
+         coalesce(a.runs, 0) as actual_runs,
+         coalesce(a.design_hours, 0) + coalesce(a.finishing_hours, 0)
+           + coalesce(a.admin_hours, 0) as actual_hours,
+         (coalesce(a.runs, 0) > 0
+          or coalesce(a.design_hours, 0) + coalesce(a.finishing_hours, 0)
+             + coalesce(a.admin_hours, 0) > 0) as has_actuals
   from jobs j
+  left join job_actuals a on a.job_id = j.id
+  left join rate_cards rc on rc.id = (select id from rate_cards
+                                       where shop_id = j.shop_id
+                                       order by effective_from desc limit 1)
   join clients c on c.id = j.client_id
   left join quotes q on q.job_id = j.id
   left join job_money m on m.job_id = j.id
@@ -495,6 +526,10 @@ interface JobListSqlRow {
   balance_owed: number
   last_activity_at: string | null
   minimum_order: number
+  actual_cost: number
+  has_actuals: number
+  actual_runs: number
+  actual_hours: number
 }
 
 function factsFrom(r: JobListSqlRow): ProjectFacts {
@@ -522,6 +557,10 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     balanceOwed: Number(r.balance_owed ?? 0),
     lastActivityAt: r.last_activity_at,
     minimumOrder: Number(r.minimum_order ?? 0),
+    actualCost: Number(r.actual_cost ?? 0),
+    hasActuals: Number(r.has_actuals) === 1,
+    actualRuns: Number(r.actual_runs ?? 0),
+    actualHours: Number(r.actual_hours ?? 0),
   }
 }
 
@@ -767,6 +806,61 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
 
   const gatesByPhase = (await loadGateAnswers(d, [jobId]))[jobId] ?? {}
 
+  const actualsRow = await d.select<Record<string, number>[]>(
+    'select * from job_actuals where job_id = ?',
+    [jobId],
+  )
+  const actuals = toActuals(actualsRow[0])
+
+  const quoteRow = await d.select<Record<string, unknown>[]>(
+    `select design_billing, design_qty, revisions_incl, quantity, material_id, printer_id,
+            units_per_part, print_hrs_part, finishing_hrs, rush, flat_each, discount_pct,
+            rates_snapshot
+       from quotes where job_id = ? order by version desc limit 1`,
+    [jobId],
+  )
+
+  const runs = await d.select<
+    {
+      id: string
+      printer_id: string | null
+      printer_name: string | null
+      material_id: string | null
+      material_name: string | null
+      unit: 'g' | 'ml' | null
+      units_used: number | null
+      hours: number | null
+      outcome: PrintRunRow['outcome']
+      failure_reason: string | null
+      note: string | null
+      started_at: string | null
+      ended_at: string | null
+      operator: string | null
+    }[]
+  >(
+    `select r.id, r.printer_id, p.name as printer_name, r.material_id, m.name as material_name,
+            m.unit, r.units_used, r.hours, r.outcome, r.failure_reason, r.note,
+            r.started_at, r.ended_at, pr.full_name as operator
+       from print_runs r
+       left join printers p on p.id = r.printer_id
+       left join materials m on m.id = r.material_id
+       left join profiles pr on pr.id = r.operator_id
+      where r.job_id = ?
+      order by coalesce(r.started_at, r.id) desc`,
+    [jobId],
+  )
+
+  const work = await d.select<
+    { id: string; kind: WorkEntryRow['kind']; hours: number; worked_on: string; note: string | null; actor: string | null }[]
+  >(
+    `select w.id, w.kind, w.hours, w.worked_on, w.note, p.full_name as actor
+       from work_log w
+       left join profiles p on p.id = w.actor_id
+      where w.job_id = ?
+      order by w.worked_on desc, w.created_at desc`,
+    [jobId],
+  )
+
   const payments = await d.select<
     {
       id: string
@@ -829,6 +923,36 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         ? { id: r.quote_id, status: r.quote_status, total: r.total == null ? null : Number(r.total) }
         : null,
     facts: factsFrom(r),
+    actuals,
+    quoteInputs: quoteRow[0] ? toQuoteInputs(quoteRow[0]) : null,
+    runs: runs.map(
+      (x): PrintRunRow => ({
+        id: x.id,
+        printerId: x.printer_id,
+        printerName: x.printer_name,
+        materialId: x.material_id,
+        materialName: x.material_name,
+        unit: x.unit,
+        unitsUsed: x.units_used == null ? null : Number(x.units_used),
+        hours: x.hours == null ? null : Number(x.hours),
+        outcome: x.outcome,
+        failureReason: x.failure_reason,
+        note: x.note,
+        startedAt: x.started_at,
+        endedAt: x.ended_at,
+        operator: x.operator,
+      }),
+    ),
+    work: work.map(
+      (x): WorkEntryRow => ({
+        id: x.id,
+        kind: x.kind,
+        hours: Number(x.hours),
+        workedOn: x.worked_on,
+        note: x.note,
+        actor: x.actor,
+      }),
+    ),
     gates: gatesByPhase,
     payments: payments.map(
       (p): PaymentRow => ({
@@ -1282,4 +1406,136 @@ export async function deleteMaterialPurchase(shopId: string, purchaseId: string)
     purchaseId,
     shopId,
   ])
+}
+
+/* ------------------------------------------------------------------ */
+/* Build runs and work hours                                           */
+/* ------------------------------------------------------------------ */
+
+function toActuals(a: Record<string, number> | undefined): ProjectActuals {
+  const n = (k: string) => Number(a?.[k] ?? 0)
+  return {
+    materialUnits: n('material_units'),
+    failedUnits: n('failed_units'),
+    materialCost: n('material_cost'),
+    machineHours: n('machine_hours'),
+    machineCost: n('machine_cost'),
+    wearCost: n('wear_cost'),
+    powerCost: n('power_cost'),
+    runs: n('runs'),
+    failedRuns: n('failed_runs'),
+    designHours: n('design_hours'),
+    finishingHours: n('finishing_hours'),
+    adminHours: n('admin_hours'),
+  }
+}
+
+function toQuoteInputs(q: Record<string, unknown>): QuoteInputsRow {
+  return {
+    designBilling: q.design_billing as 'hourly' | 'flat' | 'none',
+    designQty: Number(q.design_qty ?? 0),
+    revisionsIncl: Number(q.revisions_incl ?? 0),
+    quantity: Number(q.quantity ?? 1),
+    materialId: (q.material_id as string | null) ?? null,
+    printerId: (q.printer_id as string | null) ?? null,
+    unitsPerPart: Number(q.units_per_part ?? 0),
+    printHrsPart: Number(q.print_hrs_part ?? 0),
+    finishingHrs: Number(q.finishing_hrs ?? 0),
+    rush: Number(q.rush) === 1,
+    flatEach: Number(q.flat_each ?? 0),
+    discountPct: Number(q.discount_pct ?? 0),
+    // Stored as a JSON string here, unlike Postgres's jsonb. Parsing it at
+    // the boundary is the same fix as loadQuoteForPrint's -- a raw string
+    // reaching a consumer that expects an object is how the blank PDF
+    // view happened.
+    ratesSnapshot:
+      typeof q.rates_snapshot === 'string' && q.rates_snapshot
+        ? (JSON.parse(q.rates_snapshot) as unknown)
+        : null,
+  }
+}
+
+/**
+ * Record a build run.
+ *
+ * The insert trigger takes its material off the shelf, whatever the
+ * outcome. A failed plate consumed the same grams as a successful one, and
+ * a shop that does not count its failures believes its margin is better
+ * than it is -- which is the whole reason this is worth typing in.
+ *
+ * A matching activity-log entry goes on the project, so the story of the
+ * build and its cost stay in one place rather than two.
+ */
+export async function recordPrintRun(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: PrintRunInput,
+): Promise<string> {
+  const { hours, unitsUsed } = validateRun(input)
+  const id = crypto.randomUUID()
+  const d = await db()
+  await d.execute(
+    `insert into print_runs (id, shop_id, job_id, printer_id, material_id, units_used, hours,
+                             outcome, failure_reason, note, started_at, operator_id)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      shopId,
+      jobId,
+      input.printerId,
+      input.materialId,
+      unitsUsed,
+      hours,
+      input.outcome,
+      input.failureReason,
+      input.note,
+      input.startedAt,
+      actorId,
+    ],
+  )
+  await d.execute(
+    `insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'run', ?)`,
+    [jobId, actorId, runEventBody(input)],
+  )
+  return id
+}
+
+/** Delete a run. The trigger puts its material back on the shelf. Same
+ *  reasoning as deleting a material purchase: this is the shop's own cost
+ *  book, and a mistyped run skews every figure downstream of it. */
+export async function deletePrintRun(shopId: string, runId: string): Promise<void> {
+  const d = await db()
+  await d.execute('delete from print_runs where id = ? and shop_id = ?', [runId, shopId])
+}
+
+/**
+ * Log hours against a project.
+ *
+ * Not a timer and not a timesheet. A shop owner will write "3 hours,
+ * modelling the bracket" at the end of a day and will never run a
+ * stopwatch, so this asks for exactly that. Anything more elaborate does
+ * not get filled in, and a log nobody fills in is worse than no log at all
+ * because it looks like evidence.
+ */
+export async function logWork(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: WorkEntryInput,
+): Promise<string> {
+  const hours = validateHours(input.hours)
+  const id = crypto.randomUUID()
+  const d = await db()
+  await d.execute(
+    `insert into work_log (id, shop_id, job_id, kind, hours, worked_on, note, actor_id)
+     values (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, shopId, jobId, input.kind, hours, input.workedOn, input.note, actorId],
+  )
+  return id
+}
+
+export async function deleteWorkEntry(shopId: string, entryId: string): Promise<void> {
+  const d = await db()
+  await d.execute('delete from work_log where id = ? and shop_id = ?', [entryId, shopId])
 }

@@ -11,7 +11,9 @@
  */
 import { supabase } from './supabase'
 import type { MaterialRef, PrinterRef } from './pricing'
-import { NeedsSetup, asClientKind, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type Profile } from './data.types'
+// validateRun/validateHours/runEventBody live in data.types.ts so both
+// backends share one definition and cannot drift on what a valid run is.
+import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type Profile } from './data.types'
 export {
   NeedsSetup,
   toRateSet,
@@ -50,6 +52,12 @@ export type {
   MaterialInput,
   MaterialPurchaseRow,
   MaterialPurchaseInput,
+  ProjectActuals,
+  QuoteInputsRow,
+  PrintRunRow,
+  PrintRunInput,
+  WorkEntryRow,
+  WorkEntryInput,
   QuoteStatus,
 } from './data.types'
 import type {
@@ -73,6 +81,12 @@ import type {
   MaterialInput,
   MaterialPurchaseRow,
   MaterialPurchaseInput,
+  ProjectActuals,
+  QuoteInputsRow,
+  PrintRunRow,
+  PrintRunInput,
+  WorkEntryRow,
+  WorkEntryInput,
   QuoteStatus,
 } from './data.types'
 
@@ -319,12 +333,12 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
     .order('ref', { ascending: false })
   if (error) throw error
   const rows = (data ?? []) as any[]
-  const [gates, minimumOrder] = await Promise.all([
+  const [gates, rates] = await Promise.all([
     loadGateAnswers(rows.map((r) => r.id)),
-    currentMinimumOrder(shopId),
+    currentRates(shopId),
   ])
   return rows.map((r) => ({
-    ...toJobListRow(r, minimumOrder),
+    ...toJobListRow(r, rates.minimumOrder, rates),
     gateAnswers: gates[r.id]?.[r.phase] ?? {},
   }))
 }
@@ -333,11 +347,52 @@ const JOB_SELECT = `id, ref, title, brief, created_at, updated_at, phase, priori
    asset_origin, poc, needed_by, window_from, window_locked, at_risk,
    delivery_on, delivery_how,
    clients!inner ( id, name, kind, contact, email, phone ),
-   quotes ( id, status, total ),
+   quotes ( id, status, total, design_billing, design_qty, revisions_incl, quantity,
+            material_id, printer_id, units_per_part, print_hrs_part, finishing_hrs,
+            rush, flat_each, discount_pct, rates_snapshot ),
    job_money ( deposit_due, deposit_owed, balance_owed ),
+   job_actuals ( material_cost, machine_cost, power_cost, wear_cost, runs,
+                 design_hours, finishing_hours, admin_hours, material_units,
+                 failed_units, machine_hours, failed_runs ),
    job_events ( at )`
 
-function factsFrom(r: any, minimumOrder: number): ProjectFacts {
+/** The job_actuals embed, folded to the shared shape. */
+function actualsFrom(r: any): ProjectActuals {
+  const a = r.job_actuals?.[0] ?? {}
+  return {
+    materialUnits: Number(a.material_units ?? 0),
+    failedUnits: Number(a.failed_units ?? 0),
+    materialCost: Number(a.material_cost ?? 0),
+    machineHours: Number(a.machine_hours ?? 0),
+    machineCost: Number(a.machine_cost ?? 0),
+    wearCost: Number(a.wear_cost ?? 0),
+    powerCost: Number(a.power_cost ?? 0),
+    runs: Number(a.runs ?? 0),
+    failedRuns: Number(a.failed_runs ?? 0),
+    designHours: Number(a.design_hours ?? 0),
+    finishingHours: Number(a.finishing_hours ?? 0),
+    adminHours: Number(a.admin_hours ?? 0),
+  }
+}
+
+/** Same arithmetic as data.local.ts's actual_cost column, in TypeScript
+ *  because PostgREST cannot express it in an embed. */
+function actualCostOf(a: ProjectActuals, designHourly: number, finishingHourly: number): number {
+  return (
+    a.materialCost +
+    (a.powerCost > 0 ? a.powerCost : a.machineCost) +
+    a.wearCost +
+    a.designHours * designHourly +
+    (a.finishingHours + a.adminHours) * finishingHourly
+  )
+}
+
+function factsFrom(
+  r: any,
+  minimumOrder: number,
+  labour: { designHourly: number; finishingHourly: number } = { designHourly: 0, finishingHourly: 0 },
+): ProjectFacts {
+  const acts = actualsFrom(r)
   const quote = r.quotes?.[0] ?? null
   // See data.local.ts's factsFrom for why poc falls back to the client's
   // named contact.
@@ -364,10 +419,19 @@ function factsFrom(r: any, minimumOrder: number): ProjectFacts {
     balanceOwed: Number(money?.balance_owed ?? 0),
     lastActivityAt: events.length ? events.reduce((a, b) => (a > b ? a : b)) : null,
     minimumOrder,
+    actualCost: actualCostOf(acts, labour.designHourly, labour.finishingHourly),
+    hasActuals:
+      acts.runs > 0 || acts.designHours + acts.finishingHours + acts.adminHours > 0,
+    actualRuns: acts.runs,
+    actualHours: acts.designHours + acts.finishingHours + acts.adminHours,
   }
 }
 
-function toJobListRow(r: any, minimumOrder = 0): Omit<JobListRow, 'gateAnswers'> {
+function toJobListRow(
+  r: any,
+  minimumOrder = 0,
+  labour: { designHourly: number; finishingHourly: number } = { designHourly: 0, finishingHourly: 0 },
+): Omit<JobListRow, 'gateAnswers'> {
   const quote = r.quotes?.[0] ?? null
   return {
     jobId: r.id,
@@ -382,7 +446,7 @@ function toJobListRow(r: any, minimumOrder = 0): Omit<JobListRow, 'gateAnswers'>
     quoteId: quote?.id ?? null,
     quoteStatus: quote?.status ?? null,
     total: quote?.total == null ? null : Number(quote.total),
-    facts: factsFrom(r, minimumOrder),
+    facts: factsFrom(r, minimumOrder, labour),
   }
 }
 
@@ -559,15 +623,22 @@ export async function loadQuoteForPrint(quoteId: string) {
 
 /** The live rate card's minimum_order, for the under-minimum flag. Its own
  *  query because it is one number per shop, not per project. */
-async function currentMinimumOrder(shopId: string): Promise<number> {
+async function currentRates(
+  shopId: string,
+): Promise<{ minimumOrder: number; designHourly: number; finishingHourly: number }> {
   const { data, error } = await supabase
     .from('rate_cards')
-    .select('minimum_order')
+    .select('minimum_order, design_hourly, finishing_hourly')
     .eq('shop_id', shopId)
     .order('effective_from', { ascending: false })
     .limit(1)
   if (error) throw error
-  return Number(data?.[0]?.minimum_order ?? 0)
+  const r = data?.[0]
+  return {
+    minimumOrder: Number(r?.minimum_order ?? 0),
+    designHourly: Number(r?.design_hourly ?? 0),
+    finishingHourly: Number(r?.finishing_hourly ?? 0),
+  }
 }
 
 /** See data.local.ts's loadProjectDetail — same contract, Postgres-side. */
@@ -582,9 +653,9 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   const r = data as any
   if (!r) throw new Error('That project no longer exists.')
 
-  const [gates, minimumOrder, events, payments] = await Promise.all([
+  const [gates, rates, events, payments, runs, work] = await Promise.all([
     loadGateAnswers([jobId]),
-    currentMinimumOrder(shopId),
+    currentRates(shopId),
     supabase
       .from('job_events')
       .select('id, kind, body, from_phase, to_phase, at, profiles ( full_name )')
@@ -595,9 +666,24 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .select('id, kind, amount, method, received_on, note, profiles ( full_name )')
       .eq('job_id', jobId)
       .order('received_on', { ascending: false }),
+    supabase
+      .from('print_runs')
+      .select(
+        `id, units_used, hours, outcome, failure_reason, note, started_at, ended_at,
+         printers ( id, name ), materials ( id, name, unit ), profiles ( full_name )`,
+      )
+      .eq('job_id', jobId)
+      .order('started_at', { ascending: false }),
+    supabase
+      .from('work_log')
+      .select('id, kind, hours, worked_on, note, profiles ( full_name )')
+      .eq('job_id', jobId)
+      .order('worked_on', { ascending: false }),
   ])
   if (events.error) throw events.error
   if (payments.error) throw payments.error
+  if (runs.error) throw runs.error
+  if (work.error) throw work.error
 
   const quote = r.quotes?.[0] ?? null
   return {
@@ -619,7 +705,37 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       phone: r.clients.phone ?? null,
     },
     quote: quote ? { id: quote.id, status: quote.status, total: quote.total ?? null } : null,
-    facts: factsFrom(r, minimumOrder),
+    facts: factsFrom(r, rates.minimumOrder, rates),
+    actuals: actualsFrom(r),
+    quoteInputs: quote ? quoteInputsFrom(quote) : null,
+    runs: ((runs.data ?? []) as any[]).map(
+      (x): PrintRunRow => ({
+        id: x.id,
+        printerId: x.printers?.id ?? null,
+        printerName: x.printers?.name ?? null,
+        materialId: x.materials?.id ?? null,
+        materialName: x.materials?.name ?? null,
+        unit: x.materials?.unit ?? null,
+        unitsUsed: x.units_used == null ? null : Number(x.units_used),
+        hours: x.hours == null ? null : Number(x.hours),
+        outcome: x.outcome ?? null,
+        failureReason: x.failure_reason ?? null,
+        note: x.note ?? null,
+        startedAt: x.started_at ?? null,
+        endedAt: x.ended_at ?? null,
+        operator: x.profiles?.full_name ?? null,
+      }),
+    ),
+    work: ((work.data ?? []) as any[]).map(
+      (x): WorkEntryRow => ({
+        id: x.id,
+        kind: x.kind,
+        hours: Number(x.hours),
+        workedOn: x.worked_on,
+        note: x.note ?? null,
+        actor: x.profiles?.full_name ?? null,
+      }),
+    ),
     gates: gates[jobId] ?? {},
     payments: ((payments.data ?? []) as any[]).map(
       (p): PaymentRow => ({
@@ -949,5 +1065,101 @@ export async function deleteMaterialPurchase(shopId: string, purchaseId: string)
     .delete()
     .eq('id', purchaseId)
     .eq('shop_id', shopId)
+  if (error) throw error
+}
+
+/** The quote row's pricing inputs, in the shape the project page needs to
+ *  reprice it from its own frozen snapshot. */
+function quoteInputsFrom(q: any): QuoteInputsRow {
+  return {
+    designBilling: q.design_billing,
+    designQty: Number(q.design_qty ?? 0),
+    revisionsIncl: Number(q.revisions_incl ?? 0),
+    quantity: Number(q.quantity ?? 1),
+    materialId: q.material_id ?? null,
+    printerId: q.printer_id ?? null,
+    unitsPerPart: Number(q.units_per_part ?? 0),
+    printHrsPart: Number(q.print_hrs_part ?? 0),
+    finishingHrs: Number(q.finishing_hrs ?? 0),
+    rush: q.rush === true,
+    flatEach: Number(q.flat_each ?? 0),
+    discountPct: Number(q.discount_pct ?? 0),
+    // jsonb comes back parsed already, unlike SQLite's TEXT column.
+    ratesSnapshot: q.rates_snapshot ?? null,
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Build runs and work hours                                           */
+/* ------------------------------------------------------------------ */
+
+/** See data.local.ts's recordPrintRun. */
+export async function recordPrintRun(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: PrintRunInput,
+): Promise<string> {
+  const { hours, unitsUsed } = validateRun(input)
+  const { data, error } = await supabase
+    .from('print_runs')
+    .insert({
+      shop_id: shopId,
+      job_id: jobId,
+      printer_id: input.printerId,
+      material_id: input.materialId,
+      units_used: unitsUsed,
+      hours,
+      outcome: input.outcome,
+      failure_reason: input.failureReason,
+      note: input.note,
+      started_at: input.startedAt,
+      operator_id: actorId,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: jobId,
+    actor_id: actorId,
+    kind: 'run',
+    body: runEventBody(input),
+  })
+  if (evErr) throw evErr
+  return data.id as string
+}
+
+export async function deletePrintRun(shopId: string, runId: string): Promise<void> {
+  const { error } = await supabase.from('print_runs').delete().eq('id', runId).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+/** See data.local.ts's logWork. */
+export async function logWork(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: WorkEntryInput,
+): Promise<string> {
+  const hours = validateHours(input.hours)
+  const { data, error } = await supabase
+    .from('work_log')
+    .insert({
+      shop_id: shopId,
+      job_id: jobId,
+      kind: input.kind,
+      hours,
+      worked_on: input.workedOn,
+      note: input.note,
+      actor_id: actorId,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  return data.id as string
+}
+
+export async function deleteWorkEntry(shopId: string, entryId: string): Promise<void> {
+  const { error } = await supabase.from('work_log').delete().eq('id', entryId).eq('shop_id', shopId)
   if (error) throw error
 }

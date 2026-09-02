@@ -35,8 +35,14 @@ import {
   PAYMENT_KIND_LABEL,
   PAYMENT_METHODS,
   PAYMENT_METHOD_LABEL,
+  WORK_KINDS,
+  WORK_KIND_LABEL,
   addProjectNote,
+  deletePrintRun,
+  deleteWorkEntry,
   loadProjectDetail,
+  logWork,
+  recordPrintRun,
   recordPayment,
   setGateItem,
   updateJobPhase,
@@ -44,8 +50,11 @@ import {
   type PaymentInput,
   type PaymentKind,
   type PaymentMethod,
+  type PrintRunInput,
   type ProjectDetail,
   type ProjectFieldsInput,
+  type RunOutcome,
+  type WorkKind,
   type JobPhase,
   type JobPriority,
   toRateSet,
@@ -60,7 +69,14 @@ import {
   type Flag,
   type ResolvedGateItem,
 } from '../lib/gates'
-import { makeMoney } from '../lib/pricing'
+import {
+  makeMoney,
+  priceQuote,
+  ratesFromSnapshot,
+  type PricedQuote,
+  type RatesSnapshot,
+} from '../lib/pricing'
+import { compareToQuote, type Comparison } from '../lib/actuals'
 
 const DELIVERY_METHODS = [
   'Collected in person',
@@ -120,6 +136,12 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       </div>
     )
   }
+
+  // The quote is repriced from its OWN frozen snapshot, never from today's
+  // rates — the same rule the printable quote follows. Comparing a job to a
+  // rate card that has moved since would produce a variance that is really
+  // just a price change.
+  const comparison = buildComparison(detail, ctx)
 
   const shown = viewPhase ?? detail.phase
   const facts = detail.facts
@@ -530,6 +552,53 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         </div>
       </section>
 
+      {/* ---- what it actually took ---- */}
+      <section className="sec">
+        <div className="sechead">
+          <h4>What it actually took</h4>
+          <span
+            className={`secstat ${
+              comparison === null
+                ? ''
+                : !comparison.hasActuals
+                  ? ''
+                  : comparison.actualMargin !== null && comparison.actualMargin < 0
+                    ? 'crit'
+                    : comparison.actualCost !== null && comparison.actualCost > comparison.quotedCost
+                      ? 'warn'
+                      : 'ok'
+            }`}
+          >
+            {comparison === null
+              ? 'needs a quote'
+              : !comparison.hasActuals
+                ? 'nothing recorded yet'
+                : comparison.partial
+                  ? 'partly recorded'
+                  : `real margin ${money(comparison.actualMargin ?? 0)}`}
+          </span>
+        </div>
+        <div className="pane" style={{ marginBottom: 0 }}>
+          {comparison === null ? (
+            <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
+              There is nothing to compare against until this project has a quote. Runs and hours can
+              still be logged below — they will line up once it does.
+            </div>
+          ) : (
+            <Variance comparison={comparison} money={money} />
+          )}
+
+          <RunLog
+            ctx={ctx}
+            detail={detail}
+            money={money}
+            busy={busy}
+            onChanged={reload}
+            setError={setError}
+          />
+        </div>
+      </section>
+
       {/* ---- activity ---- */}
       <section className="sec">
         <div className="sechead">
@@ -834,6 +903,490 @@ function PaymentLog({
               Payments are never edited or deleted — a mistake is corrected with a refund, which is
               what an accountant will expect to find.
             </span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Reprice a project's quote from its own frozen snapshot and compare it to
+ * what was actually recorded. Returns null when there is nothing to compare
+ * — no quote, or a quote whose material and printer no longer exist.
+ *
+ * A draft quote has no snapshot, so it falls back to today's rates. That is
+ * correct rather than a compromise: a draft has not been given to anyone,
+ * so there is no promise to hold it to.
+ */
+function buildComparison(detail: ProjectDetail, ctx: ShopContext): Comparison | null {
+  const q = detail.quoteInputs
+  if (!q) return null
+
+  let priced: PricedQuote
+  let rates
+  try {
+    const snap = q.ratesSnapshot as RatesSnapshot | null
+    const basis = snap
+      ? ratesFromSnapshot(snap)
+      : {
+          rates: toRateSet(ctx.rateCard, ctx.shop),
+          material: ctx.materials.find((m) => m.id === q.materialId) ?? null,
+          printer: ctx.printers.find((p) => p.id === q.printerId) ?? null,
+        }
+    rates = basis.rates
+    priced = priceQuote(
+      {
+        assetOrigin: detail.assetOrigin,
+        designBilling: q.designBilling === 'none' ? 'hourly' : q.designBilling,
+        designQty: q.designQty,
+        revisions: q.revisionsIncl,
+        quantity: q.quantity,
+        unitsPerPart: q.unitsPerPart,
+        printHrsPerPart: q.printHrsPart,
+        finishingHrs: q.finishingHrs,
+        rush: q.rush,
+        flatEach: q.flatEach,
+        discountPct: q.discountPct,
+      },
+      rates,
+      basis.material,
+      basis.printer,
+    )
+    return compareToQuote(priced, detail.actuals, rates, basis.material?.unit ?? 'g')
+  } catch {
+    // A snapshot from an older schema, or a quote whose material was
+    // deleted. Better to show no comparison than a wrong one.
+    return null
+  }
+}
+
+/** Quoted against actual, line by line. */
+function Variance({ comparison, money }: { comparison: Comparison; money: (n: number) => string }) {
+  const c = comparison
+  return (
+    <>
+      <div style={{ overflowX: 'auto' }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Cost</th>
+              <th className="r">Quoted</th>
+              <th className="r">Actual</th>
+              <th className="r">Difference</th>
+            </tr>
+          </thead>
+          <tbody>
+            {c.lines.map((l) => (
+              <tr key={l.key}>
+                <td>
+                  <div style={{ color: 'var(--txt)' }}>{l.label}</div>
+                  <div className="pmeta" style={{ whiteSpace: 'normal' }}>
+                    {l.detail}
+                  </div>
+                </td>
+                <td className="r mono">{money(l.quoted)}</td>
+                <td className="r mono" style={{ color: l.actual === null ? 'var(--txt-3)' : undefined }}>
+                  {l.actual === null ? 'not recorded' : money(l.actual)}
+                </td>
+                <td
+                  className="r mono"
+                  style={{
+                    color:
+                      l.delta === null
+                        ? 'var(--txt-3)'
+                        : l.delta > 0.005
+                          ? 'var(--red)'
+                          : l.delta < -0.005
+                            ? 'var(--ok)'
+                            : 'var(--txt-3)',
+                  }}
+                >
+                  {l.delta === null
+                    ? '—'
+                    : `${l.delta > 0 ? '+' : ''}${money(l.delta)}${
+                        l.pct === null ? '' : ` (${l.pct > 0 ? '+' : ''}${Math.round(l.pct * 100)}%)`
+                      }`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="grid3" style={{ marginTop: 12 }}>
+        <Stat label="They pay (before tax)" value={money(c.netRevenue)} />
+        <Stat label="Margin you quoted" value={money(c.quotedMargin)} />
+        <Stat
+          label="Margin you got"
+          value={c.actualMargin === null ? 'not yet' : money(c.actualMargin)}
+          tone={
+            c.actualMargin === null ? '' : c.actualMargin < 0 ? 'crit' : c.actualMargin < c.quotedMargin * 0.5 ? '' : 'ok'
+          }
+          sub={
+            c.actualMarginPct === null
+              ? 'log a run or some hours'
+              : `${Math.round(c.actualMarginPct * 100)}% of what they pay`
+          }
+        />
+      </div>
+
+      {c.partial && (
+        <div className="hint" style={{ marginTop: 8, color: 'var(--warn)' }}>
+          Some lines have nothing recorded against them, so the real margin above is a ceiling, not a
+          figure — it can only get worse as the rest goes in.
+        </div>
+      )}
+    </>
+  )
+}
+
+/**
+ * The two things a shop has to type in for any of the above to mean
+ * anything: a build run, and an hour of work.
+ *
+ * Kept together and kept short. Every field here is one a person can answer
+ * from memory at the end of a day — which machine, roughly how long, how
+ * many grams off the spool, did it work. Anything that needed a stopwatch
+ * or a lookup would not get filled in, and a log nobody fills in is worse
+ * than no log at all, because it looks like evidence.
+ */
+function RunLog({
+  ctx,
+  detail,
+  money,
+  busy,
+  onChanged,
+  setError,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  money: (n: number) => string
+  busy: boolean
+  onChanged: () => Promise<void>
+  setError: (m: string | null) => void
+}) {
+  const [mode, setMode] = useState<'none' | 'run' | 'work'>('none')
+  const [saving, setSaving] = useState(false)
+
+  const [run, setRun] = useState<PrintRunInput>({
+    printerId: ctx.printers[0]?.id ?? '',
+    materialId: ctx.materials[0]?.id ?? null,
+    unitsUsed: 0,
+    hours: 0,
+    outcome: 'success',
+    failureReason: null,
+    note: null,
+    startedAt: new Date().toISOString().slice(0, 10),
+  })
+  const [work, setWork] = useState({
+    kind: 'design' as WorkKind,
+    hours: '',
+    workedOn: new Date().toISOString().slice(0, 10),
+    note: '',
+  })
+
+  const unit = ctx.materials.find((m) => m.id === run.materialId)?.unit ?? 'g'
+
+  async function guard(fn: () => Promise<unknown>) {
+    setSaving(true)
+    setError(null)
+    try {
+      await fn()
+      await onChanged()
+      setMode('none')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="updates" style={{ marginTop: 14 }}>
+      {mode === 'none' && (
+        <div className="btnrow">
+          <button type="button" className="btn sm" disabled={busy} onClick={() => setMode('run')}>
+            Record a build run
+          </button>
+          <button type="button" className="btn sm" disabled={busy} onClick={() => setMode('work')}>
+            Log hours
+          </button>
+        </div>
+      )}
+
+      {mode === 'run' && (
+        <div className="gatebox">
+          <div className="grid3">
+            <div className="fld">
+              <label className="lbl" htmlFor="r-printer">
+                Machine
+              </label>
+              <select
+                id="r-printer"
+                value={run.printerId}
+                onChange={(e) => setRun((r) => ({ ...r, printerId: e.target.value }))}
+              >
+                {ctx.printers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="fld">
+              <label className="lbl" htmlFor="r-material">
+                Material
+              </label>
+              <select
+                id="r-material"
+                value={run.materialId ?? ''}
+                onChange={(e) => setRun((r) => ({ ...r, materialId: e.target.value || null }))}
+              >
+                {ctx.materials.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="fld">
+              <label className="lbl" htmlFor="r-when">
+                Started
+              </label>
+              <input
+                id="r-when"
+                type="date"
+                value={run.startedAt ?? ''}
+                onChange={(e) => setRun((r) => ({ ...r, startedAt: e.target.value || null }))}
+              />
+            </div>
+          </div>
+          <div className="grid3">
+            <div className="fld">
+              <label className="lbl" htmlFor="r-units">
+                {unit} off the spool
+              </label>
+              <input
+                id="r-units"
+                type="number"
+                min="0"
+                step="1"
+                value={run.unitsUsed || ''}
+                onChange={(e) => setRun((r) => ({ ...r, unitsUsed: Number(e.target.value) || 0 }))}
+              />
+            </div>
+            <div className="fld">
+              <label className="lbl" htmlFor="r-hours">
+                Machine hours
+              </label>
+              <input
+                id="r-hours"
+                type="number"
+                min="0"
+                step="0.25"
+                value={run.hours || ''}
+                onChange={(e) => setRun((r) => ({ ...r, hours: Number(e.target.value) || 0 }))}
+              />
+            </div>
+            <div className="fld">
+              <label className="lbl" htmlFor="r-outcome">
+                How it went
+              </label>
+              <select
+                id="r-outcome"
+                value={run.outcome}
+                onChange={(e) => setRun((r) => ({ ...r, outcome: e.target.value as RunOutcome }))}
+              >
+                <option value="success">Came off clean</option>
+                <option value="failed">Failed</option>
+                <option value="cancelled">Cancelled part way</option>
+              </select>
+            </div>
+          </div>
+          {run.outcome !== 'success' && (
+            <div className="fld">
+              <label className="lbl" htmlFor="r-why">
+                What went wrong
+              </label>
+              <input
+                id="r-why"
+                value={run.failureReason ?? ''}
+                placeholder="Warped off the plate, clog, power cut…"
+                onChange={(e) => setRun((r) => ({ ...r, failureReason: e.target.value || null }))}
+              />
+            </div>
+          )}
+          <div className="btnrow" style={{ alignItems: 'center' }}>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={saving || !run.printerId}
+              onClick={() =>
+                void guard(() => recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, run))
+              }
+            >
+              Record it
+            </button>
+            <button type="button" className="btn sm ghost" onClick={() => setMode('none')}>
+              Cancel
+            </button>
+            <span className="hint" style={{ marginTop: 0 }}>
+              A failed run counts too — it burned the same material and the same machine hours, and a
+              shop that leaves failures out thinks its margin is better than it is.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {mode === 'work' && (
+        <div className="gatebox">
+          <div className="grid3">
+            <div className="fld">
+              <label className="lbl" htmlFor="w-kind">
+                What kind of work
+              </label>
+              <select
+                id="w-kind"
+                value={work.kind}
+                onChange={(e) => setWork((w) => ({ ...w, kind: e.target.value as WorkKind }))}
+              >
+                {WORK_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {WORK_KIND_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="fld">
+              <label className="lbl" htmlFor="w-hours">
+                Hours
+              </label>
+              <input
+                id="w-hours"
+                type="number"
+                min="0"
+                step="0.25"
+                value={work.hours}
+                onChange={(e) => setWork((w) => ({ ...w, hours: e.target.value }))}
+              />
+            </div>
+            <div className="fld">
+              <label className="lbl" htmlFor="w-when">
+                On
+              </label>
+              <input
+                id="w-when"
+                type="date"
+                value={work.workedOn}
+                onChange={(e) => setWork((w) => ({ ...w, workedOn: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="fld">
+            <label className="lbl" htmlFor="w-note">
+              What you did
+            </label>
+            <input
+              id="w-note"
+              value={work.note}
+              placeholder="Modelled the mount, third revision, wash and cure…"
+              onChange={(e) => setWork((w) => ({ ...w, note: e.target.value }))}
+            />
+          </div>
+          <div className="btnrow" style={{ alignItems: 'center' }}>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={saving || !work.hours}
+              onClick={() =>
+                void guard(() =>
+                  logWork(ctx.shop.id, detail.jobId, ctx.profile.id, {
+                    kind: work.kind,
+                    hours: Number(work.hours),
+                    workedOn: work.workedOn,
+                    note: work.note.trim() || null,
+                  }),
+                )
+              }
+            >
+              Log it
+            </button>
+            <button type="button" className="btn sm ghost" onClick={() => setMode('none')}>
+              Cancel
+            </button>
+            <span className="hint" style={{ marginTop: 0 }}>
+              Your own hours at your own rate. This is the line that decides whether the job made
+              money, and the one nobody writes down.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {(detail.runs.length > 0 || detail.work.length > 0) && (
+        <div style={{ marginTop: 12 }}>
+          {detail.runs.map((r) => (
+            <div key={r.id} className="histitem">
+              <span
+                style={{
+                  color:
+                    r.outcome === 'failed'
+                      ? 'var(--red)'
+                      : r.outcome === 'cancelled'
+                        ? 'var(--warn)'
+                        : 'var(--ok)',
+                }}
+              >
+                {r.outcome === 'success' ? '✓' : r.outcome === 'failed' ? '✕' : '−'}
+              </span>
+              <span style={{ color: 'var(--txt)' }}>
+                {r.unitsUsed ?? 0}
+                {r.unit ?? 'g'} · {r.hours ?? 0}h
+              </span>
+              <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>
+                {r.printerName ?? 'machine gone'} · {r.materialName ?? 'material gone'}
+                {r.startedAt ? ` · ${r.startedAt.slice(0, 10)}` : ''}
+                {r.operator ? ` · ${r.operator}` : ''}
+              </span>
+              <button
+                type="button"
+                className="linkbtn"
+                style={{ marginLeft: 'auto', fontSize: 11 }}
+                disabled={saving}
+                title="Remove this run. Its material goes back on the shelf."
+                onClick={() => void guard(() => deletePrintRun(ctx.shop.id, r.id))}
+              >
+                remove
+              </button>
+              {r.failureReason && <div className="histnote">{r.failureReason}</div>}
+            </div>
+          ))}
+          {detail.work.map((w) => (
+            <div key={w.id} className="histitem">
+              <span style={{ color: 'var(--info)' }}>◷</span>
+              <span style={{ color: 'var(--txt)' }}>
+                {w.hours}h {WORK_KIND_LABEL[w.kind].toLowerCase()}
+              </span>
+              <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>
+                {w.workedOn}
+                {w.actor ? ` · ${w.actor}` : ''}
+              </span>
+              <button
+                type="button"
+                className="linkbtn"
+                style={{ marginLeft: 'auto', fontSize: 11 }}
+                disabled={saving}
+                onClick={() => void guard(() => deleteWorkEntry(ctx.shop.id, w.id))}
+              >
+                remove
+              </button>
+              {w.note && <div className="histnote">{w.note}</div>}
+            </div>
+          ))}
+          <div className="hint" style={{ marginTop: 6 }}>
+            {detail.runs.length} run{detail.runs.length === 1 ? '' : 's'} ·{' '}
+            {(detail.actuals.designHours + detail.actuals.finishingHours + detail.actuals.adminHours)}
+            h logged · {money(detail.actuals.materialCost)} of material off the shelf
           </div>
         </div>
       )}

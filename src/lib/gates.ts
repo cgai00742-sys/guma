@@ -87,7 +87,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
     {
       key: 'hours',
       label: 'Design hours on the quote match the hours actually spent',
-      why: 'This is the single most common place a small shop quietly loses its margin.',
+      why: 'The single most common place a small shop quietly loses its margin. Log your hours below and the project page shows you the gap rather than asking you to remember it.',
       needsNote: true,
     },
     {
@@ -153,8 +153,10 @@ export const GATES: Record<JobPhase, GateItem[]> = {
     },
     {
       key: 'spend',
-      label: 'Material actually used is logged against the project',
-      why: 'Estimated grams vs. spent grams is the only honest read on whether the quote was right.',
+      label: 'What the build actually used is recorded',
+      why: 'Estimated grams against spent grams is the only honest read on whether the quote was right — and this is the last moment anyone remembers the numbers.',
+      auto: (f) => f.actualRuns > 0,
+      autoFrom: 'from the build runs',
     },
   ],
   review: [
@@ -301,6 +303,7 @@ export type FlagKey =
   | 'deposit'
   | 'balance'
   | 'under-minimum'
+  | 'over-budget'
 
 export interface Flag {
   key: FlagKey
@@ -435,6 +438,35 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
         ? 'The date is committed, so this is a conversation, not a reschedule. Call them before they call you.'
         : 'Renegotiate the window now, while it is still an option rather than an apology.',
     })
+  }
+
+  // The bluntest question in the tool: is this job costing more than it
+  // earns? It needs no quote breakdown and no forecasting — just what has
+  // actually been spent against what the client agreed to pay. The 80%
+  // warning exists because a shop can still act at 80%; at 100% the only
+  // thing left is to learn from it.
+  if (f.hasActuals && f.quoteTotal !== null && f.quoteTotal > 0) {
+    const share = f.actualCost / f.quoteTotal
+    if (share >= 1) {
+      out.push({
+        key: 'over-budget',
+        tone: 'crit',
+        label: 'Underwater',
+        cause: `Has cost ${money(f.actualCost)} against a quote of ${money(f.quoteTotal)} — ${Math.round(share * 100)}% of what it earns.`,
+        action: delivered
+          ? 'Too late to fix this one. Open it and see which line ran over, so the next quote of this shape is right.'
+          : 'Stop and look at what is left to do. Finishing it as planned means finishing it at a loss; a scope conversation now is cheaper than the write-off.',
+      })
+    } else if (share >= 0.8 && !delivered) {
+      out.push({
+        key: 'over-budget',
+        tone: 'warn',
+        label: 'Eating its margin',
+        cause: `${Math.round(share * 100)}% of the quote already spent, with the project still in ${PHASE_LABEL[f.phase].toLowerCase()}.`,
+        action:
+          'Check what is left against what is gone. This is the last point where a reprint or an extra revision is still a decision rather than a loss.',
+      })
+    }
   }
 
   if (

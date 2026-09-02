@@ -56,6 +56,14 @@ import type {
   MaterialInput,
   MaterialPurchaseRow,
   MaterialPurchaseInput,
+  ProjectActuals,
+  WorkKind,
+  RunOutcome,
+  QuoteInputsRow,
+  PrintRunRow,
+  PrintRunInput,
+  WorkEntryRow,
+  WorkEntryInput,
   QuoteStatus,
 } from './data.types'
 
@@ -70,6 +78,8 @@ export {
   PAYMENT_METHODS,
   PAYMENT_KIND_LABEL,
   PAYMENT_METHOD_LABEL,
+  WORK_KINDS,
+  WORK_KIND_LABEL,
 } from './data.types'
 export type {
   Shop,
@@ -101,6 +111,14 @@ export type {
   MaterialInput,
   MaterialPurchaseRow,
   MaterialPurchaseInput,
+  ProjectActuals,
+  WorkKind,
+  RunOutcome,
+  QuoteInputsRow,
+  PrintRunRow,
+  PrintRunInput,
+  WorkEntryRow,
+  WorkEntryInput,
   QuoteStatus,
 }
 
@@ -256,4 +274,30 @@ export async function listMaterialPurchases(
 
 export async function deleteMaterialPurchase(shopId: string, purchaseId: string): Promise<void> {
   return (await backend()).deleteMaterialPurchase(shopId, purchaseId)
+}
+
+export async function recordPrintRun(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: PrintRunInput,
+): Promise<string> {
+  return (await backend()).recordPrintRun(shopId, jobId, actorId, input)
+}
+
+export async function deletePrintRun(shopId: string, runId: string): Promise<void> {
+  return (await backend()).deletePrintRun(shopId, runId)
+}
+
+export async function logWork(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: WorkEntryInput,
+): Promise<string> {
+  return (await backend()).logWork(shopId, jobId, actorId, input)
+}
+
+export async function deleteWorkEntry(shopId: string, entryId: string): Promise<void> {
+  return (await backend()).deleteWorkEntry(shopId, entryId)
 }

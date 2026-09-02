@@ -286,6 +286,18 @@ export interface ProjectFacts {
   lastActivityAt: string | null
   /** The current rate card's minimum_order, for the under-minimum flag. */
   minimumOrder: number
+  /** What has actually been spent on this project so far, from job_actuals:
+   *  material at today's weighted cost, machine power (or the machine rate
+   *  when wattage is missing), wear, and logged hours at the shop's rates.
+   *  Zero when nothing has been recorded, which `hasActuals` distinguishes
+   *  from a genuinely free job. */
+  actualCost: number
+  hasActuals: boolean
+  /** Build runs recorded. Backs the "material spend is logged" gate item,
+   *  which until now was a question with nothing behind it. */
+  actualRuns: number
+  /** Design + finishing + admin hours logged. */
+  actualHours: number
 }
 
 export interface JobListRow {
@@ -345,6 +357,32 @@ export interface ProjectDetail {
   events: ProjectEvent[]
   /** Every payment recorded against this project, newest first. */
   payments: PaymentRow[]
+  /** What the project actually consumed, folded from runs and work entries. */
+  actuals: ProjectActuals
+  /** The quote's own inputs, so the project page can reprice it from its
+   *  frozen snapshot and compare line by line against the actuals. Null
+   *  when the project has never been quoted. */
+  quoteInputs: QuoteInputsRow | null
+  runs: PrintRunRow[]
+  work: WorkEntryRow[]
+}
+
+/** The pricing inputs stored on a quote row, plus its frozen rate snapshot. */
+export interface QuoteInputsRow {
+  designBilling: 'hourly' | 'flat' | 'none'
+  designQty: number
+  revisionsIncl: number
+  quantity: number
+  materialId: string | null
+  printerId: string | null
+  unitsPerPart: number
+  printHrsPart: number
+  finishingHrs: number
+  rush: boolean
+  flatEach: number
+  discountPct: number
+  /** Parsed, not the raw TEXT column. Null on a draft, which has none. */
+  ratesSnapshot: unknown | null
 }
 
 /** The handful of project fields the detail screen can edit in place. */
@@ -515,3 +553,121 @@ export interface MaterialPurchaseInput {
   supplier: string | null
   note: string | null
 }
+
+/* ------------------------------------------------------------------ */
+/* What a project actually took                                        */
+/* ------------------------------------------------------------------ */
+
+export const WORK_KINDS = ['design', 'finishing', 'admin'] as const
+export type WorkKind = (typeof WORK_KINDS)[number]
+
+export const WORK_KIND_LABEL: Record<WorkKind, string> = {
+  design: 'Design',
+  finishing: 'Finishing',
+  admin: 'Admin & handling',
+}
+
+export type RunOutcome = 'success' | 'failed' | 'cancelled'
+
+/** One build run: a machine, a material, what it burned, and whether it
+ *  worked. A failed run still consumed material and machine time, which is
+ *  precisely why it is worth recording. */
+export interface PrintRunRow {
+  id: string
+  printerId: string | null
+  printerName: string | null
+  materialId: string | null
+  materialName: string | null
+  unit: 'g' | 'ml' | null
+  unitsUsed: number | null
+  hours: number | null
+  outcome: RunOutcome | null
+  failureReason: string | null
+  note: string | null
+  startedAt: string | null
+  endedAt: string | null
+  operator: string | null
+}
+
+export interface PrintRunInput {
+  printerId: string
+  materialId: string | null
+  unitsUsed: number
+  hours: number
+  outcome: RunOutcome
+  failureReason: string | null
+  note: string | null
+  startedAt: string | null
+}
+
+export interface WorkEntryRow {
+  id: string
+  kind: WorkKind
+  hours: number
+  workedOn: string
+  note: string | null
+  actor: string | null
+}
+
+export interface WorkEntryInput {
+  kind: WorkKind
+  hours: number
+  workedOn: string
+  note: string | null
+}
+
+/**
+ * The job_actuals view, folded. Every figure derived at read time from
+ * append-only runs and work entries, exactly like job_money folds payments
+ * — so nothing here can be stale and there is no "recalculate" button.
+ */
+export interface ProjectActuals {
+  materialUnits: number
+  /** Of those units, the ones that went into runs that failed. Real cost. */
+  failedUnits: number
+  materialCost: number
+  machineHours: number
+  /** Machine hours at the printer's rate — a PRICE, used only as the
+   *  conservative fallback when wattage or the shop's $/kWh is missing. */
+  machineCost: number
+  wearCost: number
+  /** hours x kW x $/kWh. Zero when either number is not on file. */
+  powerCost: number
+  runs: number
+  failedRuns: number
+  designHours: number
+  finishingHours: number
+  adminHours: number
+}
+
+/** Shared by both backends' recordPrintRun, so the two cannot validate
+ *  differently. Hours may be zero (a run that failed on the first layer
+ *  still consumed material); units may not be negative. */
+export function validateRun(input: PrintRunInput): { hours: number; unitsUsed: number } {
+  const hours = Number(input.hours)
+  const unitsUsed = Number(input.unitsUsed)
+  if (!Number.isFinite(hours) || hours < 0) throw new Error('Machine hours cannot be negative.')
+  if (!Number.isFinite(unitsUsed) || unitsUsed < 0) {
+    throw new Error('Material used cannot be negative.')
+  }
+  if (hours === 0 && unitsUsed === 0) {
+    throw new Error('A run that used no material and no machine time is not a run.')
+  }
+  return { hours, unitsUsed }
+}
+
+export function validateHours(raw: number): number {
+  const hours = Number(raw)
+  if (!Number.isFinite(hours) || hours <= 0) throw new Error('Log more than zero hours.')
+  if (hours > 24) throw new Error('More than 24 hours in one entry — split it across days.')
+  return hours
+}
+
+export function runEventBody(input: PrintRunInput): string {
+  const bits = [`${input.hours}h`, input.unitsUsed > 0 ? `${input.unitsUsed} used` : null]
+    .filter(Boolean)
+    .join(', ')
+  return `Run recorded — ${bits} · ${input.outcome}${input.failureReason ? ` (${input.failureReason})` : ''}`
+}
+
+

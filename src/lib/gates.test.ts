@@ -39,6 +39,10 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     balanceOwed: 0,
     lastActivityAt: '2026-09-01T00:00:00Z',
     minimumOrder: 0,
+    actualCost: 0,
+    hasActuals: false,
+    actualRuns: 0,
+    actualHours: 0,
     ...over,
   }
 }

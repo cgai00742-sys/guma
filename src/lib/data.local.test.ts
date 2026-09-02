@@ -47,6 +47,7 @@ const MIGRATION_SQL = [
   '0003_shop_state.sql',
   '0004_partners_gates.sql',
   '0005_material_purchases.sql',
+  '0006_actuals.sql',
 ]
   .map((f) => readFileSync(join(MIGRATIONS_DIR, f), 'utf8'))
   .join('\n')
@@ -968,5 +969,334 @@ describe('data.local.ts against a real SQLite database', () => {
     await expect(
       local.saveMaterial(shopId, { ...created, name: '   ' }),
     ).rejects.toThrow(/needs a name/)
+  })
+
+  /* ---------------------------------------------------------------- */
+  /* What a project actually took                                      */
+  /* ---------------------------------------------------------------- */
+
+  it('a recorded run draws material off the shelf, failures included', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+
+    await local.recordMaterialPurchase(shopId, ctx.materials[0].id, ctx.profile.id, {
+      purchasedOn: '2026-01-10',
+      qty: 2000,
+      totalCost: 48,
+      supplier: null,
+      note: null,
+    })
+    expect((await local.listMaterials(shopId))[0].onHand).toBe(2000)
+
+    await local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id,
+      materialId: ctx.materials[0].id,
+      unitsUsed: 740,
+      hours: 21,
+      outcome: 'success',
+      failureReason: null,
+      note: null,
+      startedAt: '2026-02-01T09:00:00Z',
+    })
+    // A failed plate burned the same grams as a good one. Counting it is
+    // the entire point.
+    await local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id,
+      materialId: ctx.materials[0].id,
+      unitsUsed: 185,
+      hours: 5.25,
+      outcome: 'failed',
+      failureReason: 'warped off the plate',
+      note: null,
+      startedAt: '2026-02-03T09:00:00Z',
+    })
+
+    expect((await local.listMaterials(shopId))[0].onHand).toBe(2000 - 925)
+
+    const d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.actuals.materialUnits).toBe(925)
+    expect(d.actuals.failedUnits).toBe(185)
+    expect(d.actuals.runs).toBe(2)
+    expect(d.actuals.failedRuns).toBe(1)
+    expect(d.actuals.machineHours).toBeCloseTo(26.25, 10)
+    // 925 g at the purchased 0.024/g.
+    expect(d.actuals.materialCost).toBeCloseTo(22.2, 6)
+    // 26.25 h x $9 machine, x $3 wear.
+    expect(d.actuals.machineCost).toBeCloseTo(236.25, 6)
+    expect(d.actuals.wearCost).toBeCloseTo(78.75, 6)
+    // No wattage on the seeded printer, so there is no honest power figure.
+    expect(d.actuals.powerCost).toBe(0)
+    expect(d.runs).toHaveLength(2)
+    expect(d.runs[0].printerName).toBe('Tasa 1')
+    // Runs show up in the project's story, not just its ledger.
+    expect(d.events.some((e) => e.kind === 'run')).toBe(true)
+
+    // Deleting a run puts its material back.
+    await local.deletePrintRun(shopId, d.runs[0].id)
+    expect((await local.listMaterials(shopId))[0].onHand).toBeGreaterThan(2000 - 925)
+  })
+
+  it('refuses a run that used nothing, and negative figures', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+    const base = {
+      printerId: ctx.printers[0].id,
+      materialId: ctx.materials[0].id,
+      outcome: 'success' as const,
+      failureReason: null,
+      note: null,
+      startedAt: null,
+    }
+    await expect(
+      local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, { ...base, unitsUsed: 0, hours: 0 }),
+    ).rejects.toThrow(/is not a run/)
+    await expect(
+      local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, { ...base, unitsUsed: -5, hours: 2 }),
+    ).rejects.toThrow(/cannot be negative/)
+    // A run that died on layer one used material and no time. Still a run.
+    await expect(
+      local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, { ...base, unitsUsed: 12, hours: 0 }),
+    ).resolves.toBeTruthy()
+  })
+
+  it('logs hours by kind, and refuses a day that will not fit in a day', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+
+    await local.logWork(shopId, saved.jobId, ctx.profile.id, {
+      kind: 'design',
+      hours: 6.5,
+      workedOn: '2026-01-20',
+      note: 'CAD and a test print',
+    })
+    await local.logWork(shopId, saved.jobId, ctx.profile.id, {
+      kind: 'design',
+      hours: 4.5,
+      workedOn: '2026-01-21',
+      note: 'client changed the mount',
+    })
+    await local.logWork(shopId, saved.jobId, ctx.profile.id, {
+      kind: 'finishing',
+      hours: 3,
+      workedOn: '2026-02-05',
+      note: null,
+    })
+
+    const d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.actuals.designHours).toBe(11)
+    expect(d.actuals.finishingHours).toBe(3)
+    expect(d.actuals.adminHours).toBe(0)
+    expect(d.work).toHaveLength(3)
+    expect(d.work[0].actor).toBe('Owner')
+
+    await expect(
+      local.logWork(shopId, saved.jobId, ctx.profile.id, {
+        kind: 'design',
+        hours: 0,
+        workedOn: '2026-01-20',
+        note: null,
+      }),
+    ).rejects.toThrow(/more than zero/)
+    await expect(
+      local.logWork(shopId, saved.jobId, ctx.profile.id, {
+        kind: 'design',
+        hours: 30,
+        workedOn: '2026-01-20',
+        note: null,
+      }),
+    ).rejects.toThrow(/24 hours/)
+
+    await local.deleteWorkEntry(shopId, d.work[0].id)
+    expect((await local.loadProjectDetail(shopId, saved.jobId)).work).toHaveLength(2)
+  })
+
+  it('compares the frozen quote against what the job really cost', async () => {
+    const local = await import('./data.local')
+    const { compareToQuote } = await import('./actuals')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const rates = local.toRateSet(ctx.rateCard, ctx.shop)
+    const q = priceQuote(MAST_BRACKETS, rates, ctx.materials[0], ctx.printers[0])
+    const ref = await local.nextJobRef(shopId)
+
+    const saved = await local.saveQuote({
+      shopId,
+      ref,
+      client: { name: 'Acme Co', contact: '', email: '', phone: '', source: '' },
+      job: { title: 'Mast brackets', brief: '', neededBy: null, assetOrigin: 'model' },
+      quote: {
+        design_billing: 'hourly',
+        design_qty: 6,
+        revisions_incl: 2,
+        quantity: 4,
+        material_id: ctx.materials[0].id,
+        printer_id: ctx.printers[0].id,
+        units_per_part: 185,
+        print_hrs_part: 5.25,
+        finishing_hrs: 2,
+        rush: false,
+        flat_each: 0,
+        discount_pct: 0,
+      },
+      send: {
+        rates_snapshot: { rates },
+        total: q.total,
+        deposit_due: q.deposit,
+        valid_until: '2026-10-01',
+      },
+    } satisfies SaveQuoteArgs)
+
+    // Nothing recorded yet: every line reads "not recorded", not zero.
+    let d = await local.loadProjectDetail(shopId, saved.jobId)
+    let cmp = compareToQuote(q, d.actuals, rates)
+    expect(cmp.hasActuals).toBe(false)
+    expect(cmp.actualCost).toBeNull()
+    expect(cmp.actualMargin).toBeNull()
+    expect(cmp.lines.every((l) => l.actual === null)).toBe(true)
+    // The quote's own inputs came back so the page can reprice it.
+    expect(d.quoteInputs?.quantity).toBe(4)
+    expect(d.quoteInputs?.designQty).toBe(6)
+    expect(d.quoteInputs?.ratesSnapshot).not.toBeNull()
+
+    // The job ran long: 11 design hours against 6 quoted, one failed plate.
+    await local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id,
+      materialId: ctx.materials[0].id,
+      unitsUsed: 740,
+      hours: 21,
+      outcome: 'success',
+      failureReason: null,
+      note: null,
+      startedAt: null,
+    })
+    await local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id,
+      materialId: ctx.materials[0].id,
+      unitsUsed: 185,
+      hours: 5.25,
+      outcome: 'failed',
+      failureReason: 'warped',
+      note: null,
+      startedAt: null,
+    })
+    await local.logWork(shopId, saved.jobId, ctx.profile.id, {
+      kind: 'design',
+      hours: 11,
+      workedOn: '2026-01-20',
+      note: null,
+    })
+    await local.logWork(shopId, saved.jobId, ctx.profile.id, {
+      kind: 'finishing',
+      hours: 3,
+      workedOn: '2026-02-05',
+      note: null,
+    })
+
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    cmp = compareToQuote(q, d.actuals, rates)
+    expect(cmp.hasActuals).toBe(true)
+    expect(cmp.partial).toBe(false)
+
+    const labour = cmp.lines.find((l) => l.key === 'labour')!
+    // Quoted 6h design at 85 + 2h finishing at 55 = 620.
+    expect(labour.quoted).toBe(620)
+    // Actually 11h at 85 + 3h at 55 = 1100.
+    expect(labour.actual).toBe(1100)
+    expect(labour.delta).toBe(480)
+    expect(labour.pct).toBeCloseTo(480 / 620, 6)
+
+    const material = cmp.lines.find((l) => l.key === 'material')!
+    expect(material.detail).toContain('925g')
+    expect(material.detail).toContain('failed')
+
+    // The headline: quoted margin was positive, the real one is worse.
+    expect(cmp.quotedMargin).toBe(round2(q.margin))
+    expect(cmp.actualMargin!).toBeLessThan(cmp.quotedMargin)
+    expect(cmp.netRevenue).toBeCloseTo(q.total - q.tax, 6)
+    expect(cmp.actualCost!).toBeGreaterThan(cmp.quotedCost)
+  })
+
+  it('flags a project that has cost more than it earns', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const rates = local.toRateSet(ctx.rateCard, ctx.shop)
+    const q = priceQuote(MAST_BRACKETS, rates, ctx.materials[0], ctx.printers[0])
+    const ref = await local.nextJobRef(shopId)
+    const saved = await local.saveQuote({
+      shopId,
+      ref,
+      client: { name: 'Acme Co', contact: '', email: '', phone: '', source: '' },
+      job: { title: 'Mast brackets', brief: '', neededBy: null, assetOrigin: 'model' },
+      quote: {
+        design_billing: 'hourly', design_qty: 6, revisions_incl: 2, quantity: 4,
+        material_id: ctx.materials[0].id, printer_id: ctx.printers[0].id,
+        units_per_part: 185, print_hrs_part: 5.25, finishing_hrs: 2,
+        rush: false, flat_each: 0, discount_pct: 0,
+      },
+      send: {
+        rates_snapshot: { rates }, total: q.total, deposit_due: q.deposit,
+        valid_until: '2026-10-01',
+      },
+    } satisfies SaveQuoteArgs)
+
+    const now = new Date('2026-09-02T00:00:00Z')
+    let [row] = await local.listJobs(shopId)
+    expect(row.facts.hasActuals).toBe(false)
+    expect(flagsFor(row.facts, now).map((f) => f.key)).not.toContain('over-budget')
+
+    // 20 design hours at $85 alone is $1,700 against a $1,063 quote.
+    await local.logWork(shopId, saved.jobId, ctx.profile.id, {
+      kind: 'design', hours: 20, workedOn: '2026-01-20', note: null,
+    })
+    ;[row] = await local.listJobs(shopId)
+    expect(row.facts.hasActuals).toBe(true)
+    expect(row.facts.actualCost).toBeCloseTo(1700, 6)
+    const flag = flagsFor(row.facts, now).find((f) => f.key === 'over-budget')!
+    expect(flag.tone).toBe('crit')
+    expect(flag.label).toBe('Underwater')
+    expect(flag.cause).toContain('160%')
+  })
+
+  it('the in-build gate item about material spend now clears from real runs', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+    await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'building')
+
+    let d = await local.loadProjectDetail(shopId, saved.jobId)
+    let spend = gateStatus('building', d.gates.building ?? {}, d.facts).items.find(
+      (i) => i.key === 'spend',
+    )!
+    // It is automatic, so it cannot be ticked by hand while nothing is
+    // recorded — which is the whole improvement. Before this it was a
+    // checkbox a tired person ticked at 7pm.
+    expect(spend.automatic).toBe(true)
+    expect(spend.checked).toBe(false)
+
+    await local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id,
+      materialId: ctx.materials[0].id,
+      unitsUsed: 740,
+      hours: 21,
+      outcome: 'success',
+      failureReason: null,
+      note: null,
+      startedAt: null,
+    })
+
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    spend = gateStatus('building', d.gates.building ?? {}, d.facts).items.find(
+      (i) => i.key === 'spend',
+    )!
+    expect(spend.checked).toBe(true)
+    expect(d.facts.actualRuns).toBe(1)
   })
 })
