@@ -36,6 +36,7 @@ import type {
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
+  JobListRow,
 } from './data.types'
 
 export { NeedsSetup, toRateSet } from './data.types'
@@ -50,6 +51,7 @@ export type {
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
+  JobListRow,
 } from './data.types'
 
 let dbPromise: Promise<Database> | null = null
@@ -352,6 +354,47 @@ export async function nextJobRef(shopId: string): Promise<string> {
   const last = rows[0]?.ref
   const n = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1
   return prefix + String(n).padStart(4, '0')
+}
+
+/** Every job saved so far, newest first — the thing that was missing
+ *  entirely: once a quote was saved there was no page to see it again.
+ *  A job today always has exactly one quote (no revise-and-resave flow
+ *  yet), so a plain left join is enough; `quotes.job_id` isn't declared
+ *  unique though, so if that changes this would need to pick the latest
+ *  version explicitly rather than assume one row back. */
+export async function listJobs(shopId: string): Promise<JobListRow[]> {
+  const d = await db()
+  const rows = await d.select<
+    {
+      job_id: string
+      ref: string
+      title: string
+      client_name: string
+      created_at: string
+      quote_id: string | null
+      quote_status: JobListRow['quoteStatus']
+      total: number | null
+    }[]
+  >(
+    `select j.id as job_id, j.ref, j.title, c.name as client_name, j.created_at,
+            q.id as quote_id, q.status as quote_status, q.total
+     from jobs j
+     join clients c on c.id = j.client_id
+     left join quotes q on q.job_id = j.id
+     where j.shop_id = ?
+     order by j.created_at desc`,
+    [shopId],
+  )
+  return rows.map((r) => ({
+    jobId: r.job_id,
+    ref: r.ref,
+    title: r.title,
+    clientName: r.client_name,
+    createdAt: r.created_at,
+    quoteId: r.quote_id,
+    quoteStatus: r.quote_status,
+    total: r.total,
+  }))
 }
 
 export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {

@@ -24,8 +24,15 @@ export type {
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
+  JobListRow,
 } from './data.types'
-import type { ShopIdentityInput, ShopQuoteTermsInput, SaveQuoteArgs, SavedQuote } from './data.types'
+import type {
+  ShopIdentityInput,
+  ShopQuoteTermsInput,
+  SaveQuoteArgs,
+  SavedQuote,
+  JobListRow,
+} from './data.types'
 
 /**
  * First run. A fresh install has no shop, so the first person to sign in has no
@@ -155,6 +162,13 @@ export async function saveShopIdentity(shopId: string, next: ShopIdentityInput):
       name: next.name.trim() || 'My shop',
       legal_name: next.legal_name.trim() || null,
       address: next.address.trim() || null,
+      // `state` is DELIBERATELY OMITTED here. It isn't a column on the
+      // hosted schema yet (see the not-yet-applied 0006_shop_state.sql),
+      // and unlike a plain SQL update, PostgREST rejects the ENTIRE request
+      // with PGRST204 ("could not find the column in the schema cache") if
+      // any key doesn't match a real column -- so sending it would break
+      // saving every other field on this form too, not just fail quietly.
+      // Once 0006 is applied, add `state: next.state.trim() || null,` here.
       email: next.email.trim() || null,
       phone: next.phone.trim() || null,
       license_no: next.license_no.trim() || null,
@@ -193,6 +207,16 @@ export async function saveShopQuoteTerms(shopId: string, next: ShopQuoteTermsInp
  * its own printer snapshot (including watts), so editing one in place cannot
  * move a number on a quote a client already holds.
  */
+/** Type-parity stub for the desktop-only welcome dialog (data.local.ts).
+ *  The hosted schema doesn't have `show_welcome` yet -- see the mirrored,
+ *  not-yet-applied migration in supabase/migrations/0005_show_welcome.sql
+ *  -- so `ctx.shop.show_welcome` reads back undefined/falsy here and this
+ *  never actually gets called on the hosted build until that's applied. */
+export async function dismissWelcome(shopId: string): Promise<void> {
+  const { error } = await supabase.from('shops').update({ show_welcome: false }).eq('id', shopId)
+  if (error) throw error
+}
+
 export async function savePrinter(
   shopId: string,
   next: Omit<PrinterRow, 'id'> & { id?: string },
@@ -229,6 +253,36 @@ export async function nextJobRef(shopId: string): Promise<string> {
   const last = data?.[0]?.ref
   const n = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1
   return prefix + String(n).padStart(4, '0')
+}
+
+/** Every job saved so far, newest first — see data.local.ts's listJobs for
+ *  why a plain embed (rather than picking a specific quote version) is
+ *  enough today. `quotes` embeds as an array because PostgREST can't know
+ *  from the schema alone that it's 1:1 in practice; take the first. */
+export async function listJobs(shopId: string): Promise<JobListRow[]> {
+  const { data, error } = await supabase
+    .from('jobs')
+    .select(
+      `id, ref, title, created_at,
+       clients!inner ( name ),
+       quotes ( id, status, total )`,
+    )
+    .eq('shop_id', shopId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return (data ?? []).map((r: any) => {
+    const quote = r.quotes?.[0] ?? null
+    return {
+      jobId: r.id,
+      ref: r.ref,
+      title: r.title,
+      clientName: r.clients.name,
+      createdAt: r.created_at,
+      quoteId: quote?.id ?? null,
+      quoteStatus: quote?.status ?? null,
+      total: quote?.total ?? null,
+    }
+  })
 }
 
 /**

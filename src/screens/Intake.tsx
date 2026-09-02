@@ -164,71 +164,6 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
     }
   }
 
-  // Fills the form with a plausible example job — never saved anywhere
-  // unless the person then clicks Save draft / Save quote as PDF. It prices
-  // from the shop's OWN rates and materials, same engine as a real job, so
-  // what it shows on the right is a real number, not a mockup — the point
-  // is to let someone new see the tool actually work in seconds, without
-  // needing a real client on the phone first. See data.ts's canSave gate:
-  // sample data still has to clear the same bar a real job would.
-  function loadSampleJob() {
-    setClient('Example client — Kai M.')
-    setContact('Kai M.')
-    setEmail('')
-    setPhone('')
-    setSource('Repeat client')
-    const needed = new Date()
-    needed.setDate(needed.getDate() + 10)
-    setNeededBy(needed.toISOString().slice(0, 10))
-    setTitle('Articulated dragon toy — custom color')
-    setBrief('Custom articulated dragon toy. Client sent reference photos, no file yet.')
-    setInput({
-      assetOrigin: 'model',
-      designBilling: 'hourly',
-      designQty: 3,
-      revisions: ctx.rateCard.revisions_incl,
-      quantity: 1,
-      unitsPerPart: 85,
-      printHrsPerPart: 14,
-      finishingHrs: 1.5,
-      rush: false,
-      flatEach: 0,
-      discountPct: 0,
-    })
-    setMaterialId(ctx.materials[0]?.id ?? '')
-    setPrinterId(ctx.printers[0]?.id ?? '')
-    setSavedNote(null)
-    setError(null)
-  }
-
-  function clearForm() {
-    setClient('')
-    setContact('')
-    setEmail('')
-    setPhone('')
-    setSource(SOURCES[0])
-    setNeededBy('')
-    setTitle('')
-    setBrief('')
-    setInput({
-      assetOrigin: 'model',
-      designBilling: 'hourly',
-      designQty: 6,
-      revisions: ctx.rateCard.revisions_incl,
-      quantity: 1,
-      unitsPerPart: 0,
-      printHrsPerPart: 0,
-      finishingHrs: 0,
-      rush: false,
-      flatEach: 0,
-      discountPct: 0,
-    })
-    setMaterialId(ctx.materials[0]?.id ?? '')
-    setPrinterId(ctx.printers[0]?.id ?? '')
-    setSavedNote(null)
-    setError(null)
-  }
-
   return (
     <div className="wrap" style={{ paddingTop: 20, paddingBottom: 40 }}>
       <div className="section-head">
@@ -287,19 +222,6 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             {saving === 'send' ? 'Preparing…' : 'Save quote as PDF'}
           </button>
         </div>
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, marginTop: -6, marginBottom: 4 }}>
-        <button type="button" className="btn sm ghost" onClick={loadSampleJob}>
-          Try a sample job
-        </button>
-        <button type="button" className="btn sm ghost" onClick={clearForm}>
-          Clear form
-        </button>
-        <span className="hint" style={{ alignSelf: 'center' }}>
-          Nothing below is saved until you click Save — a sample job is a safe way to see real
-          pricing before you have a real one to enter.
-        </span>
       </div>
 
       <div className="stepper">

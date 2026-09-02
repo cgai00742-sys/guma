@@ -37,6 +37,7 @@ import type {
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
+  JobListRow,
 } from './data.types'
 
 export { NeedsSetup, toRateSet } from './data.types'
@@ -51,6 +52,7 @@ export type {
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
+  JobListRow,
 }
 
 type Backend = typeof Local | typeof Hosted
@@ -86,6 +88,10 @@ export async function saveShopQuoteTerms(shopId: string, next: ShopQuoteTermsInp
   return (await backend()).saveShopQuoteTerms(shopId, next)
 }
 
+export async function dismissWelcome(shopId: string): Promise<void> {
+  return (await backend()).dismissWelcome(shopId)
+}
+
 export async function savePrinter(
   shopId: string,
   next: Omit<PrinterRow, 'id'> & { id?: string },
@@ -95,6 +101,10 @@ export async function savePrinter(
 
 export async function nextJobRef(shopId: string): Promise<string> {
   return (await backend()).nextJobRef(shopId)
+}
+
+export async function listJobs(shopId: string): Promise<JobListRow[]> {
+  return (await backend()).listJobs(shopId)
 }
 
 export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {

@@ -6,7 +6,9 @@ import { loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
 import Setup from './screens/Setup'
 import Settings from './screens/Settings'
 import Intake from './screens/Intake'
+import Jobs from './screens/Jobs'
 import QuoteDoc from './screens/QuoteDoc'
+import WelcomeModal from './components/WelcomeModal'
 
 // SignIn is the ONE screen that still statically imports supabase.ts (it
 // calls signInWithPassword/signInWithOtp directly). A desktop build never
@@ -123,6 +125,7 @@ export default function App() {
 
   return (
     <>
+      {ctx && <WelcomeModal shop={ctx.shop} onDismissedForever={refresh} />}
       <TopBar ctx={ctx} desktop={desktop} />
       <main className="app-main">
         {ctxError ? (
@@ -140,6 +143,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/intake" replace />} />
             <Route path="/intake" element={<Intake ctx={ctx} />} />
+            <Route path="/jobs" element={<Jobs ctx={ctx} />} />
             <Route path="/settings" element={<Settings ctx={ctx} onSaved={refresh} />} />
             <Route path="*" element={<Navigate to="/intake" replace />} />
           </Routes>
@@ -177,6 +181,7 @@ function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean })
           </div>
           <div className="tabs" style={{ border: 'none' }}>
             {tab('/intake', 'Job intake')}
+            {tab('/jobs', 'Jobs')}
             {tab('/settings', 'Shop settings')}
           </div>
           <span className="who">

@@ -274,4 +274,64 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(printed.jobs.clients.name).toBe('Acme Co')
     expect(printed.shops.name).toBe('Test Shop')
   })
+
+  it('lists saved jobs newest first, with draft and sent quotes both showing', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const rates = local.toRateSet(ctx.rateCard, ctx.shop)
+    const material = ctx.materials[0]
+    const printer = ctx.printers[0]
+    const q = priceQuote(MAST_BRACKETS, rates, material, printer)
+
+    const quoteArgs = (ref: string) =>
+      ({
+        shopId,
+        ref,
+        client: { name: 'Acme Co', contact: '', email: '', phone: '', source: '' },
+        job: { title: 'Mast brackets', brief: '', neededBy: null, assetOrigin: 'model' as const },
+        quote: {
+          design_billing: 'hourly' as const,
+          design_qty: MAST_BRACKETS.designQty,
+          revisions_incl: MAST_BRACKETS.revisions,
+          quantity: MAST_BRACKETS.quantity,
+          material_id: material.id,
+          printer_id: printer.id,
+          units_per_part: MAST_BRACKETS.unitsPerPart,
+          print_hrs_part: MAST_BRACKETS.printHrsPerPart,
+          finishing_hrs: MAST_BRACKETS.finishingHrs,
+          rush: MAST_BRACKETS.rush,
+          flat_each: MAST_BRACKETS.flatEach,
+          discount_pct: MAST_BRACKETS.discountPct,
+        },
+      }) satisfies SaveQuoteArgs
+
+    const draftRef = await local.nextJobRef(shopId)
+    const draft = await local.saveQuote(quoteArgs(draftRef))
+
+    const sentRef = await local.nextJobRef(shopId)
+    const sent = await local.saveQuote({
+      ...quoteArgs(sentRef),
+      send: {
+        rates_snapshot: rates,
+        total: q.total,
+        deposit_due: q.deposit,
+        valid_until: '2026-12-31',
+      },
+    })
+
+    const rows = await local.listJobs(shopId)
+    expect(rows).toHaveLength(2)
+
+    // newest first — the sent job was saved second
+    expect(rows[0].jobId).toBe(sent.jobId)
+    expect(rows[0].quoteStatus).toBe('sent')
+    expect(rows[0].total).toBe(q.total)
+    expect(rows[0].quoteId).toBe(sent.quoteId)
+
+    expect(rows[1].jobId).toBe(draft.jobId)
+    expect(rows[1].quoteStatus).toBe('draft')
+    expect(rows[1].total).toBeNull()
+    expect(rows[1].clientName).toBe('Acme Co')
+  })
 })

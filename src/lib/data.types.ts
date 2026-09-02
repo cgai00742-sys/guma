@@ -25,6 +25,9 @@ export interface Shop {
   locale: string
   legal_name: string | null
   address: string | null
+  /** Two-letter US state code, e.g. 'HI'. Powers the tax-name helper only
+   *  (src/lib/taxHelp.ts) -- never read by pricing.ts. Null until supplied. */
+  state: string | null
   email: string | null
   phone: string | null
   license_no: string | null
@@ -35,6 +38,10 @@ export interface Shop {
   lead_days: number
   /** $/kWh off the shop's own utility bill. Null until they supply it. */
   electricity_rate_kwh: number | null
+  /** The desktop welcome dialog, shown on launch until dismissed with
+   *  "don't show this again". SQLite stores it as 0/1; data.local.ts
+   *  coerces it to a real boolean on the way out. */
+  show_welcome: boolean
 }
 
 export interface RateCardRow {
@@ -124,6 +131,7 @@ export interface ShopIdentityInput {
   name: string
   legal_name: string
   address: string
+  state: string
   email: string
   phone: string
   license_no: string
@@ -173,4 +181,20 @@ export interface SavedQuote {
   clientId: string
   quoteId: string
   ref: string
+}
+
+/** One row in the Jobs list — every job today has exactly one quote (there
+ *  is no "revise and re-save" flow yet, so `version` never advances past
+ *  1), but the type carries a possibly-null quote deliberately: a job
+ *  whose only save so far was "Save draft" has quote fields, a job that's
+ *  never been saved at all wouldn't exist as a row in the first place. */
+export interface JobListRow {
+  jobId: string
+  ref: string
+  title: string
+  clientName: string
+  createdAt: string
+  quoteId: string | null
+  quoteStatus: 'draft' | 'sent' | 'accepted' | 'declined' | 'expired' | null
+  total: number | null
 }

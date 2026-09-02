@@ -29,6 +29,7 @@ vi.mock('./data.local', () => ({
   saveShopQuoteTerms: vi.fn(),
   savePrinter: vi.fn(),
   nextJobRef: vi.fn(),
+  listJobs: vi.fn(),
   saveQuote: vi.fn(),
   loadQuoteForPrint: vi.fn(),
 }))
@@ -41,6 +42,7 @@ vi.mock('./data.supabase', () => ({
   saveShopQuoteTerms: vi.fn(),
   savePrinter: vi.fn(),
   nextJobRef: vi.fn(),
+  listJobs: vi.fn(),
   saveQuote: vi.fn(),
   loadQuoteForPrint: vi.fn(),
 }))
