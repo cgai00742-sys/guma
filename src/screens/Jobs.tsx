@@ -14,12 +14,20 @@
  * language reason instead of a link that breaks.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { makeMoney } from '../lib/pricing'
-import { listJobs, toRateSet, type JobListRow, type ShopContext } from '../lib/data'
+import {
+  deleteProject,
+  listJobs,
+  takeProjectIn,
+  toRateSet,
+  type JobListRow,
+  type ShopContext,
+} from '../lib/data'
 import { PHASE_LABEL, flagsFor, gateStatus, worstTone, type Flag } from '../lib/gates'
 
 type SortKey = 'saved' | 'stage' | 'due' | 'value' | 'owed' | 'flags'
+type Show = 'live' | 'drafts' | 'all'
 
 interface Row extends JobListRow {
   flags: Flag[]
@@ -68,6 +76,40 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
     new Date(iso).toLocaleDateString(rates.locale, { day: 'numeric', month: 'short', year: 'numeric' })
 
   const [sort, setSort] = useState<SortKey>('saved')
+  // The list is where drafts live, since the board deliberately excludes
+  // them. Kept in the URL so the board's "N drafts" chip can link straight
+  // at them.
+  const [params, setParams] = useSearchParams()
+  const show: Show = (['live', 'drafts', 'all'] as const).includes(params.get('show') as Show)
+    ? (params.get('show') as Show)
+    : 'live'
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  function setShow(next: Show) {
+    const p = new URLSearchParams(params)
+    if (next === 'live') p.delete('show')
+    else p.set('show', next)
+    setParams(p, { replace: true })
+  }
+
+  async function refresh() {
+    setJobs(await listJobs(ctx.shop.id))
+  }
+
+  async function act(fn: () => Promise<unknown>) {
+    setBusy(true)
+    setError(null)
+    try {
+      await fn()
+      await refresh()
+      setConfirming(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   /** Flags and gate progress come from the same pure functions the board
    *  uses, over the same rows — there is no second opinion here. */
@@ -94,8 +136,11 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
         return (at ? rank[at] : 9) - (bt ? rank[bt] : 9) || b.flags.length - a.flags.length
       },
     }
-    return [...rows].sort(by[sort])
-  }, [rows, sort])
+    const visible = rows.filter((r) =>
+      show === 'all' ? true : show === 'drafts' ? !r.facts.takenInAt : !!r.facts.takenInAt,
+    )
+    return [...visible].sort(by[sort])
+  }, [rows, sort, show])
 
   return (
     <div className="wrap" style={{ paddingTop: 20, paddingBottom: 40 }}>
@@ -104,7 +149,7 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
           <h2>Projects</h2>
           <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--txt-3)', marginTop: 3 }}>
             {jobs
-              ? `${jobs.length} saved · ${rows.filter((r) => r.flags.length > 0).length} flagged · ${money(rows.reduce((n, r) => n + r.facts.balanceOwed, 0))} owed`
+              ? `${rows.filter((r) => r.facts.takenInAt).length} on the board · ${rows.filter((r) => !r.facts.takenInAt).length} draft · ${money(rows.reduce((n, r) => n + r.facts.balanceOwed, 0))} owed`
               : 'Loading…'}
           </div>
         </div>
@@ -120,15 +165,37 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
         </div>
       )}
 
-      {!error && jobs && jobs.length === 0 && (
+      {/* Keyed off the FILTERED rows, not the raw count: filtering to
+          Drafts when there are none used to render an empty table with no
+          explanation at all. */}
+      {!error && jobs && sorted.length === 0 && (
         <div className="pane" style={{ textAlign: 'center', color: 'var(--txt-3)', padding: '32px 16px' }}>
-          Nothing saved yet. Every project you save from New project — draft or sent — shows up here.
+          {jobs.length === 0
+            ? 'Nothing saved yet. Every project you save from New project shows up here, drafts included.'
+            : show === 'drafts'
+              ? 'No drafts. A draft is a project saved without being taken in — priced and findable, but kept off the board.'
+              : show === 'live'
+                ? 'Nothing on the board. Everything saved so far is still a draft — switch to Drafts to take one in.'
+                : 'Nothing matches.'}
         </div>
       )}
 
-      {!error && jobs && jobs.length > 0 && (
+      {!error && jobs && sorted.length > 0 && (
         <>
           <div className="filters" style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+            <div className="seg" role="group" aria-label="Which projects to show">
+              {(
+                [
+                  ['live', 'On the board'],
+                  ['drafts', 'Drafts'],
+                  ['all', 'Everything'],
+                ] as [Show, string][]
+              ).map(([v, label]) => (
+                <button key={v} type="button" aria-pressed={show === v} onClick={() => setShow(v)}>
+                  {label}
+                </button>
+              ))}
+            </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
               <span style={{ color: 'var(--txt-3)' }}>Sort by</span>
               <select
@@ -159,6 +226,7 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
                   <th className="r">Total</th>
                   <th className="r">Owed</th>
                   <th>Due</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -177,7 +245,20 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
                         <div className="pmeta">{j.clientName}</div>
                       </td>
                       <td>
-                        <span className="chip">{PHASE_LABEL[j.phase]}</span>
+                        {j.facts.takenInAt ? (
+                          <span className="chip">{PHASE_LABEL[j.phase]}</span>
+                        ) : (
+                          <span
+                            className="chip"
+                            style={{
+                              color: 'var(--warn)',
+                              borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)',
+                            }}
+                            title="Saved but not taken in, so it is not on the board."
+                          >
+                            Draft
+                          </span>
+                        )}
                       </td>
                       <td>
                         {j.flags.length === 0 ? (
@@ -247,6 +328,56 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
                       </td>
                       <td style={{ color: 'var(--txt-3)', fontSize: 11 }}>
                         {j.facts.neededBy ?? dateFmt(j.createdAt)}
+                      </td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        {confirming === j.jobId ? (
+                          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                            <span style={{ fontSize: 10, color: 'var(--red)' }}>
+                              Delete {j.ref} and everything on it?
+                            </span>
+                            <button
+                              type="button"
+                              className="btn sm ghost"
+                              onClick={() => setConfirming(null)}
+                            >
+                              Keep
+                            </button>
+                            <button
+                              type="button"
+                              className="btn sm danger"
+                              disabled={busy}
+                              onClick={() => void act(() => deleteProject(ctx.shop.id, j.jobId))}
+                            >
+                              Delete
+                            </button>
+                          </span>
+                        ) : (
+                          <span style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}>
+                            {!j.facts.takenInAt && (
+                              <button
+                                type="button"
+                                className="btn sm"
+                                disabled={busy}
+                                title="Put it on the board at Intake."
+                                onClick={() =>
+                                  void act(() =>
+                                    takeProjectIn(ctx.shop.id, j.jobId, ctx.profile.id),
+                                  )
+                                }
+                              >
+                                Take in
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="linkbtn"
+                              style={{ fontSize: 11, color: 'var(--red)' }}
+                              onClick={() => setConfirming(j.jobId)}
+                            >
+                              delete
+                            </button>
+                          </span>
+                        )}
                       </td>
                     </tr>
                   )

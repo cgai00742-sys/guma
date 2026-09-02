@@ -349,3 +349,11 @@ export async function setQuoteStatus(
 ): Promise<void> {
   return (await backend()).setQuoteStatus(shopId, quoteId, actorId, status)
 }
+
+export async function takeProjectIn(shopId: string, jobId: string, actorId: string): Promise<void> {
+  return (await backend()).takeProjectIn(shopId, jobId, actorId)
+}
+
+export async function deleteProject(shopId: string, jobId: string): Promise<void> {
+  return (await backend()).deleteProject(shopId, jobId)
+}

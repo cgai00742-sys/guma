@@ -49,6 +49,8 @@ import {
   logWork,
   recordPrintRun,
   setQuoteStatus,
+  takeProjectIn,
+  deleteProject,
   recordPayment,
   setGateItem,
   updateJobPhase,
@@ -232,6 +234,29 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
     }
   }
 
+  async function takeIn() {
+    setBusy(true)
+    try {
+      await takeProjectIn(ctx.shop.id, jobId, ctx.profile.id)
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function destroy() {
+    setBusy(true)
+    try {
+      await deleteProject(ctx.shop.id, jobId)
+      navigate('/projects', { replace: true })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
   async function markQuote(status: QuoteStatus) {
     if (!detail?.quote) return
     setBusy(true)
@@ -294,7 +319,36 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         </span>
       </div>
 
-      <div className="stepper" style={{ marginTop: 12 }}>
+      {/* A draft is deliberately not on the board. Saying so here, with the
+          one action that changes it, is the difference between "where did my
+          project go" and a decision someone made on purpose. */}
+      {!facts.takenInAt && (
+        <div
+          className="pane"
+          style={{
+            marginTop: 12,
+            marginBottom: 0,
+            borderColor: 'color-mix(in srgb, var(--warn) 40%, transparent)',
+            display: 'flex',
+            gap: 12,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{ fontWeight: 600, color: 'var(--txt)' }}>Saved as a draft</div>
+            <div style={{ fontSize: 12, color: 'var(--txt-2)', marginTop: 2 }}>
+              Priced and saved, but not on the pipeline board and not counted as work you have
+              agreed to. Take it in when it becomes real.
+            </div>
+          </div>
+          <button type="button" className="btn primary" disabled={busy} onClick={() => void takeIn()}>
+            Take it into Intake →
+          </button>
+        </div>
+      )}
+
+      <div className="stepper" style={{ marginTop: 12, opacity: facts.takenInAt ? 1 : 0.45 }}>
         {JOB_PHASES.map((p, i) => (
           <button
             key={p}
@@ -843,7 +897,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         }}
       >
         <span className="gatewhy" style={{ fontSize: 11, color: 'var(--txt-3)', maxWidth: '52ch' }}>
-          {liveGate.reason}
+          {facts.takenInAt
+            ? liveGate.reason
+            : 'A draft has no gate to clear — nothing is being tracked against it until it is taken in.'}
         </span>
         <span style={{ marginLeft: 'auto' }} />
         <PrioritySelect
@@ -867,15 +923,28 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         >
           Back to projects
         </button>
-        <button
-          type="button"
-          className="btn primary advance"
-          disabled={busy || liveGate.blocked || liveGate.next === null}
-          title={liveGate.blocked ? liveGate.reason : undefined}
-          onClick={() => void advance()}
-        >
-          {liveGate.next ? `Advance to ${PHASE_LABEL[liveGate.next]} →` : 'Delivered'}
-        </button>
+        <DeleteProject detail={detail} busy={busy} onConfirm={destroy} />
+        {facts.takenInAt ? (
+          <button
+            type="button"
+            className="btn primary advance"
+            disabled={busy || liveGate.blocked || liveGate.next === null}
+            title={liveGate.blocked ? liveGate.reason : undefined}
+            onClick={() => void advance()}
+          >
+            {liveGate.next ? `Advance to ${PHASE_LABEL[liveGate.next]} →` : 'Delivered'}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn primary advance"
+            disabled={busy}
+            title="Puts it on the board at Intake and starts the gates."
+            onClick={() => void takeIn()}
+          >
+            Take it into Intake →
+          </button>
+        )}
       </div>
     </div>
   )
@@ -1793,6 +1862,71 @@ function RunLog({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * Delete, with the consequences named.
+ *
+ * Two steps, and the second one counts what is about to go. A project is
+ * the parent of its payments, its runs, its logged hours and its build
+ * sheet, and all of it cascades — so "are you sure?" is not enough when the
+ * honest question is "are you sure about the four payments?".
+ *
+ * There is no archive and no undo. That is a real choice, not an omission:
+ * a soft-delete that hides rows still counts them in every rollup unless
+ * every query learns to exclude them, and a half-excluded row in a tool
+ * about money is worse than a deliberate deletion.
+ */
+function DeleteProject({
+  detail,
+  busy,
+  onConfirm,
+}: {
+  detail: ProjectDetail
+  busy: boolean
+  onConfirm: () => Promise<void>
+}) {
+  const [armed, setArmed] = useState(false)
+  const goes = [
+    detail.payments.length && `${detail.payments.length} payment${detail.payments.length === 1 ? '' : 's'}`,
+    detail.runs.length && `${detail.runs.length} build run${detail.runs.length === 1 ? '' : 's'}`,
+    detail.work.length && `${detail.work.length} logged entr${detail.work.length === 1 ? 'y' : 'ies'}`,
+    detail.parts.length && `${detail.parts.length} part${detail.parts.length === 1 ? '' : 's'}`,
+    detail.quote && 'its quote',
+  ].filter(Boolean) as string[]
+
+  if (!armed) {
+    return (
+      <button
+        type="button"
+        className="btn ghost"
+        disabled={busy}
+        style={{ color: 'var(--red)' }}
+        onClick={() => setArmed(true)}
+      >
+        Delete
+      </button>
+    )
+  }
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 11, color: 'var(--red)', maxWidth: '46ch' }}>
+        Delete {detail.ref} for good
+        {goes.length > 0 ? `, along with ${goes.join(', ')}` : ''}. This cannot be undone.
+      </span>
+      <button type="button" className="btn sm ghost" onClick={() => setArmed(false)}>
+        Keep it
+      </button>
+      <button
+        type="button"
+        className="btn sm danger"
+        disabled={busy}
+        onClick={() => void onConfirm()}
+      >
+        Delete it
+      </button>
+    </span>
   )
 }
 

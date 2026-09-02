@@ -349,7 +349,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
   }))
 }
 
-const JOB_SELECT = `id, ref, title, brief, created_at, updated_at, phase, priority,
+const JOB_SELECT = `id, ref, title, brief, created_at, updated_at, taken_in_at, phase, priority,
    asset_origin, poc, needed_by, window_from, window_locked, at_risk,
    delivery_on, delivery_how,
    clients!inner ( id, name, kind, contact, email, phone ),
@@ -411,6 +411,7 @@ function factsFrom(
     phase: r.phase,
     priority: r.priority,
     createdAt: r.created_at,
+    takenInAt: r.taken_in_at ?? null,
     neededBy: r.needed_by ?? null,
     windowFrom: r.window_from ?? null,
     windowLocked: r.window_locked === true,
@@ -1350,4 +1351,40 @@ export async function setQuoteStatus(
     body: `Quote marked ${status}.`,
   })
   if (evErr) throw evErr
+}
+
+/** See data.local.ts's takeProjectIn. */
+export async function takeProjectIn(shopId: string, jobId: string, actorId: string): Promise<void> {
+  const { data: job, error: readErr } = await supabase
+    .from('jobs')
+    .select('taken_in_at')
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+    .single()
+  if (readErr) throw readErr
+  if (!job) throw new Error('That project no longer exists.')
+  if (job.taken_in_at) return
+
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('jobs')
+    .update({ taken_in_at: now, updated_at: now })
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+  if (error) throw error
+
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: jobId,
+    actor_id: actorId,
+    kind: 'taken_in',
+    body: 'Taken in from a draft — now on the board at Intake.',
+  })
+  if (evErr) throw evErr
+}
+
+/** See data.local.ts's deleteProject. Postgres cascades unconditionally,
+ *  so there is no pragma to set here. */
+export async function deleteProject(shopId: string, jobId: string): Promise<void> {
+  const { error } = await supabase.from('jobs').delete().eq('id', jobId).eq('shop_id', shopId)
+  if (error) throw error
 }

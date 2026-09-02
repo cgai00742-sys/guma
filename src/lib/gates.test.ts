@@ -24,6 +24,7 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     phase: 'design',
     priority: 'medium',
     createdAt: '2026-08-01T00:00:00Z',
+    takenInAt: '2026-08-01T00:00:00Z',
     neededBy: null,
     windowFrom: null,
     windowLocked: false,

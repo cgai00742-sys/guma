@@ -102,12 +102,19 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
   /** Flags and gate progress, computed once per row per render rather than
    *  inside the card, so the stat tiles and the columns agree by
    *  construction instead of by two copies of the same call. */
+  // Drafts are deliberately absent. A board that fills up with prices
+  // nobody has agreed to stops being a board -- see 0008_drafts.sql. They
+  // are one click away in the list, and the count below says how many.
+  const drafts = useMemo(() => (jobs ?? []).filter((j) => !j.facts.takenInAt).length, [jobs])
+
   const decorated: Decorated[] = useMemo(
     () =>
-      (jobs ?? []).map((j) => {
-        const gate = gateStatus(j.phase, j.gateAnswers, j.facts)
-        return { ...j, flags: flagsFor(j.facts), gateDone: gate.done, gateTotal: gate.total }
-      }),
+      (jobs ?? [])
+        .filter((j) => j.facts.takenInAt)
+        .map((j) => {
+          const gate = gateStatus(j.phase, j.gateAnswers, j.facts)
+          return { ...j, flags: flagsFor(j.facts), gateDone: gate.done, gateTotal: gate.total }
+        }),
     [jobs],
   )
 
@@ -244,6 +251,16 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
           {filtered.length} of {decorated.length} shown
           {flaggedOnly ? ' · flagged only' : ''}
         </span>
+        {drafts > 0 && (
+          <Link
+            to="/projects?view=list&show=drafts"
+            className="chip"
+            style={{ textDecoration: 'none', marginLeft: 'auto' }}
+            title="Saved prices that have not been taken in. They are not on the board on purpose."
+          >
+            {drafts} draft{drafts === 1 ? '' : 's'} →
+          </Link>
+        )}
       </div>
 
       <div className="board">

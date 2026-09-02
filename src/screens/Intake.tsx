@@ -35,7 +35,7 @@ import {
   type DesignBilling,
   type QuoteInputs,
 } from '../lib/pricing'
-import { nextJobRef, saveQuote, toRateSet, type ShopContext } from '../lib/data'
+import { nextJobRef, saveQuote, takeProjectIn, toRateSet, type ShopContext } from '../lib/data'
 
 const ASSET_NOTES: Record<AssetOrigin, string> = {
   model:
@@ -86,7 +86,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   const [materialId, setMaterialId] = useState(ctx.materials[0]?.id ?? '')
   const [printerId, setPrinterId] = useState(ctx.printers[0]?.id ?? '')
 
-  const [saving, setSaving] = useState<'idle' | 'draft' | 'send'>('idle')
+  const [saving, setSaving] = useState<'idle' | 'draft' | 'intake' | 'send'>('idle')
   const [error, setError] = useState<string | null>(null)
 
   const material = ctx.materials.find((m) => m.id === materialId) ?? null
@@ -107,7 +107,18 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   const unitWord = material?.unit === 'ml' ? 'Millilitres' : 'Grams'
   const canSave = client.trim().length > 0 && title.trim().length > 0
 
-  async function persist(mode: 'draft' | 'send') {
+  /**
+   * Three ways out, because there are three different intentions.
+   *
+   *   draft   Park it. Priced and findable, but off the board -- a price
+   *           worked out while the client is still on the phone is not a
+   *           job you have agreed to do.
+   *   intake  Take it in. It becomes a live project at the Intake stage
+   *           and starts moving through the gates.
+   *   send    Take it in and open the printable, because handing a client
+   *           a quote is itself the act of committing to it.
+   */
+  async function persist(mode: 'draft' | 'intake' | 'send') {
     if (!canSave) {
       setError('A client name and a project title are needed before this can be saved.')
       return
@@ -160,6 +171,10 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
       // money, the build -- lives on the project page, and leaving someone
       // on a form (or in a print view whose only exit was back to the form)
       // is why a project could be saved and then never found again.
+      // Anything but a parked draft is a real project from this moment.
+      if (mode !== 'draft') {
+        await takeProjectIn(ctx.shop.id, saved.jobId, ctx.profile.id)
+      }
       navigate(`/project/${saved.jobId}${mode === 'send' ? '?quote=1' : ''}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -208,22 +223,39 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             className="btn"
             onClick={() => persist('draft')}
             disabled={saving !== 'idle' || !canSave}
-            title={canSave ? undefined : 'Add a client name and a project title first.'}
+            title={
+              canSave
+                ? 'Saves the price and the details, and leaves it off the board. Nothing is committed to.'
+                : 'Add a client name and a project title first.'
+            }
           >
             {saving === 'draft' ? 'Saving…' : 'Save draft'}
           </button>
           <button
             type="button"
-            className="btn primary"
+            className="btn"
             onClick={() => persist('send')}
             disabled={saving !== 'idle' || !canSave}
             title={
               canSave
-                ? "Freezes today's rates onto this quote and opens the printable version. Guma doesn't email anything — it's yours to save as a PDF or hand to the client however you like."
+                ? "Takes it in and opens the printable. Freezes today's rates onto the quote, so a later rate change can never move a number the client is holding. Guma doesn't email anything — the PDF is yours to send however you like."
                 : 'Add a client name and a project title first.'
             }
           >
-            {saving === 'send' ? 'Preparing…' : 'Save quote as PDF'}
+            {saving === 'send' ? 'Preparing…' : 'Save as PDF'}
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={() => persist('intake')}
+            disabled={saving !== 'idle' || !canSave}
+            title={
+              canSave
+                ? 'Takes it in as a real project. It lands on the board at Intake and starts working through the gates.'
+                : 'Add a client name and a project title first.'
+            }
+          >
+            {saving === 'intake' ? 'Taking in…' : 'Intake →'}
           </button>
         </div>
       </div>

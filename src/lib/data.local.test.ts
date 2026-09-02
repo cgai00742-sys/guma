@@ -26,7 +26,7 @@
  * bridge, or anything about the actual app window. That still needs a real
  * Tauri run on a real machine — see the project board.
  */
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,18 +43,14 @@ const ticked = (...keys: string[]): Record<string, GateAnswer> =>
 const here = dirname(fileURLToPath(import.meta.url))
 const MIGRATIONS_DIR = join(here, '../../src-tauri/migrations')
 // Every migration file the app itself applies, in the same order Tauri's
-// migration runner would -- not just 0001. A test that only ran the first
-// file would silently drift from the real schema the moment a second one
-// (like 0002_show_welcome.sql) shipped.
-const MIGRATION_SQL = [
-  '0001_initial.sql',
-  '0002_show_welcome.sql',
-  '0003_shop_state.sql',
-  '0004_partners_gates.sql',
-  '0005_material_purchases.sql',
-  '0006_actuals.sql',
-  '0007_parts.sql',
-]
+// migration runner would -- read from the directory rather than listed
+// here, because a hardcoded list is a list somebody forgets to add to. It
+// was forgotten twice before this comment existed, and both times the
+// failure was a wall of "no such column" rather than anything that named
+// the real problem.
+const MIGRATION_SQL = readdirSync(MIGRATIONS_DIR)
+  .filter((f) => f.endsWith('.sql'))
+  .sort()
   .map((f) => readFileSync(join(MIGRATIONS_DIR, f), 'utf8'))
   .join('\n')
 
@@ -1732,5 +1728,110 @@ describe('data.local.ts against a real SQLite database', () => {
     await local.setQuoteStatus(shopId, saved.quoteId, ctx.profile.id, 'sent')
     d = await local.loadProjectDetail(shopId, saved.jobId)
     expect(d.events).toHaveLength(before)
+  })
+
+  /* ---------------------------------------------------------------- */
+  /* Drafts, taking in, and deleting                                   */
+  /* ---------------------------------------------------------------- */
+
+  it('a saved project starts as a draft and is not on the board', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const { saved } = await seedProject(local, shopId)
+
+    const d = await local.loadProjectDetail(shopId, saved.jobId)
+    // Saving prices something; it does not commit to doing it.
+    expect(d.facts.takenInAt).toBeNull()
+    const [row] = await local.listJobs(shopId)
+    expect(row.facts.takenInAt).toBeNull()
+    // ...and the board filters on exactly this.
+    expect((await local.listJobs(shopId)).filter((j) => j.facts.takenInAt)).toHaveLength(0)
+  })
+
+  it('taking a draft in stamps it once and records why', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+
+    await local.takeProjectIn(shopId, saved.jobId, ctx.profile.id)
+    let d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.facts.takenInAt).toBeTruthy()
+    expect(d.phase).toBe('intake')
+    expect(d.events.some((e) => e.kind === 'taken_in')).toBe(true)
+    const stamp = d.facts.takenInAt
+
+    // Idempotent: the first answer to "when did this become real" is the
+    // true one, so taking it in again must not move the date.
+    await local.takeProjectIn(shopId, saved.jobId, ctx.profile.id)
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.facts.takenInAt).toBe(stamp)
+    expect(d.events.filter((e) => e.kind === 'taken_in')).toHaveLength(1)
+
+    await expect(
+      local.takeProjectIn(shopId, 'no-such-job', ctx.profile.id),
+    ).rejects.toThrow(/no longer exists/)
+  })
+
+  it('deleting a project takes everything recorded against it', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+    const other = await seedProject(local, shopId, { title: 'Survivor', name: 'Other Co' })
+
+    // Give it one of everything, so the cascade has something to prove.
+    await local.recordPayment(shopId, saved.jobId, ctx.profile.id, {
+      kind: 'deposit', amount: 100, method: 'cash', receivedOn: '2026-01-10',
+      note: null, quoteId: saved.quoteId,
+    })
+    await local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id, materialId: ctx.materials[0].id,
+      unitsUsed: 100, hours: 2, outcome: 'success', failureReason: null,
+      note: null, startedAt: null,
+    })
+    await local.logWork(shopId, saved.jobId, ctx.profile.id, {
+      kind: 'design', hours: 2, workedOn: '2026-01-10', note: null,
+    })
+    const part = await local.addPart(shopId, saved.jobId, ctx.profile.id, { label: 'A', qty: 1 })
+    await local.setPartStatus(shopId, part, ctx.profile.id, 'printed', null)
+    await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'intake', 'origin', true, null)
+
+    expect(await local.listJobs(shopId)).toHaveLength(2)
+
+    await local.deleteProject(shopId, saved.jobId)
+
+    const left = await local.listJobs(shopId)
+    expect(left).toHaveLength(1)
+    expect(left[0].jobId).toBe(other.saved.jobId)
+    await expect(local.loadProjectDetail(shopId, saved.jobId)).rejects.toThrow(/no longer exists/)
+
+    // Nothing orphaned. A half-delete in a tool about money is worse than
+    // no delete at all, and SQLite only cascades with the pragma on.
+    const d = await import('./data.local')
+    const survivors = await d.loadProjectDetail(shopId, other.saved.jobId)
+    expect(survivors.payments).toEqual([])
+    expect((await d.listClients(shopId)).find((c) => c.name === 'Acme Co')?.projects).toBe(0)
+
+    await expect(local.deleteProject(shopId, saved.jobId)).rejects.toThrow(/no longer exists/)
+  })
+
+  it('deleting one project leaves another shop-mate untouched', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const a = await seedProject(local, shopId, { title: 'Going' })
+    const b = await seedProject(local, shopId, { title: 'Staying' })
+    await local.recordPayment(shopId, b.saved.jobId, ctx.profile.id, {
+      kind: 'deposit', amount: 250, method: 'cash', receivedOn: '2026-01-10',
+      note: null, quoteId: b.saved.quoteId,
+    })
+
+    await local.deleteProject(shopId, a.saved.jobId)
+
+    const kept = await local.loadProjectDetail(shopId, b.saved.jobId)
+    expect(kept.title).toBe('Staying')
+    expect(kept.payments).toHaveLength(1)
+    expect(kept.payments[0].amount).toBe(250)
   })
 })

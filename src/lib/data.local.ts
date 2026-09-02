@@ -463,6 +463,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
  *  about what a project's facts are. */
 const JOB_LIST_SQL = `
   select j.id as job_id, j.ref, j.title, j.brief, j.created_at, j.updated_at,
+         j.taken_in_at,
          j.phase, j.priority, j.asset_origin, j.poc,
          j.needed_by, j.window_from, j.window_locked, j.at_risk,
          j.delivery_on, j.delivery_how,
@@ -514,6 +515,7 @@ interface JobListSqlRow {
   brief: string | null
   created_at: string
   updated_at: string
+  taken_in_at: string | null
   phase: JobPhase
   priority: JobPriority
   asset_origin: 'model' | 'fix' | 'ready'
@@ -554,6 +556,7 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     phase: r.phase,
     priority: r.priority,
     createdAt: r.created_at,
+    takenInAt: r.taken_in_at,
     neededBy: r.needed_by,
     windowFrom: r.window_from,
     // SQLite has no boolean type; 0/1 becomes a real boolean here so that
@@ -1765,4 +1768,61 @@ export async function setQuoteStatus(
     `insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'quote', ?)`,
     [quote.job_id, actorId, `Quote marked ${status}.`],
   )
+}
+
+/**
+ * Take a saved draft in as a real project.
+ *
+ * Stamped rather than flagged, because "when did this become work we
+ * agreed to do" is a question worth being able to answer later, and a
+ * boolean cannot. Idempotent: taking in a project that is already in does
+ * nothing rather than moving its date, since the first answer is the true
+ * one.
+ */
+export async function takeProjectIn(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+): Promise<void> {
+  const d = await db()
+  const rows = await d.select<{ taken_in_at: string | null }[]>(
+    'select taken_in_at from jobs where id = ? and shop_id = ?',
+    [jobId, shopId],
+  )
+  if (!rows[0]) throw new Error('That project no longer exists.')
+  if (rows[0].taken_in_at) return
+
+  await d.execute(
+    `update jobs set taken_in_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                     updated_at  = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     where id = ? and shop_id = ?`,
+    [jobId, shopId],
+  )
+  await d.execute(
+    `insert into job_events (job_id, actor_id, kind, body)
+     values (?, ?, 'taken_in', 'Taken in from a draft — now on the board at Intake.')`,
+    [jobId, actorId],
+  )
+}
+
+/**
+ * Delete a project and everything recorded against it.
+ *
+ * Every child table declares `on delete cascade`, but SQLite only honours
+ * that when the foreign_keys pragma is on, and a pragma is a property of a
+ * connection rather than of the schema. Turning it on here costs one
+ * statement and removes the possibility of a silent half-delete leaving
+ * orphaned payments behind — which, in a tool whose whole subject is money,
+ * would be worse than the delete failing outright.
+ *
+ * There is no soft-delete and no archive. A shop that wants to keep a
+ * finished project keeps it; this is for the ones that should not have
+ * existed. The screen asking for confirmation is where the warning lives,
+ * because that is where the person is.
+ */
+export async function deleteProject(shopId: string, jobId: string): Promise<void> {
+  const d = await db()
+  await d.execute('pragma foreign_keys = ON')
+  const res = await d.execute('delete from jobs where id = ? and shop_id = ?', [jobId, shopId])
+  if (res.rowsAffected === 0) throw new Error('That project no longer exists.')
 }

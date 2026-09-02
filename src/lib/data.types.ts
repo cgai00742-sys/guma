@@ -263,6 +263,13 @@ export interface ProjectFacts {
   phase: JobPhase
   priority: JobPriority
   createdAt: string
+  /**
+   * When someone decided this was a real project rather than a saved
+   * price. Null means it is still a draft: findable and priced, but off
+   * the pipeline board. See 0008_drafts.sql for why the two are different
+   * acts.
+   */
+  takenInAt: string | null
   /** ISO date (YYYY-MM-DD) the client is holding the shop to. */
   neededBy: string | null
   /** ISO date the delivery window opens, if the shop quoted a range. */

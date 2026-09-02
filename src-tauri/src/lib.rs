@@ -47,6 +47,12 @@ pub fn run() {
       sql: include_str!("../migrations/0007_parts.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 8,
+      description: "drafts: a saved job is not taken in until someone says so",
+      sql: include_str!("../migrations/0008_drafts.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

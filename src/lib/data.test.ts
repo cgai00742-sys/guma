@@ -53,6 +53,8 @@ vi.mock('./data.local', () => ({
   updatePart: vi.fn(),
   deletePart: vi.fn(),
   setQuoteStatus: vi.fn(),
+  takeProjectIn: vi.fn(),
+  deleteProject: vi.fn(),
   saveQuote: vi.fn(),
   loadQuoteForPrint: vi.fn(),
 }))
@@ -89,6 +91,8 @@ vi.mock('./data.supabase', () => ({
   updatePart: vi.fn(),
   deletePart: vi.fn(),
   setQuoteStatus: vi.fn(),
+  takeProjectIn: vi.fn(),
+  deleteProject: vi.fn(),
   saveQuote: vi.fn(),
   loadQuoteForPrint: vi.fn(),
 }))
