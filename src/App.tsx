@@ -6,7 +6,9 @@ import { loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
 import Setup from './screens/Setup'
 import Settings from './screens/Settings'
 import Intake from './screens/Intake'
-import Jobs from './screens/Jobs'
+import Projects from './screens/Projects'
+import Project from './screens/Project'
+import Clients from './screens/Clients'
 import QuoteDoc from './screens/QuoteDoc'
 import WelcomeModal from './components/WelcomeModal'
 
@@ -143,7 +145,13 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/intake" replace />} />
             <Route path="/intake" element={<Intake ctx={ctx} />} />
-            <Route path="/jobs" element={<Jobs ctx={ctx} />} />
+            <Route path="/projects" element={<Projects ctx={ctx} />} />
+            {/* The two screens Projects absorbed. Kept as redirects so any
+                link saved before the merge still lands somewhere real. */}
+            <Route path="/pipeline" element={<Navigate to="/projects" replace />} />
+            <Route path="/jobs" element={<Navigate to="/projects?view=list" replace />} />
+            <Route path="/project/:jobId" element={<Project ctx={ctx} />} />
+            <Route path="/clients" element={<Clients ctx={ctx} />} />
             <Route path="/settings" element={<Settings ctx={ctx} onSaved={refresh} />} />
             <Route path="*" element={<Navigate to="/intake" replace />} />
           </Routes>
@@ -155,11 +163,18 @@ export default function App() {
 
 function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean }) {
   const { pathname } = useLocation()
+  // A project detail page (/project/:id) belongs to the Projects tab —
+  // without this, opening a project leaves the whole nav unlit, which reads
+  // as "you have navigated out of the app" rather than "you are one level
+  // down inside Projects".
+  const owns = (to: string) =>
+    pathname.startsWith(to) || (to === '/projects' && pathname.startsWith('/project/'))
+
   const tab = (to: string, label: string) => (
     <Link
       to={to}
       className="tab"
-      aria-selected={pathname.startsWith(to)}
+      aria-selected={owns(to)}
       style={{ textDecoration: 'none', display: 'inline-block' }}
     >
       {label}
@@ -180,8 +195,9 @@ function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean })
             </div>
           </div>
           <div className="tabs" style={{ border: 'none' }}>
-            {tab('/intake', 'Job intake')}
-            {tab('/jobs', 'Jobs')}
+            {tab('/intake', 'New project')}
+            {tab('/projects', 'Projects')}
+            {tab('/clients', 'Clients')}
             {tab('/settings', 'Shop settings')}
           </div>
           <span className="who">

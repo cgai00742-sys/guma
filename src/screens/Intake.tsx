@@ -1,16 +1,31 @@
 /**
- * Job intake & quote. Recreated from design/Job Intake & Quote.dc.html.
+ * New project — the shortest path from "someone asked" to a price.
  *
- * Layout is the design's: .wrap, section head, seven-step stepper, then a
- * minmax(0,1fr) 420px grid with four stacked panes on the left and a sticky
- * column on the right. Calm register throughout — the ONLY lit element on the
- * screen is the quote card's --lit-edge border, and the only --biolum is the
- * total, because a live-updating price is genuinely live.
+ * This is deliberately the SIMPLEST page in Guma, and it got simpler on
+ * purpose. Two things were cut:
+ *
+ *  - The seven-stage rail across the top. It was in the original design
+ *    when intake was the only screen that existed, so it had to hint at a
+ *    process that was not built yet. Now that process is real and lives on
+ *    the project page, where the current stage, its gate and its flags are
+ *    all actionable. Showing it here just told someone filling in a form
+ *    about six stages they cannot do anything about.
+ *  - Four stacked panes down to two. Everything needed to produce a price
+ *    is visible; everything that fine-tunes one — extra contact details,
+ *    flat-fee billing, revision rounds, per-item overrides, discounts —
+ *    sits behind one "More options" disclosure. A shop quoting a repeat
+ *    job should be able to fill this in without scrolling.
+ *
+ * Layout is otherwise the design's (design/Job Intake & Quote.dc.html): a
+ * minmax(0,1fr) 420px grid with a sticky quote column on the right. Calm
+ * register throughout — the ONLY lit element on the screen is the quote
+ * card's --lit-edge border, and the only --biolum is the total, because a
+ * live-updating price is genuinely live.
  *
  * No arithmetic lives in this file. Every figure comes from priceQuote().
  */
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   buildRatesSnapshot,
   makeMoney,
@@ -22,19 +37,9 @@ import {
 } from '../lib/pricing'
 import { nextJobRef, saveQuote, toRateSet, type ShopContext } from '../lib/data'
 
-const PHASES = [
-  'Intake & quote',
-  'Design',
-  'Client approval',
-  'Scheduled',
-  'In build',
-  'Review',
-  'Delivered',
-]
-
 const ASSET_NOTES: Record<AssetOrigin, string> = {
   model:
-    'You build the model from scratch — measurements, CAD, test print, fit check. This is most jobs, and it is the biggest line on the quote.',
+    'You build the model from scratch — measurements, CAD, test print, fit check. This is most projects, and it is the biggest line on the quote.',
   fix: "Client sent a file that won't print as-is: wall thickness, non-manifold geometry, orientation, or a scale that has to be resolved before slicing.",
   ready: 'A print-ready file you only have to slice. No design line on the quote.',
 }
@@ -84,6 +89,11 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   const [saving, setSaving] = useState<'idle' | 'draft' | 'send'>('idle')
   const [error, setError] = useState<string | null>(null)
   const [savedNote, setSavedNote] = useState<string | null>(null)
+  /** Set alongside savedNote so the confirmation can offer the one thing a
+   *  shop actually wants next: to open what it just saved. Before this, a
+   *  saved draft vanished into the Projects list with no way back to it
+   *  from here. */
+  const [savedJobId, setSavedJobId] = useState<string | null>(null)
 
   const material = ctx.materials.find((m) => m.id === materialId) ?? null
   const printer = ctx.printers.find((p) => p.id === printerId) ?? null
@@ -105,7 +115,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
 
   async function persist(mode: 'draft' | 'send') {
     if (!canSave) {
-      setError('A client name and a job title are needed before this can be saved.')
+      setError('A client name and a project title are needed before this can be saved.')
       return
     }
     setSaving(mode)
@@ -155,6 +165,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
         navigate(`/quote/${saved.quoteId}/print`)
       } else {
         setSavedNote(`Saved as draft · ${saved.ref}`)
+        setSavedJobId(saved.jobId)
         setRef(await nextJobRef(ctx.shop.id))
       }
     } catch (e) {
@@ -168,7 +179,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
     <div className="wrap" style={{ paddingTop: 20, paddingBottom: 40 }}>
       <div className="section-head">
         <div>
-          <h2>New job · intake</h2>
+          <h2>New project</h2>
           <div
             style={{
               display: 'flex',
@@ -194,7 +205,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                   : { borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)', color: 'var(--warn)' }
               }
             >
-              {canSave ? 'Ready to save' : 'Pending — needs a client and job title'}
+              {canSave ? 'Ready to save' : 'Pending — needs a client and project title'}
             </span>
           </div>
         </div>
@@ -204,7 +215,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             className="btn"
             onClick={() => persist('draft')}
             disabled={saving !== 'idle' || !canSave}
-            title={canSave ? undefined : 'Add a client name and a job title first.'}
+            title={canSave ? undefined : 'Add a client name and a project title first.'}
           >
             {saving === 'draft' ? 'Saving…' : 'Save draft'}
           </button>
@@ -216,21 +227,12 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             title={
               canSave
                 ? "Freezes today's rates onto this quote and opens the printable version. Guma doesn't email anything — it's yours to save as a PDF or hand to the client however you like."
-                : 'Add a client name and a job title first.'
+                : 'Add a client name and a project title first.'
             }
           >
             {saving === 'send' ? 'Preparing…' : 'Save quote as PDF'}
           </button>
         </div>
-      </div>
-
-      <div className="stepper">
-        {PHASES.map((p, i) => (
-          <span key={p} className={i === 0 ? 'step cur' : 'step'}>
-            <i />
-            {p}
-          </span>
-        ))}
       </div>
 
       {error && (
@@ -241,6 +243,15 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
       {savedNote && (
         <div className="okbar">
           <span>{savedNote}</span>
+          {savedJobId && (
+            <Link
+              to={`/project/${savedJobId}`}
+              className="linkbtn"
+              style={{ marginLeft: 10 }}
+            >
+              Open the project →
+            </Link>
+          )}
         </div>
       )}
 
@@ -255,50 +266,18 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
         {/* ---------------------------------------------------- left column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="pane" style={{ margin: 0 }}>
-            <h3>Who it's for</h3>
+            <h3>The job</h3>
             <div className="grid2">
               <div className="fld">
                 <label className="lbl" htmlFor="q-client">
-                  Client
-                </label>
-                <input id="q-client" value={client} onChange={(e) => setClient(e.target.value)} />
-              </div>
-              <div className="fld">
-                <label className="lbl" htmlFor="q-contact">
-                  Contact
+                  Client *
                 </label>
                 <input
-                  id="q-contact"
-                  value={contact}
-                  onChange={(e) => setContact(e.target.value)}
-                  placeholder="Ray Q. — ops lead"
+                  id="q-client"
+                  value={client}
+                  onChange={(e) => setClient(e.target.value)}
+                  placeholder="Who is paying"
                 />
-              </div>
-            </div>
-            <div className="grid2" style={{ marginTop: 10 }}>
-              <div className="fld">
-                <label className="lbl" htmlFor="q-email">
-                  Email
-                </label>
-                <input id="q-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-              </div>
-              <div className="fld">
-                <label className="lbl" htmlFor="q-phone">
-                  Phone
-                </label>
-                <input id="q-phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
-              </div>
-            </div>
-            <div className="grid2" style={{ marginTop: 10 }}>
-              <div className="fld">
-                <label className="lbl" htmlFor="q-how">
-                  How they found us
-                </label>
-                <select id="q-how" value={source} onChange={(e) => setSource(e.target.value)}>
-                  {SOURCES.map((s) => (
-                    <option key={s}>{s}</option>
-                  ))}
-                </select>
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="q-need">
@@ -309,7 +288,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             </div>
             <div className="fld" style={{ marginTop: 10 }}>
               <label className="lbl" htmlFor="q-title">
-                Job title
+                Project title *
               </label>
               <input
                 id="q-title"
@@ -323,9 +302,12 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 What they asked for
               </label>
               <textarea id="q-brief" rows={2} value={brief} onChange={(e) => setBrief(e.target.value)} />
+              <div className="hint">
+                Two lines you can re-read in three weeks. It is also the first thing the project's
+                intake gate checks for.
+              </div>
             </div>
           </div>
-
           <div className="pane" style={{ margin: 0 }}>
             <h3>
               The asset
@@ -385,61 +367,26 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             </div>
 
             {q.needsDesign && (
-              <div>
-                <div className="seg" role="group" aria-label="How design is billed" style={{ marginBottom: 12 }}>
-                  {(
-                    [
-                      ['hourly', 'Bill hourly'],
-                      ['flat', 'Flat design fee'],
-                    ] as [DesignBilling, string][]
-                  ).map(([v, label]) => (
-                    <button
-                      key={v}
-                      type="button"
-                      aria-pressed={input.designBilling === v}
-                      onClick={() =>
-                        setInput((s) => ({
-                          ...s,
-                          designBilling: v,
-                          designQty: v === 'flat' ? 600 : 6,
-                        }))
-                      }
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <div className="grid2">
-                  <div className="fld">
-                    <label className="lbl" htmlFor="q-dh">
-                      {input.designBilling === 'flat' ? 'Flat design fee' : 'Design hours, estimated'}
-                    </label>
-                    <input
-                      id="q-dh"
-                      type="number"
-                      step="0.5"
-                      min="0"
-                      value={input.designQty}
-                      onChange={num('designQty')}
-                    />
-                    <div className="hint">
-                      {input.designBilling === 'flat'
-                        ? 'Client sees one number and no clock. You carry the overrun.'
-                        : `Billed as it happens at ${money0(rates.designHourly)}/h. The client approves this estimate before you start.`}
-                    </div>
-                  </div>
-                  <div className="fld">
-                    <label className="lbl" htmlFor="q-rev">
-                      Revision rounds included
-                    </label>
-                    <input id="q-rev" type="number" min="0" value={input.revisions} onChange={num('revisions')} />
-                    <div className="hint">Beyond this, revisions bill hourly at the design rate.</div>
-                  </div>
+              <div className="fld">
+                <label className="lbl" htmlFor="q-dh">
+                  {input.designBilling === 'flat' ? 'Flat design fee' : 'Design hours, estimated'}
+                </label>
+                <input
+                  id="q-dh"
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  value={input.designQty}
+                  onChange={num('designQty')}
+                />
+                <div className="hint">
+                  {input.designBilling === 'flat'
+                    ? 'Client sees one number and no clock. You carry the overrun.'
+                    : `Billed as it happens at ${money0(rates.designHourly)}/h. The client approves this estimate before you start.`}
                 </div>
               </div>
             )}
           </div>
-
           <div className="pane" style={{ margin: 0 }}>
             <h3>
               The print
@@ -537,55 +484,152 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 <div className="hint">Support removal, sanding, wash &amp; cure, assembly.</div>
               </div>
             </div>
-          </div>
-
-          <div className="pane" style={{ margin: 0 }}>
-            <h3>Adjustments</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={input.rush}
-                  onChange={(e) => set('rush')(e.target.checked)}
-                  style={{ marginTop: 2, width: 'auto' }}
-                />
-                <span>
-                  <span style={{ fontSize: 13, color: 'var(--txt)', display: 'block' }}>
-                    Rush job — {trimPct(rates.rushPct)}% surcharge
-                  </span>
-                  <span style={{ fontSize: 11, color: 'var(--txt-3)' }}>
-                    Jumps the queue and takes a machine off whatever it is on.
-                  </span>
+  <label
+              style={{
+                display: 'flex',
+                gap: 10,
+                alignItems: 'flex-start',
+                cursor: 'pointer',
+                marginTop: 12,
+                paddingTop: 12,
+                borderTop: '1px solid var(--line)',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={input.rush}
+                onChange={(e) => set('rush')(e.target.checked)}
+                style={{ marginTop: 2, width: 'auto' }}
+              />
+              <span>
+                <span style={{ fontSize: 13, color: 'var(--txt)', display: 'block' }}>
+                  Rush project — {trimPct(rates.rushPct)}% surcharge
                 </span>
-              </label>
-              <div className="grid2">
+                <span style={{ fontSize: 11, color: 'var(--txt-3)' }}>
+                  Jumps the queue and takes a machine off whatever it is on.
+                </span>
+              </span>
+            </label>
+          </div>
+          {/* Everything that FINE-TUNES a price rather than producing one.
+              Collapsed by default: a shop quoting a repeat job should never
+              have to scroll past six fields it is not going to change. */}
+          <details className="snap" style={{ marginTop: 0 }}>
+            <summary
+              style={{
+                cursor: 'pointer',
+                padding: '10px 14px',
+                fontSize: 12,
+                color: 'var(--txt-2)',
+                listStyle: 'none',
+              }}
+            >
+              More options — contact details, billing style, discounts
+            </summary>
+            <div style={{ padding: '0 14px 14px' }}>
+              <div className="grid2" style={{ marginTop: 10 }}>
                 <div className="fld">
-                  <label className="lbl" htmlFor="q-flat">
-                    Flat per-item price, if agreed
-                  </label>
-                  <input id="q-flat" type="number" min="0" value={input.flatEach} onChange={num('flatEach')} />
-                  <div className="hint">
-                    Set above zero to price by the piece instead of by the build. Overrides material, machine and
-                    finishing lines.
-                  </div>
-                </div>
-                <div className="fld">
-                  <label className="lbl" htmlFor="q-disc">
-                    Discount %
+                  <label className="lbl" htmlFor="q-contact">
+                    Contact
                   </label>
                   <input
-                    id="q-disc"
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={input.discountPct}
-                    onChange={num('discountPct')}
+                    id="q-contact"
+                    value={contact}
+                    onChange={(e) => setContact(e.target.value)}
+                    placeholder="Ray Q. — ops lead"
                   />
-                  <div className="hint">Repeat-client or volume allowance.</div>
+                </div>
+                <div className="fld">
+                  <label className="lbl" htmlFor="q-email">
+                    Email
+                  </label>
+                  <input id="q-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
                 </div>
               </div>
+              <div className="grid2" style={{ marginTop: 10 }}>
+                <div className="fld">
+                  <label className="lbl" htmlFor="q-phone">
+                    Phone
+                  </label>
+                  <input id="q-phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
+                </div>
+                <div className="fld">
+                  <label className="lbl" htmlFor="q-how">
+                    How they found us
+                  </label>
+                  <select id="q-how" value={source} onChange={(e) => setSource(e.target.value)}>
+                    {SOURCES.map((s) => (
+                      <option key={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+                {q.needsDesign && (
+                  <div style={{ marginTop: 14 }}>
+                  <div className="seg" role="group" aria-label="How design is billed" style={{ marginBottom: 12 }}>
+                    {(
+                      [
+                        ['hourly', 'Bill hourly'],
+                        ['flat', 'Flat design fee'],
+                      ] as [DesignBilling, string][]
+                    ).map(([v, label]) => (
+                      <button
+                        key={v}
+                        type="button"
+                        aria-pressed={input.designBilling === v}
+                        onClick={() =>
+                          setInput((s) => ({
+                            ...s,
+                            designBilling: v,
+                            designQty: v === 'flat' ? 600 : 6,
+                          }))
+                        }
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                    <div className="grid2">
+                    <div className="fld">
+                      <label className="lbl" htmlFor="q-rev">
+                        Revision rounds included
+                      </label>
+                      <input id="q-rev" type="number" min="0" value={input.revisions} onChange={num('revisions')} />
+                      <div className="hint">Beyond this, revisions bill hourly at the design rate.</div>
+                    </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid2" style={{ marginTop: 14 }}>
+                  <div className="fld">
+                    <label className="lbl" htmlFor="q-flat">
+                      Flat per-item price, if agreed
+                    </label>
+                    <input id="q-flat" type="number" min="0" value={input.flatEach} onChange={num('flatEach')} />
+                    <div className="hint">
+                      Set above zero to price by the piece instead of by the build. Overrides material, machine and
+                      finishing lines.
+                    </div>
+                  </div>
+                  <div className="fld">
+                    <label className="lbl" htmlFor="q-disc">
+                      Discount %
+                    </label>
+                    <input
+                      id="q-disc"
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={input.discountPct}
+                      onChange={num('discountPct')}
+                    />
+                    <div className="hint">Repeat-client or volume allowance.</div>
+                  </div>
+                </div>
             </div>
-          </div>
+          </details>
         </div>
 
         {/* --------------------------------------------------- right column */}
@@ -772,7 +816,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
               <div style={{ fontSize: 11, lineHeight: '17px', color: 'var(--txt-3)', marginTop: 5 }}>
                 {q.needsDesign
                   ? 'Modelling begins once it clears. The turnaround estimate counts from that day, not from today.'
-                  : 'Collected before the job is scheduled onto a machine.'}{' '}
+                  : 'Collected before the project is scheduled onto a machine.'}{' '}
                 Balance of {money(q.balance)} on delivery.
               </div>
             </div>
@@ -795,7 +839,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
 
           {/* Owner-only. Never shown to a client, never printed. */}
           <div className="pane" style={{ margin: 0 }}>
-            <h3>What this job costs you</h3>
+            <h3>What this project costs you</h3>
             <div className="kv" style={{ gridTemplateColumns: '1fr auto', gap: '6px 12px' }}>
               <span className="k">Material at cost</span>
               <span className="v" style={{ fontFamily: 'var(--mono)', textAlign: 'right' }}>
