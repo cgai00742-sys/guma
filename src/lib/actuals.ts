@@ -15,8 +15,16 @@
  * like "this cost nothing", which is the single most flattering lie an
  * unfinished cost report can tell.
  */
-import type { PricedQuote, RateSet } from './pricing'
-import type { ProjectActuals } from './data.types'
+import {
+  priceQuote,
+  ratesFromSnapshot,
+  type MaterialRef,
+  type PricedQuote,
+  type PrinterRef,
+  type RatesSnapshot,
+  type RateSet,
+} from './pricing'
+import { toRateSet, type ProjectActuals, type ProjectDetail, type RateCardRow, type Shop } from './data.types'
 
 export interface VarianceLine {
   key: 'material' | 'machine' | 'wear' | 'labour'
@@ -170,5 +178,74 @@ export function compareToQuote(
       actualCost === null || netRevenue <= 0 ? null : (netRevenue - actualCost) / netRevenue,
     hasActuals,
     partial: hasActuals && recorded.length < lines.length,
+  }
+}
+
+/** Just the bits of ShopContext this needs, so a test can hand it four
+ *  values rather than assembling a whole context. */
+export interface PricingContext {
+  rateCard: RateCardRow
+  shop: Shop
+  materials: MaterialRef[]
+  printers: PrinterRef[]
+}
+
+/**
+ * Reprice a project's quote from its own frozen snapshot and compare it to
+ * what was actually recorded. Returns null when there is nothing to compare
+ * — no quote, or a snapshot this build can no longer read.
+ *
+ * A draft quote has no snapshot, so it falls back to today's rates. That is
+ * correct rather than a compromise: a draft has not been given to anyone,
+ * so there is no promise to hold it to.
+ *
+ * This lives here rather than in the project screen because it is pure
+ * logic that merely happens to run during a render — and because it was the
+ * one piece of new code most likely to throw (JSON round-trip, a rehydrated
+ * snapshot from an older schema, priceQuote with a printer that has since
+ * been deleted) and the one piece with no test around it. The catch below
+ * keeps a bad snapshot from blanking the page, which is the same failure
+ * the quote PDF had; the tests make sure the catch is a backstop rather
+ * than the normal path.
+ */
+export function buildComparison(detail: ProjectDetail, ctx: PricingContext): Comparison | null {
+  const q = detail.quoteInputs
+  if (!q) return null
+
+  let priced: PricedQuote
+  let rates
+  try {
+    const snap = q.ratesSnapshot as RatesSnapshot | null
+    const basis = snap
+      ? ratesFromSnapshot(snap)
+      : {
+          rates: toRateSet(ctx.rateCard, ctx.shop),
+          material: ctx.materials.find((m) => m.id === q.materialId) ?? null,
+          printer: ctx.printers.find((p) => p.id === q.printerId) ?? null,
+        }
+    rates = basis.rates
+    priced = priceQuote(
+      {
+        assetOrigin: detail.assetOrigin,
+        designBilling: q.designBilling === 'none' ? 'hourly' : q.designBilling,
+        designQty: q.designQty,
+        revisions: q.revisionsIncl,
+        quantity: q.quantity,
+        unitsPerPart: q.unitsPerPart,
+        printHrsPerPart: q.printHrsPart,
+        finishingHrs: q.finishingHrs,
+        rush: q.rush,
+        flatEach: q.flatEach,
+        discountPct: q.discountPct,
+      },
+      rates,
+      basis.material,
+      basis.printer,
+    )
+    return compareToQuote(priced, detail.actuals, rates, basis.material?.unit ?? 'g')
+  } catch {
+    // A snapshot from an older schema, or a quote whose material was
+    // deleted. Better to show no comparison than a wrong one.
+    return null
   }
 }

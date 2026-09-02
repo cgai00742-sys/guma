@@ -10,6 +10,7 @@ import Projects from './screens/Projects'
 import Project from './screens/Project'
 import Clients from './screens/Clients'
 import QuoteDoc from './screens/QuoteDoc'
+import Closeout from './screens/Closeout'
 import WelcomeModal from './components/WelcomeModal'
 
 // SignIn is the ONE screen that still statically imports supabase.ts (it
@@ -90,7 +91,10 @@ export default function App() {
 
   // The print view is its own full-bleed document: no app chrome, no dark
   // surface behind it. doc-page.js owns everything inside it.
-  const printing = location.pathname.startsWith('/quote/')
+  // Both printable documents live outside the app chrome: doc-page.js owns
+  // everything inside them, down to the paper size.
+  const printing =
+    location.pathname.startsWith('/quote/') || location.pathname.endsWith('/closeout')
 
   if (!desktop && !session) {
     return (
@@ -121,6 +125,7 @@ export default function App() {
     return (
       <Routes>
         <Route path="/quote/:quoteId/print" element={<QuoteDoc />} />
+        <Route path="/project/:jobId/closeout" element={<Closeout />} />
       </Routes>
     )
   }

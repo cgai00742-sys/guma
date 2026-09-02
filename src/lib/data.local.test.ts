@@ -1299,4 +1299,83 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(spend.checked).toBe(true)
     expect(d.facts.actualRuns).toBe(1)
   })
+
+  it('rebuilds the comparison from a real saved quote, snapshot and all', async () => {
+    const local = await import('./data.local')
+    const { buildComparison } = await import('./actuals')
+    const { buildRatesSnapshot } = await import('./pricing')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const rates = local.toRateSet(ctx.rateCard, ctx.shop)
+    const q = priceQuote(MAST_BRACKETS, rates, ctx.materials[0], ctx.printers[0])
+    const ref = await local.nextJobRef(shopId)
+
+    const saved = await local.saveQuote({
+      shopId,
+      ref,
+      client: { name: 'Acme Co', contact: '', email: '', phone: '', source: '' },
+      job: { title: 'Mast brackets', brief: '', neededBy: null, assetOrigin: 'model' },
+      quote: {
+        design_billing: 'hourly', design_qty: 6, revisions_incl: 2, quantity: 4,
+        material_id: ctx.materials[0].id, printer_id: ctx.printers[0].id,
+        units_per_part: 185, print_hrs_part: 5.25, finishing_hrs: 2,
+        rush: false, flat_each: 0, discount_pct: 0,
+      },
+      send: {
+        // The real snapshot the app writes, not a hand-made stand-in — this
+        // test exists to catch a bad JSON round trip, so it has to make one.
+        rates_snapshot: buildRatesSnapshot(rates, ctx.materials[0], ctx.printers[0]),
+        total: q.total, deposit_due: q.deposit, valid_until: '2026-10-01',
+      },
+    } satisfies SaveQuoteArgs)
+
+    const detail = await local.loadProjectDetail(shopId, saved.jobId)
+    const pricing = {
+      rateCard: ctx.rateCard,
+      shop: ctx.shop,
+      materials: ctx.materials,
+      printers: ctx.printers,
+    }
+
+    const cmp = buildComparison(detail, pricing)
+    expect(cmp).not.toBeNull()
+    // Repriced from the snapshot, it lands on exactly the quoted figures —
+    // if the snapshot came back as a raw string, or a key had drifted, the
+    // catch would have swallowed it and returned null instead.
+    expect(cmp!.quotedMargin).toBe(round2(q.margin))
+    expect(cmp!.netRevenue).toBeCloseTo(q.total - q.tax, 6)
+    expect(cmp!.lines.find((l) => l.key === 'material')!.quoted).toBe(round2(q.materialCost))
+    expect(cmp!.lines.find((l) => l.key === 'labour')!.quoted).toBe(round2(q.yourHours))
+
+    // A project with no quote has nothing to compare, and says so rather
+    // than throwing.
+    const { saved: draftless } = await seedProject(local, shopId, { title: 'Unquoted' })
+    const bare = await local.loadProjectDetail(shopId, draftless.jobId)
+    expect(buildComparison({ ...bare, quoteInputs: null }, pricing)).toBeNull()
+
+    // A snapshot this build can no longer read must not blank the page.
+    const corrupted = { ...detail, quoteInputs: { ...detail.quoteInputs!, ratesSnapshot: { nope: true } } }
+    expect(buildComparison(corrupted, pricing)).toBeNull()
+  })
+
+  it('prices a draft against today\'s rates, since nobody was promised anything', async () => {
+    const local = await import('./data.local')
+    const { buildComparison } = await import('./actuals')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+
+    const detail = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(detail.quoteInputs?.ratesSnapshot).toBeNull()
+
+    const cmp = buildComparison(detail, {
+      rateCard: ctx.rateCard,
+      shop: ctx.shop,
+      materials: ctx.materials,
+      printers: ctx.printers,
+    })
+    expect(cmp).not.toBeNull()
+    expect(cmp!.quotedCost).toBeGreaterThan(0)
+    expect(cmp!.hasActuals).toBe(false)
+  })
 })

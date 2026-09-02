@@ -69,14 +69,8 @@ import {
   type Flag,
   type ResolvedGateItem,
 } from '../lib/gates'
-import {
-  makeMoney,
-  priceQuote,
-  ratesFromSnapshot,
-  type PricedQuote,
-  type RatesSnapshot,
-} from '../lib/pricing'
-import { compareToQuote, type Comparison } from '../lib/actuals'
+import { makeMoney } from '../lib/pricing'
+import { buildComparison, type Comparison } from '../lib/actuals'
 
 const DELIVERY_METHODS = [
   'Collected in person',
@@ -141,7 +135,12 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   // rates — the same rule the printable quote follows. Comparing a job to a
   // rate card that has moved since would produce a variance that is really
   // just a price change.
-  const comparison = buildComparison(detail, ctx)
+  const comparison = buildComparison(detail, {
+    rateCard: ctx.rateCard,
+    shop: ctx.shop,
+    materials: ctx.materials,
+    printers: ctx.printers,
+  })
 
   const shown = viewPhase ?? detail.phase
   const facts = detail.facts
@@ -717,6 +716,14 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           disabled={busy}
           onChange={(p) => void patch({ priority: p })}
         />
+        <Link
+          to={`/project/${jobId}/closeout`}
+          className="btn"
+          style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+          title="A printable one-pager: what it was quoted at, what it took, what it earned."
+        >
+          Closeout sheet
+        </Link>
         <button
           type="button"
           className="btn"
@@ -908,57 +915,6 @@ function PaymentLog({
       )}
     </div>
   )
-}
-
-/**
- * Reprice a project's quote from its own frozen snapshot and compare it to
- * what was actually recorded. Returns null when there is nothing to compare
- * — no quote, or a quote whose material and printer no longer exist.
- *
- * A draft quote has no snapshot, so it falls back to today's rates. That is
- * correct rather than a compromise: a draft has not been given to anyone,
- * so there is no promise to hold it to.
- */
-function buildComparison(detail: ProjectDetail, ctx: ShopContext): Comparison | null {
-  const q = detail.quoteInputs
-  if (!q) return null
-
-  let priced: PricedQuote
-  let rates
-  try {
-    const snap = q.ratesSnapshot as RatesSnapshot | null
-    const basis = snap
-      ? ratesFromSnapshot(snap)
-      : {
-          rates: toRateSet(ctx.rateCard, ctx.shop),
-          material: ctx.materials.find((m) => m.id === q.materialId) ?? null,
-          printer: ctx.printers.find((p) => p.id === q.printerId) ?? null,
-        }
-    rates = basis.rates
-    priced = priceQuote(
-      {
-        assetOrigin: detail.assetOrigin,
-        designBilling: q.designBilling === 'none' ? 'hourly' : q.designBilling,
-        designQty: q.designQty,
-        revisions: q.revisionsIncl,
-        quantity: q.quantity,
-        unitsPerPart: q.unitsPerPart,
-        printHrsPerPart: q.printHrsPart,
-        finishingHrs: q.finishingHrs,
-        rush: q.rush,
-        flatEach: q.flatEach,
-        discountPct: q.discountPct,
-      },
-      rates,
-      basis.material,
-      basis.printer,
-    )
-    return compareToQuote(priced, detail.actuals, rates, basis.material?.unit ?? 'g')
-  } catch {
-    // A snapshot from an older schema, or a quote whose material was
-    // deleted. Better to show no comparison than a wrong one.
-    return null
-  }
 }
 
 /** Quoted against actual, line by line. */
