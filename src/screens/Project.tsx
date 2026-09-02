@@ -27,7 +27,7 @@
  * own about what "ready to advance" means.
  */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   JOB_PHASES,
   CLIENT_KIND_LABEL,
@@ -48,6 +48,7 @@ import {
   loadProjectDetail,
   logWork,
   recordPrintRun,
+  setQuoteStatus,
   recordPayment,
   setGateItem,
   updateJobPhase,
@@ -60,6 +61,7 @@ import {
   type PrintRunInput,
   type ProjectDetail,
   type ProjectFieldsInput,
+  type QuoteStatus,
   type RunOutcome,
   type WorkKind,
   type JobPhase,
@@ -90,6 +92,10 @@ const DELIVERY_METHODS = [
 export default function Project({ ctx }: { ctx: ShopContext }) {
   const { jobId = '' } = useParams()
   const navigate = useNavigate()
+  // Intake sends ?quote=1 after "Save quote as PDF": the project is the
+  // destination, and the printable opens from it once. Landing straight in
+  // the print view was a dead end whose only exit went back to the form.
+  const [search, setSearch] = useSearchParams()
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -115,6 +121,14 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  useEffect(() => {
+    if (search.get('quote') !== '1' || !detail?.quote) return
+    const next = new URLSearchParams(search)
+    next.delete('quote')
+    setSearch(next, { replace: true })
+    navigate(`/quote/${detail.quote.id}/print`)
+  }, [search, setSearch, detail, navigate])
 
   if (error && !detail) {
     return (
@@ -218,6 +232,19 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
     }
   }
 
+  async function markQuote(status: QuoteStatus) {
+    if (!detail?.quote) return
+    setBusy(true)
+    try {
+      await setQuoteStatus(ctx.shop.id, detail.quote.id, ctx.profile.id, status)
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function pay(input: PaymentInput) {
     setBusy(true)
     try {
@@ -307,6 +334,54 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
 
       {/* ---- flags, spelled out ---- */}
       {flags.length > 0 && <FlagPanel flags={flags} />}
+
+      {/* ---- what this project is ----
+          Sits first because the intake gate reads the brief, and a fact a
+          gate reads has to be changeable from the same screen that tells
+          you it is blocking. It was not, and a project saved with an empty
+          brief could never leave intake. */}
+      <section className="sec" style={{ marginTop: 18 }}>
+        <div className="sechead">
+          <h4>The brief</h4>
+          <span className={`secstat ${(detail.brief ?? '').trim().length >= 20 ? 'ok' : 'warn'}`}>
+            {(detail.brief ?? '').trim() ? 'written down' : 'nothing written down'}
+          </span>
+        </div>
+        <div className="pane" style={{ marginBottom: 0 }}>
+          <div className="fld">
+            <label className="lbl" htmlFor="p-title">
+              Project
+            </label>
+            <input
+              id="p-title"
+              defaultValue={detail.title}
+              onBlur={(e) => {
+                const v = e.target.value.trim()
+                if (v && v !== detail.title) void patch({ title: v })
+              }}
+            />
+          </div>
+          <div className="fld" style={{ marginBottom: 0 }}>
+            <label className="lbl" htmlFor="p-brief">
+              What they asked for
+            </label>
+            <textarea
+              id="p-brief"
+              rows={3}
+              defaultValue={detail.brief ?? ''}
+              placeholder="Two lines you can re-read in three weeks."
+              onBlur={(e) => {
+                const v = e.target.value.trim() || null
+                if (v !== detail.brief) void patch({ brief: v })
+              }}
+            />
+            <div className="hint">
+              Saved when you click away. The intake gate reads this, so it is worth the two lines —
+              and it is the thing you will wish you had written when the revision argument starts.
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* ---- the gate ---- */}
       <section className="sec" style={{ marginTop: 18 }}>
@@ -404,6 +479,28 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                   sub={facts.balanceOwed > 0 ? 'still outstanding' : 'paid in full'}
                 />
               </div>
+              <div className="btnrow" style={{ marginTop: 12, alignItems: 'center' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                  <span style={{ color: 'var(--txt-3)' }}>Quote is</span>
+                  <select
+                    value={facts.quoteStatus ?? 'draft'}
+                    disabled={busy || !detail.quote}
+                    style={{ width: 'auto' }}
+                    onChange={(e) => void markQuote(e.target.value as QuoteStatus)}
+                  >
+                    <option value="draft">a draft — not sent yet</option>
+                    <option value="sent">sent to the client</option>
+                    <option value="accepted">accepted</option>
+                    <option value="declined">declined</option>
+                    <option value="expired">expired</option>
+                  </select>
+                </label>
+                <span className="hint" style={{ marginTop: 0 }}>
+                  The client-approval gate reads this. Move it when the quote actually moves — a
+                  quote marked accepted that nobody agreed to is worse than no record at all.
+                </span>
+              </div>
+
               <div className="hint" style={{ marginTop: 10 }}>
                 Every figure here is derived from the payments below, not stored — record one and
                 all three move at once.
@@ -440,7 +537,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       {/* ---- the promise ---- */}
       <section className="sec">
         <div className="sechead">
-          <h4>Delivery window</h4>
+          <h4>Who and when</h4>
           <span className={`secstat ${facts.windowLocked ? 'ok' : 'warn'}`}>
             {facts.windowLocked ? 'committed' : 'still moveable'}
           </span>
@@ -1764,9 +1861,12 @@ function GateRow({
           onBlur={(e) => onNote(e.target.value)}
         />
       )}
+      {/* An item that cannot be ticked MUST say where to go and change the
+          thing it is reading. Saying only where it reads from is how a
+          project ends up permanently stuck on a checkbox. */}
       {item.automatic && !item.checked && (
         <div className="hint" style={{ paddingLeft: 24, color: 'var(--warn)' }}>
-          Clears on its own {item.autoFrom} — it cannot be ticked by hand.
+          {item.fix ?? `Clears on its own ${item.autoFrom ?? ''}`.trim()}
         </div>
       )}
     </div>

@@ -1110,6 +1110,8 @@ export async function updateProjectFields(
   fields: ProjectFieldsInput,
 ): Promise<void> {
   const map: Record<string, string> = {
+    brief: 'brief',
+    title: 'title',
     poc: 'poc',
     neededBy: 'needed_by',
     windowFrom: 'window_from',
@@ -1717,4 +1719,50 @@ export async function updatePart(
 export async function deletePart(shopId: string, partId: string): Promise<void> {
   const d = await db()
   await d.execute('delete from job_parts where id = ? and shop_id = ?', [partId, shopId])
+}
+
+/**
+ * Move a quote between draft, sent, accepted, declined and expired.
+ *
+ * This existed nowhere until a real run through the app hit the wall it
+ * created: the client-approval gate reads quote status, a quote could only
+ * ever be created as a draft or as sent from intake, and nothing anywhere
+ * could mark one accepted. So a project that reached Client approval could
+ * never leave it. The rule this cost us is worth writing down: every fact a
+ * gate reads must have somewhere a person can change it, or the gate is not
+ * a gate, it is a wall.
+ *
+ * sent_at and decided_at are stamped here rather than left to the caller,
+ * because "when did we send this" is exactly the sort of thing nobody
+ * remembers and the expiry check needs.
+ */
+export async function setQuoteStatus(
+  shopId: string,
+  quoteId: string,
+  actorId: string,
+  status: QuoteStatus,
+): Promise<void> {
+  const d = await db()
+  const rows = await d.select<{ job_id: string; status: QuoteStatus }[]>(
+    'select job_id, status from quotes where id = ? and shop_id = ?',
+    [quoteId, shopId],
+  )
+  const quote = rows[0]
+  if (!quote) throw new Error('That quote no longer exists.')
+  if (quote.status === status) return
+
+  const stamps: string[] = []
+  if (status === 'sent') stamps.push("sent_at = coalesce(sent_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
+  if (status === 'accepted' || status === 'declined') {
+    stamps.push("decided_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+  }
+  await d.execute(
+    `update quotes set status = ?${stamps.length ? ', ' + stamps.join(', ') : ''}
+     where id = ? and shop_id = ?`,
+    [status, quoteId, shopId],
+  )
+  await d.execute(
+    `insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'quote', ?)`,
+    [quote.job_id, actorId, `Quote marked ${status}.`],
+  )
 }

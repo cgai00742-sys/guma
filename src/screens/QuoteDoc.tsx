@@ -158,7 +158,7 @@ export function QuoteDocument({ row }: { row: any }) {
         }}
       >
         <Link
-          to="/intake"
+          to={row?.jobs?.id ? `/project/${row.jobs.id}` : '/projects'}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -172,7 +172,7 @@ export function QuoteDocument({ row }: { row: any }) {
             textDecoration: 'none',
           }}
         >
-          ← Back to intake
+          ← Back to the project
         </Link>
         <button
           type="button"

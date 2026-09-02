@@ -399,6 +399,12 @@ export interface QuoteInputsRow {
 
 /** The handful of project fields the detail screen can edit in place. */
 export interface ProjectFieldsInput {
+  /** Editable after intake on purpose: the intake gate reads it, so a
+   *  project saved with an empty brief would otherwise be stuck forever
+   *  with no way to satisfy the thing blocking it. Every fact a gate reads
+   *  has to have somewhere it can be changed. */
+  brief?: string | null
+  title?: string
   poc?: string | null
   neededBy?: string | null
   windowFrom?: string | null

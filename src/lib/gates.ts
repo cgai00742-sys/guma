@@ -39,6 +39,17 @@ export interface GateItem {
   auto?: (f: ProjectFacts) => boolean | null
   /** Caption for an auto item — where the answer came from. */
   autoFrom?: string
+  /**
+   * What to DO when an automatic item is not satisfied.
+   *
+   * Added after a real run through the app got permanently stuck: the
+   * intake gate reads the brief, an empty brief could not be edited
+   * anywhere, and the item could not be ticked by hand either — so the
+   * project could never leave intake. Saying where a fact comes from is
+   * not enough; an item that cannot be ticked has to say where to go and
+   * change it, and that place has to exist.
+   */
+  fix?: string
 }
 
 /**
@@ -56,6 +67,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'A brief you can re-read in three weeks is the difference between one revision and four.',
       auto: (f) => (f.brief ?? '').trim().length >= 20,
       autoFrom: 'from the project brief',
+      fix: 'Write two lines in the brief at the top of this page.',
     },
     {
       key: 'poc',
@@ -63,6 +75,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'Quotes stall on "waiting to hear back" from an inbox nobody owns.',
       auto: (f) => (f.poc ?? '').trim().length > 0,
       autoFrom: 'from the point of contact',
+      fix: 'Add a point of contact under Who and when, below.',
     },
     {
       key: 'needed_by',
@@ -70,6 +83,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'Without one you cannot tell a rush from a routine job, and you will price it as routine.',
       auto: (f) => f.neededBy !== null,
       autoFrom: 'from the delivery window',
+      fix: 'Set a needed-by date under Who and when, below.',
     },
     {
       key: 'origin',
@@ -82,6 +96,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'Design work before a price is agreed is work you may never bill.',
       auto: (f) => f.quoteStatus !== null,
       autoFrom: 'from the quote',
+      fix: 'Price it from New project — this one has no quote at all.',
     },
   ],
   design: [
@@ -109,6 +124,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'A quote sitting in draft is not a quote.',
       auto: (f) => f.quoteStatus === 'sent' || f.quoteStatus === 'accepted',
       autoFrom: 'from the quote status',
+      fix: 'Mark the quote sent under Money, once it has gone to the client.',
     },
     {
       key: 'accepted',
@@ -117,6 +133,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       needsNote: true,
       auto: (f) => f.quoteStatus === 'accepted',
       autoFrom: 'from the quote status',
+      fix: 'Mark the quote accepted under Money, once they have said yes in writing.',
     },
     {
       key: 'deposit',
@@ -124,6 +141,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'The deposit is what makes a cancellation survivable. Waiving it is a decision, not an oversight.',
       auto: (f) => f.depositDue <= 0 || f.depositOwed <= 0,
       autoFrom: 'from payments received',
+      fix: 'Record the deposit under Money, or set the deposit to zero in Shop settings if you are waiving it.',
     },
   ],
   scheduled: [
@@ -143,6 +161,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'Print time plus finishing plus a failure buffer — checked against the window, not guessed.',
       auto: (f) => f.neededBy !== null,
       autoFrom: 'needs a date to check against',
+      fix: 'Set a needed-by date under Who and when — there is nothing to check the slot against.',
     },
   ],
   building: [
@@ -152,6 +171,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'A project sitting in In build with nothing on a machine is the most expensive kind of lie.',
       auto: (f) => (f.parts === 0 ? null : f.partsPrinted > 0),
       autoFrom: 'from the build sheet',
+      fix: 'Mark a part printed on the build sheet.',
     },
     {
       key: 'failures',
@@ -165,6 +185,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'Estimated grams against spent grams is the only honest read on whether the quote was right — and this is the last moment anyone remembers the numbers.',
       auto: (f) => f.actualRuns > 0,
       autoFrom: 'from the build runs',
+      fix: 'Record a build run under What it actually took.',
     },
   ],
   review: [
@@ -176,6 +197,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       // when there is not.
       auto: (f) => (f.parts === 0 ? null : f.partsPassed === f.parts),
       autoFrom: 'from the build sheet',
+      fix: 'Pass every part on the build sheet, or send the failures back.',
     },
     {
       key: 'finishing',

@@ -340,3 +340,12 @@ export async function updatePart(
 export async function deletePart(shopId: string, partId: string): Promise<void> {
   return (await backend()).deletePart(shopId, partId)
 }
+
+export async function setQuoteStatus(
+  shopId: string,
+  quoteId: string,
+  actorId: string,
+  status: QuoteStatus,
+): Promise<void> {
+  return (await backend()).setQuoteStatus(shopId, quoteId, actorId, status)
+}

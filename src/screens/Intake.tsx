@@ -25,7 +25,7 @@
  * No arithmetic lives in this file. Every figure comes from priceQuote().
  */
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import {
   buildRatesSnapshot,
   makeMoney,
@@ -88,12 +88,6 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
 
   const [saving, setSaving] = useState<'idle' | 'draft' | 'send'>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [savedNote, setSavedNote] = useState<string | null>(null)
-  /** Set alongside savedNote so the confirmation can offer the one thing a
-   *  shop actually wants next: to open what it just saved. Before this, a
-   *  saved draft vanished into the Projects list with no way back to it
-   *  from here. */
-  const [savedJobId, setSavedJobId] = useState<string | null>(null)
 
   const material = ctx.materials.find((m) => m.id === materialId) ?? null
   const printer = ctx.printers.find((p) => p.id === printerId) ?? null
@@ -161,13 +155,12 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             : undefined,
       })
 
-      if (mode === 'send') {
-        navigate(`/quote/${saved.quoteId}/print`)
-      } else {
-        setSavedNote(`Saved as draft · ${saved.ref}`)
-        setSavedJobId(saved.jobId)
-        setRef(await nextJobRef(ctx.shop.id))
-      }
+      // Both paths land on the project. Intake's job ends the moment a
+      // project exists; everything after that -- the stage, its gate, the
+      // money, the build -- lives on the project page, and leaving someone
+      // on a form (or in a print view whose only exit was back to the form)
+      // is why a project could be saved and then never found again.
+      navigate(`/project/${saved.jobId}${mode === 'send' ? '?quote=1' : ''}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -238,20 +231,6 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
       {error && (
         <div className="alert">
           <span>{error}</span>
-        </div>
-      )}
-      {savedNote && (
-        <div className="okbar">
-          <span>{savedNote}</span>
-          {savedJobId && (
-            <Link
-              to={`/project/${savedJobId}`}
-              className="linkbtn"
-              style={{ marginLeft: 10 }}
-            >
-              Open the project →
-            </Link>
-          )}
         </div>
       )}
 

@@ -1547,4 +1547,190 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(d.parts).toEqual([])
     expect(d.facts.parts).toBe(0)
   })
+
+  /* ---------------------------------------------------------------- */
+  /* The whole lifecycle, the way a person actually walks it           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * The test that should have existed before any gate shipped.
+   *
+   * Every suite above checks a piece in isolation, and every one of them
+   * passed while the app was unusable: a project saved with the bare
+   * minimum could never leave Intake, because the gate read a brief that
+   * no screen could edit and could not be ticked by hand either. One stage
+   * later it would have hit the same wall on quote status, which nothing
+   * could change. Unit tests cannot see that. A walk can.
+   */
+  it('walks a bare-minimum project from intake to delivered, clearing every gate', async () => {
+    const local = await import('./data.local')
+    const { GATES, PHASE_LABEL, gateStatus, nextPhase } = await import('./gates')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const ref = await local.nextJobRef(shopId)
+
+    // Exactly what Intake writes when only its two required fields are
+    // filled in -- no brief, no contact, no date. This is the project that
+    // got stuck.
+    const saved = await local.saveQuote({
+      shopId,
+      ref,
+      client: { name: 'Acme Co', contact: '', email: '', phone: '', source: '' },
+      job: { title: 'A test project', brief: '', neededBy: null, assetOrigin: 'model' },
+      quote: {
+        design_billing: 'hourly', design_qty: 6, revisions_incl: 2, quantity: 4,
+        material_id: ctx.materials[0].id, printer_id: ctx.printers[0].id,
+        units_per_part: 185, print_hrs_part: 5.25, finishing_hrs: 2,
+        rush: false, flat_each: 0, discount_pct: 0,
+      },
+    } satisfies SaveQuoteArgs)
+
+    const detail = () => local.loadProjectDetail(shopId, saved.jobId)
+    const gateNow = async () => {
+      const d = await detail()
+      return { d, g: gateStatus(d.phase, d.gates[d.phase] ?? {}, d.facts) }
+    }
+    // --- INTAKE: blocked, and every blocker is actionable -------------
+    let { g } = await gateNow()
+    expect(g.blocked).toBe(true)
+    const stuck = g.items.filter((i) => !i.checked)
+    expect(stuck.length).toBeGreaterThan(0)
+    // The invariant this whole failure came down to: an item a person
+    // cannot tick MUST tell them where to go and change what it reads.
+    for (const i of stuck.filter((x) => x.automatic)) {
+      expect(i.fix, `auto item "${i.key}" has no fix hint`).toBeTruthy()
+    }
+
+    // Follow the fixes. Each of these is a real control on the project page.
+    await local.updateProjectFields(shopId, saved.jobId, {
+      brief: 'Four aluminium-look mast brackets for a rig, printed in PA-CF.',
+      poc: 'Dana Reyes',
+      neededBy: '2026-11-30',
+    })
+    await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'intake', 'origin', true, null)
+
+    ;({ g } = await gateNow())
+    expect(g.done).toBe(g.total)
+    expect(g.blocked).toBe(false)
+    await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'design')
+
+    // --- DESIGN -------------------------------------------------------
+    for (const item of GATES.design) {
+      await local.setGateItem(
+        shopId, saved.jobId, ctx.profile.id, 'design', item.key, true,
+        item.needsNote ? 'Logged against the quote.' : null,
+      )
+    }
+    ;({ g } = await gateNow())
+    expect(g.blocked).toBe(false)
+    await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'approval')
+
+    // --- APPROVAL: the second wall. Quote status had no control at all.
+    ;({ g } = await gateNow())
+    expect(g.blocked).toBe(true)
+    const sent = g.items.find((i) => i.key === 'sent')!
+    expect(sent.automatic).toBe(true)
+    expect(sent.checked).toBe(false)
+    expect(sent.fix).toBeTruthy()
+
+    await local.setQuoteStatus(shopId, saved.quoteId, ctx.profile.id, 'sent')
+    ;({ g } = await gateNow())
+    expect(g.items.find((i) => i.key === 'sent')!.checked).toBe(true)
+    expect(g.items.find((i) => i.key === 'accepted')!.checked).toBe(false)
+
+    await local.setQuoteStatus(shopId, saved.quoteId, ctx.profile.id, 'accepted')
+    ;({ g } = await gateNow())
+    expect(g.done).toBe(g.total)
+    expect(g.blocked).toBe(false)
+    await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'scheduled')
+
+    // --- SCHEDULED ----------------------------------------------------
+    for (const item of GATES.scheduled.filter((i) => !i.auto)) {
+      await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'scheduled', item.key, true, null)
+    }
+    ;({ g } = await gateNow())
+    expect(g.blocked).toBe(false)
+    await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'building')
+
+    // --- IN BUILD: 'spend' only clears from a real run ----------------
+    ;({ g } = await gateNow())
+    expect(g.items.find((i) => i.key === 'spend')!.checked).toBe(false)
+    await local.recordPrintRun(shopId, saved.jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id, materialId: ctx.materials[0].id,
+      unitsUsed: 740, hours: 21, outcome: 'success', failureReason: null,
+      note: null, startedAt: null,
+    })
+    for (const item of GATES.building) {
+      const resolved = gateStatus('building', {}, (await detail()).facts).items.find(
+        (i) => i.key === item.key,
+      )!
+      if (resolved.automatic) continue
+      await local.setGateItem(
+        shopId, saved.jobId, ctx.profile.id, 'building', item.key, true,
+        item.needsNote ? 'One plate warped, reprinted.' : null,
+      )
+    }
+    ;({ g } = await gateNow())
+    expect(g.items.find((i) => i.key === 'spend')!.checked).toBe(true)
+    expect(g.blocked).toBe(false)
+    await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'review')
+
+    // --- REVIEW -------------------------------------------------------
+    for (const item of GATES.review) {
+      const resolved = gateStatus('review', {}, (await detail()).facts).items.find(
+        (i) => i.key === item.key,
+      )!
+      if (resolved.automatic) continue
+      await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'review', item.key, true, null)
+    }
+    ;({ g } = await gateNow())
+    expect(g.blocked, `stuck in Review: ${g.reason}`).toBe(false)
+    await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'delivered')
+
+    // --- DELIVERED: the end of the line -------------------------------
+    const { d, g: last } = await gateNow()
+    expect(d.phase).toBe('delivered')
+    expect(last.total).toBe(0)
+    expect(nextPhase('delivered')).toBeNull()
+    expect(PHASE_LABEL[d.phase]).toBe('Delivered')
+
+    // Six stage changes, plus the run and the quote, all in one story.
+    expect(d.events.filter((e) => e.kind === 'phase_change')).toHaveLength(6)
+    expect(d.events.some((e) => e.kind === 'quote')).toBe(true)
+    expect(d.events.some((e) => e.kind === 'run')).toBe(true)
+  })
+
+  it('every automatic gate item says how to satisfy it', async () => {
+    const { GATES } = await import('./gates')
+    // Cheap structural guard against the bug that started this: an item a
+    // person cannot tick, with nowhere to go and change what it reads.
+    for (const [phase, items] of Object.entries(GATES)) {
+      for (const item of items) {
+        if (!item.auto) continue
+        expect(item.fix, `${phase}/${item.key} is automatic but has no fix hint`).toBeTruthy()
+        expect(item.fix!.length).toBeGreaterThan(15)
+      }
+    }
+  })
+
+  it('a quote status change is recorded and stamps its dates', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const { saved } = await seedProject(local, shopId)
+
+    let d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.quote?.status).toBe('draft')
+
+    await local.setQuoteStatus(shopId, saved.quoteId, ctx.profile.id, 'sent')
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.quote?.status).toBe('sent')
+    expect(d.events.some((e) => e.kind === 'quote' && e.body?.includes('sent'))).toBe(true)
+
+    // Setting the status it already has is a no-op, not a second event.
+    const before = d.events.length
+    await local.setQuoteStatus(shopId, saved.quoteId, ctx.profile.id, 'sent')
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.events).toHaveLength(before)
+  })
 })

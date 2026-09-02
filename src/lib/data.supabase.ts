@@ -855,6 +855,8 @@ export async function updateProjectFields(
   fields: ProjectFieldsInput,
 ): Promise<void> {
   const map: Record<string, string> = {
+    brief: 'brief',
+    title: 'title',
     poc: 'poc',
     neededBy: 'needed_by',
     windowFrom: 'window_from',
@@ -1314,4 +1316,38 @@ export async function updatePart(shopId: string, partId: string, input: PartInpu
 export async function deletePart(shopId: string, partId: string): Promise<void> {
   const { error } = await supabase.from('job_parts').delete().eq('id', partId).eq('shop_id', shopId)
   if (error) throw error
+}
+
+/** See data.local.ts's setQuoteStatus, and the rule its absence cost us. */
+export async function setQuoteStatus(
+  shopId: string,
+  quoteId: string,
+  actorId: string,
+  status: QuoteStatus,
+): Promise<void> {
+  const { data: quote, error: readErr } = await supabase
+    .from('quotes')
+    .select('job_id, status, sent_at')
+    .eq('id', quoteId)
+    .eq('shop_id', shopId)
+    .single()
+  if (readErr) throw readErr
+  if (!quote) throw new Error('That quote no longer exists.')
+  if (quote.status === status) return
+
+  const now = new Date().toISOString()
+  const row: Record<string, unknown> = { status }
+  if (status === 'sent') row.sent_at = quote.sent_at ?? now
+  if (status === 'accepted' || status === 'declined') row.decided_at = now
+
+  const { error } = await supabase.from('quotes').update(row).eq('id', quoteId).eq('shop_id', shopId)
+  if (error) throw error
+
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: quote.job_id,
+    actor_id: actorId,
+    kind: 'quote',
+    body: `Quote marked ${status}.`,
+  })
+  if (evErr) throw evErr
 }
