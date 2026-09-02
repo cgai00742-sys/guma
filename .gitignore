@@ -5,3 +5,11 @@ dist
 
 # instance-specific deploy settings — never committed
 .deploy.env
+
+# editor/tooling leftovers
+*.bak
+*.tmp
+
+# scratch folders kept out of the repo on purpose
+_archive/
+_to_delete/

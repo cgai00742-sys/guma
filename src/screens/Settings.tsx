@@ -28,6 +28,8 @@ import {
   type ShopQuoteTermsInput,
   type PrinterRow,
 } from '../lib/data'
+import { taxHintFor, US_STATES } from '../lib/taxHelp'
+import TaxNameHint from '../components/TaxNameHint'
 
 /**
  * The sample job from the design: four brackets, six hours modelling, PA-CF,
@@ -65,7 +67,7 @@ const DEPOSIT_HINTS: Record<Draft['deposit_when'], string> = {
   design:
     'You model before anything prints — that is your time at risk with nothing to repossess. This is the right setting for a shop that designs.',
   print:
-    'Safer for the client, riskier for you: a job cancelled after modelling leaves you unpaid for the largest line on the quote.',
+    'Safer for the client, riskier for you: a project cancelled after modelling leaves you unpaid for the largest line on the quote.',
   none: "Only if every client is someone you'd lend a truck to.",
 }
 
@@ -267,7 +269,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                   Shop minimum
                 </label>
                 <input id="s-min" type="number" min="0" value={draft.minimum_order} onChange={num('minimum_order')} />
-                <div className="hint">No job leaves for less. Covers the setup you do regardless of size.</div>
+                <div className="hint">No project leaves for less. Covers the setup you do regardless of size.</div>
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="s-rush">
@@ -339,7 +341,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                 onChange={num('deposit_waive_below')}
               />
               <div className="hint">
-                Small jobs skip the deposit — chasing $30 costs more than it collects. Set to 0 to always take one.
+                Small projects skip the deposit — chasing $30 costs more than it collects. Set to 0 to always take one.
               </div>
             </div>
           </div>
@@ -446,7 +448,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                 color: 'var(--txt-3)',
               }}
             >
-              What this does to a typical job
+              What this does to a typical project
             </div>
             <div style={{ fontSize: 12, lineHeight: '17px', color: 'var(--txt-2)', marginTop: 6 }}>
               Four brackets. Six hours modelling, {material ? material.name : 'material'}, five print hours each, two
@@ -528,6 +530,7 @@ function IdentityPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
     name: shop.name ?? '',
     legal_name: shop.legal_name ?? '',
     address: shop.address ?? '',
+    state: shop.state ?? '',
     email: shop.email ?? '',
     phone: shop.phone ?? '',
     license_no: shop.license_no ?? '',
@@ -595,9 +598,28 @@ function IdentityPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
             <input id="id-legal" value={draft.legal_name} onChange={str('legal_name')} placeholder="optional" />
           </div>
         </div>
-        <div className="fld" style={{ marginTop: 10 }}>
-          <label className="lbl" htmlFor="id-addr">Address</label>
-          <input id="id-addr" value={draft.address} onChange={str('address')} placeholder="optional" />
+        <div className="grid2" style={{ marginTop: 10 }}>
+          <div className="fld">
+            <label className="lbl" htmlFor="id-addr">Mailing address</label>
+            <input id="id-addr" value={draft.address} onChange={str('address')} placeholder="optional" />
+          </div>
+          <div className="fld">
+            <label className="lbl" htmlFor="id-state">State</label>
+            <select
+              id="id-state"
+              value={draft.state}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, state: e.target.value }))
+                setDirty(true)
+              }}
+            >
+              <option value="">— not set —</option>
+              {US_STATES.map(([code, label]) => (
+                <option key={code} value={code}>{label}</option>
+              ))}
+            </select>
+            <div className="hint">Only used to suggest the right tax name on the Quote terms tab.</div>
+          </div>
         </div>
         <div className="grid3" style={{ marginTop: 10 }}>
           <div className="fld">
@@ -671,6 +693,7 @@ function QuoteTermsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => voi
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const owner = ctx.profile.role === 'owner'
+  const taxHint = useMemo(() => taxHintFor(shop.state), [shop.state])
 
   function set<K extends keyof ShopQuoteTermsInput>(k: K, v: ShopQuoteTermsInput[K]) {
     setDraft((d) => ({ ...d, [k]: v }))
@@ -725,6 +748,9 @@ function QuoteTermsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => voi
             <div className="hint">Three decimals allowed — applied last, after any discount.</div>
           </div>
         </div>
+        {taxHint && (
+          <TaxNameHint hint={taxHint} onUseLabel={(label) => set('tax_label', label)} />
+        )}
       </div>
 
       <div className="pane" style={{ margin: '12px 0 0' }}>

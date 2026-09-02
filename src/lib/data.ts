@@ -38,9 +38,35 @@ import type {
   SaveQuoteArgs,
   SavedQuote,
   JobListRow,
+  JobPhase,
+  JobPriority,
+  ProjectDetail,
+  ProjectEvent,
+  ProjectFacts,
+  ProjectFieldsInput,
+  GateAnswer,
+  ClientRow,
+  ClientEditInput,
+  ClientKind,
+  PaymentRow,
+  PaymentInput,
+  PaymentKind,
+  PaymentMethod,
+  QuoteStatus,
 } from './data.types'
 
-export { NeedsSetup, toRateSet } from './data.types'
+export {
+  NeedsSetup,
+  toRateSet,
+  JOB_PHASES,
+  CLIENT_KINDS,
+  CLIENT_KIND_LABEL,
+  asClientKind,
+  PAYMENT_KINDS,
+  PAYMENT_METHODS,
+  PAYMENT_KIND_LABEL,
+  PAYMENT_METHOD_LABEL,
+} from './data.types'
 export type {
   Shop,
   RateCardRow,
@@ -53,6 +79,21 @@ export type {
   SaveQuoteArgs,
   SavedQuote,
   JobListRow,
+  JobPhase,
+  JobPriority,
+  ProjectDetail,
+  ProjectEvent,
+  ProjectFacts,
+  ProjectFieldsInput,
+  GateAnswer,
+  ClientRow,
+  ClientEditInput,
+  ClientKind,
+  PaymentRow,
+  PaymentInput,
+  PaymentKind,
+  PaymentMethod,
+  QuoteStatus,
 }
 
 type Backend = typeof Local | typeof Hosted
@@ -107,10 +148,76 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
   return (await backend()).listJobs(shopId)
 }
 
+export async function updateJobPhase(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  toPhase: JobPhase,
+): Promise<void> {
+  return (await backend()).updateJobPhase(shopId, jobId, actorId, toPhase)
+}
+
+export async function updateJobPriority(
+  shopId: string,
+  jobId: string,
+  priority: JobPriority,
+): Promise<void> {
+  return (await backend()).updateJobPriority(shopId, jobId, priority)
+}
+
 export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
   return (await backend()).saveQuote(args)
 }
 
 export async function loadQuoteForPrint(quoteId: string) {
   return (await backend()).loadQuoteForPrint(quoteId)
+}
+
+export async function loadProjectDetail(shopId: string, jobId: string): Promise<ProjectDetail> {
+  return (await backend()).loadProjectDetail(shopId, jobId)
+}
+
+export async function setGateItem(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  phase: JobPhase,
+  itemKey: string,
+  checked: boolean,
+  note: string | null,
+): Promise<void> {
+  return (await backend()).setGateItem(shopId, jobId, actorId, phase, itemKey, checked, note)
+}
+
+export async function addProjectNote(jobId: string, actorId: string, body: string): Promise<void> {
+  return (await backend()).addProjectNote(jobId, actorId, body)
+}
+
+export async function updateProjectFields(
+  shopId: string,
+  jobId: string,
+  fields: ProjectFieldsInput,
+): Promise<void> {
+  return (await backend()).updateProjectFields(shopId, jobId, fields)
+}
+
+export async function listClients(shopId: string): Promise<ClientRow[]> {
+  return (await backend()).listClients(shopId)
+}
+
+export async function updateClientRecord(
+  shopId: string,
+  clientId: string,
+  input: ClientEditInput,
+): Promise<void> {
+  return (await backend()).updateClientRecord(shopId, clientId, input)
+}
+
+export async function recordPayment(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: PaymentInput,
+): Promise<string> {
+  return (await backend()).recordPayment(shopId, jobId, actorId, input)
 }

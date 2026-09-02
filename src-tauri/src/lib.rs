@@ -4,12 +4,32 @@ pub fn run() {
   // supabase/migrations/. No RLS, no auth.uid() - a local install has
   // exactly one tenant, so the policies that existed to isolate shops
   // sharing a Postgres database simply have nothing to do here.
-  let migrations = vec![tauri_plugin_sql::Migration {
-    version: 1,
-    description: "initial schema",
-    sql: include_str!("../migrations/0001_initial.sql"),
-    kind: tauri_plugin_sql::MigrationKind::Up,
-  }];
+  let migrations = vec![
+    tauri_plugin_sql::Migration {
+      version: 1,
+      description: "initial schema",
+      sql: include_str!("../migrations/0001_initial.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
+    tauri_plugin_sql::Migration {
+      version: 2,
+      description: "show welcome flag",
+      sql: include_str!("../migrations/0002_show_welcome.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
+    tauri_plugin_sql::Migration {
+      version: 3,
+      description: "shop state, for the tax-name helper",
+      sql: include_str!("../migrations/0003_shop_state.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
+    tauri_plugin_sql::Migration {
+      version: 4,
+      description: "partner type, delivery handover, stage gates",
+      sql: include_str!("../migrations/0004_partners_gates.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
+  ];
 
   tauri::Builder::default()
     .plugin(

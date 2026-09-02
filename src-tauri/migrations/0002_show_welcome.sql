@@ -1,0 +1,15 @@
+-- Guma: first-run welcome.
+--
+-- One flag on `shops`, not a separate settings table -- this project already
+-- treats `shops` as the one-row home for "how does this install behave"
+-- settings (see accent/accent_alt in 0001). Defaults to shown; the app
+-- flips it to 0 the first time someone dismisses it with the "don't show
+-- this again" box checked. A plain integer, not a real boolean -- SQLite's
+-- usual convention here, same as every other flag in 0001.
+--
+-- A separate migration rather than editing 0001 directly: Tauri's migration
+-- runner tracks applied versions per database file, so a database that
+-- already ran version 1 would never pick up a change made to 0001's own
+-- text. Anyone who already has a local guma.db (as of the first real
+-- click-through test) needs this to actually land.
+alter table shops add column show_welcome integer not null default 1;

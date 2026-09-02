@@ -511,7 +511,7 @@ export function QuoteDocument({ row }: { row: any }) {
               {trimPct(rates.depositPct)}% of the total.{' '}
               {q.needsDesign
                 ? `Modelling begins once it clears; the ${shop.lead_days}-day turnaround is counted from that day, not from today.`
-                : 'The job is scheduled onto a machine once it clears.'}{' '}
+                : 'The project is scheduled onto a machine once it clears.'}{' '}
               Balance of {money(q.balance)} is due on delivery.
             </div>
             {shop.payment_info && (

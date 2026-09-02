@@ -183,18 +183,260 @@ export interface SavedQuote {
   ref: string
 }
 
-/** One row in the Jobs list — every job today has exactly one quote (there
- *  is no "revise and re-save" flow yet, so `version` never advances past
- *  1), but the type carries a possibly-null quote deliberately: a job
- *  whose only save so far was "Save draft" has quote fields, a job that's
- *  never been saved at all wouldn't exist as a row in the first place. */
+/** The seven stages a job moves through — same values in both backends
+ *  (SQLite's jobs.phase check constraint and Postgres's job_phase enum).
+ *  Ordered: this is also the Pipeline board's column order. */
+export const JOB_PHASES = [
+  'intake',
+  'design',
+  'approval',
+  'scheduled',
+  'building',
+  'review',
+  'delivered',
+] as const
+export type JobPhase = (typeof JOB_PHASES)[number]
+
+export type JobPriority = 'low' | 'medium' | 'high' | 'urgent'
+
+/** One row in the Jobs list (and the Pipeline board) — every job today has
+ *  exactly one quote (there is no "revise and re-save" flow yet, so
+ *  `version` never advances past 1), but the type carries a possibly-null
+ *  quote deliberately: a job whose only save so far was "Save draft" has
+ *  quote fields, a job that's never been saved at all wouldn't exist as a
+ *  row in the first place. */
+export type QuoteStatus = 'draft' | 'sent' | 'accepted' | 'declined' | 'expired'
+
+/**
+ * What sort of buyer a client is, ordered the way a small print farm meets
+ * them: one-off individuals and local businesses first, institutions after.
+ * Not cosmetic -- a school buying with a purchase order, a hobbyist paying
+ * on collection and a government contract differ on deposits, paperwork and
+ * how long they take to pay, and a shop wants that split visible.
+ *
+ * Lives here rather than in gates.ts (which owns the logic that reads it)
+ * so that data.types.ts stays the one module with no imports of its own --
+ * gates.ts imports from here, never the reverse, and there is no cycle to
+ * reason about.
+ *
+ * Stored as plain text on clients.kind with no database check constraint:
+ * SQLite cannot relax one later without rebuilding the table, and this
+ * vocabulary is exactly the sort that grows.
+ */
+export const CLIENT_KINDS = [
+  'individual',
+  'business',
+  'club',
+  'nonprofit',
+  'government',
+  'other',
+] as const
+export type ClientKind = (typeof CLIENT_KINDS)[number]
+
+export const CLIENT_KIND_LABEL: Record<ClientKind, string> = {
+  individual: 'Individual',
+  business: 'Business',
+  club: 'Club or school',
+  nonprofit: 'Nonprofit',
+  government: 'Government',
+  other: 'Other',
+}
+
+/** Coerce whatever is in the column to a kind we understand. */
+export function asClientKind(v: string | null | undefined): ClientKind {
+  return (CLIENT_KINDS as readonly string[]).includes(v ?? '') ? (v as ClientKind) : 'other'
+}
+
+/** One answer on one stage-gate checklist item (see gates.ts and job_gates). */
+export interface GateAnswer {
+  checked: boolean
+  note: string | null
+}
+
+/**
+ * Everything the gate and flag logic in gates.ts is allowed to read about a
+ * project. Assembled by whichever backend is in play from jobs + quotes +
+ * the job_money view, so that all of that logic stays pure and testable
+ * without a database anywhere near it.
+ */
+export interface ProjectFacts {
+  phase: JobPhase
+  priority: JobPriority
+  createdAt: string
+  /** ISO date (YYYY-MM-DD) the client is holding the shop to. */
+  neededBy: string | null
+  /** ISO date the delivery window opens, if the shop quoted a range. */
+  windowFrom: string | null
+  /** The window has been promised to the client and shouldn't move. */
+  windowLocked: boolean
+  /** Someone marked this project as at risk by hand. */
+  atRisk: boolean
+  /** ISO date it actually changed hands. */
+  deliveryOn: string | null
+  deliveryHow: string | null
+  brief: string | null
+  poc: string | null
+  quoteStatus: QuoteStatus | null
+  quoteTotal: number | null
+  /** All four already derived by the job_money view from append-only payments. */
+  depositDue: number
+  depositOwed: number
+  balanceOwed: number
+  /** ISO timestamp of the most recent job_events row, if any. */
+  lastActivityAt: string | null
+  /** The current rate card's minimum_order, for the under-minimum flag. */
+  minimumOrder: number
+}
+
 export interface JobListRow {
   jobId: string
   ref: string
   title: string
+  clientId: string
   clientName: string
+  clientKind: ClientKind
   createdAt: string
+  phase: JobPhase
+  priority: JobPriority
   quoteId: string | null
-  quoteStatus: 'draft' | 'sent' | 'accepted' | 'declined' | 'expired' | null
+  quoteStatus: QuoteStatus | null
   total: number | null
+  /** Enough to compute this project's flags and gate without a second query. */
+  facts: ProjectFacts
+  /** Gate answers for the CURRENT phase only -- the board and the list never
+   *  need the earlier ones, and loadProjectDetail fetches all of them. */
+  gateAnswers: Record<string, GateAnswer>
+}
+
+/** One entry in a project's activity log (a job_events row, joined to its actor). */
+export interface ProjectEvent {
+  id: number
+  kind: string
+  body: string | null
+  fromPhase: JobPhase | null
+  toPhase: JobPhase | null
+  at: string
+  actorName: string | null
+}
+
+/** Everything the project detail screen draws, in one round trip. */
+export interface ProjectDetail {
+  jobId: string
+  ref: string
+  title: string
+  brief: string | null
+  phase: JobPhase
+  priority: JobPriority
+  assetOrigin: 'model' | 'fix' | 'ready'
+  createdAt: string
+  updatedAt: string
+  client: {
+    id: string
+    name: string
+    kind: ClientKind
+    contact: string | null
+    email: string | null
+    phone: string | null
+  }
+  quote: { id: string; status: QuoteStatus; total: number | null } | null
+  facts: ProjectFacts
+  /** Answers for EVERY phase, so earlier stages can be shown as cleared. */
+  gates: Record<string, Record<string, GateAnswer>>
+  events: ProjectEvent[]
+  /** Every payment recorded against this project, newest first. */
+  payments: PaymentRow[]
+}
+
+/** The handful of project fields the detail screen can edit in place. */
+export interface ProjectFieldsInput {
+  poc?: string | null
+  neededBy?: string | null
+  windowFrom?: string | null
+  windowLocked?: boolean
+  atRisk?: boolean
+  deliveryOn?: string | null
+  deliveryHow?: string | null
+  priority?: JobPriority
+}
+
+/** One row on the Clients screen -- a client, plus what they are worth. */
+export interface ClientRow {
+  id: string
+  name: string
+  kind: ClientKind
+  contact: string | null
+  email: string | null
+  phone: string | null
+  /** Projects of any age. */
+  projects: number
+  /** Projects not yet delivered. */
+  active: number
+  /** Sum of sent/accepted quote totals. Draft quotes are not money. */
+  value: number
+  /** Still owed across everything delivered. */
+  owed: number
+  /** Most recent job_events timestamp across all their projects. */
+  lastActivity: string | null
+}
+
+/** Editable fields on the Clients screen. */
+export interface ClientEditInput {
+  name?: string
+  kind?: ClientKind
+  contact?: string | null
+  email?: string | null
+  phone?: string | null
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Payments                                                            */
+/* ------------------------------------------------------------------ */
+
+export const PAYMENT_KINDS = ['deposit', 'balance', 'partial', 'refund'] as const
+export type PaymentKind = (typeof PAYMENT_KINDS)[number]
+
+export const PAYMENT_METHODS = ['cash', 'transfer', 'check', 'card', 'other'] as const
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
+
+export const PAYMENT_KIND_LABEL: Record<PaymentKind, string> = {
+  deposit: 'Deposit',
+  balance: 'Balance',
+  partial: 'Part payment',
+  refund: 'Refund',
+}
+
+export const PAYMENT_METHOD_LABEL: Record<PaymentMethod, string> = {
+  cash: 'Cash',
+  transfer: 'Bank transfer',
+  check: 'Cheque',
+  card: 'Card',
+  other: 'Other',
+}
+
+/**
+ * One payment, exactly as it was recorded. Payments are append-only facts:
+ * there is no "mark as paid" flag anywhere in the schema, and every owed
+ * figure in the app is the job_money view folding these rows. A payment
+ * entered by mistake is corrected with a refund row, not by editing
+ * history — which is also what an accountant would expect to find.
+ */
+export interface PaymentRow {
+  id: string
+  kind: PaymentKind
+  amount: number
+  method: PaymentMethod
+  receivedOn: string
+  note: string | null
+  recordedBy: string | null
+}
+
+export interface PaymentInput {
+  kind: PaymentKind
+  amount: number
+  method: PaymentMethod
+  receivedOn: string
+  note: string | null
+  /** The quote this is being paid against, when there is one. */
+  quoteId: string | null
 }

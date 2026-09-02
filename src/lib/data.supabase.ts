@@ -11,8 +11,18 @@
  */
 import { supabase } from './supabase'
 import type { MaterialRef, PrinterRef } from './pricing'
-import { NeedsSetup, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type Profile } from './data.types'
-export { NeedsSetup, toRateSet } from './data.types'
+import { NeedsSetup, asClientKind, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type Profile } from './data.types'
+export {
+  NeedsSetup,
+  toRateSet,
+  asClientKind,
+  CLIENT_KINDS,
+  CLIENT_KIND_LABEL,
+  PAYMENT_KINDS,
+  PAYMENT_METHODS,
+  PAYMENT_KIND_LABEL,
+  PAYMENT_METHOD_LABEL,
+} from './data.types'
 export type {
   Shop,
   RateCardRow,
@@ -25,6 +35,18 @@ export type {
   SaveQuoteArgs,
   SavedQuote,
   JobListRow,
+  JobPhase,
+  JobPriority,
+  ProjectDetail,
+  ProjectEvent,
+  ProjectFacts,
+  ProjectFieldsInput,
+  GateAnswer,
+  ClientRow,
+  ClientEditInput,
+  PaymentRow,
+  PaymentInput,
+  QuoteStatus,
 } from './data.types'
 import type {
   ShopIdentityInput,
@@ -32,6 +54,18 @@ import type {
   SaveQuoteArgs,
   SavedQuote,
   JobListRow,
+  JobPhase,
+  JobPriority,
+  ProjectDetail,
+  ProjectEvent,
+  ProjectFacts,
+  ProjectFieldsInput,
+  GateAnswer,
+  ClientRow,
+  ClientEditInput,
+  PaymentRow,
+  PaymentInput,
+  QuoteStatus,
 } from './data.types'
 
 /**
@@ -255,34 +289,157 @@ export async function nextJobRef(shopId: string): Promise<string> {
   return prefix + String(n).padStart(4, '0')
 }
 
-/** Every job saved so far, newest first — see data.local.ts's listJobs for
- *  why a plain embed (rather than picking a specific quote version) is
- *  enough today. `quotes` embeds as an array because PostgREST can't know
- *  from the schema alone that it's 1:1 in practice; take the first. */
+/**
+ * Every project, newest first, with the same attached facts data.local.ts's
+ * listJobs returns — see that function for why the flags and the gate are
+ * computed on the client from one row rather than by a query per card.
+ *
+ * `quotes` embeds as an array because PostgREST cannot know from the schema
+ * alone that it is 1:1 in practice; take the first. job_money is a view, so
+ * it embeds the same way but keyed on job_id.
+ */
 export async function listJobs(shopId: string): Promise<JobListRow[]> {
   const { data, error } = await supabase
     .from('jobs')
-    .select(
-      `id, ref, title, created_at,
-       clients!inner ( name ),
-       quotes ( id, status, total )`,
-    )
+    .select(JOB_SELECT)
     .eq('shop_id', shopId)
+    // See data.local.ts's listJobs: created_at is not a total order.
     .order('created_at', { ascending: false })
+    .order('ref', { ascending: false })
   if (error) throw error
-  return (data ?? []).map((r: any) => {
-    const quote = r.quotes?.[0] ?? null
-    return {
-      jobId: r.id,
-      ref: r.ref,
-      title: r.title,
-      clientName: r.clients.name,
-      createdAt: r.created_at,
-      quoteId: quote?.id ?? null,
-      quoteStatus: quote?.status ?? null,
-      total: quote?.total ?? null,
-    }
+  const rows = (data ?? []) as any[]
+  const [gates, minimumOrder] = await Promise.all([
+    loadGateAnswers(rows.map((r) => r.id)),
+    currentMinimumOrder(shopId),
+  ])
+  return rows.map((r) => ({
+    ...toJobListRow(r, minimumOrder),
+    gateAnswers: gates[r.id]?.[r.phase] ?? {},
+  }))
+}
+
+const JOB_SELECT = `id, ref, title, brief, created_at, updated_at, phase, priority,
+   asset_origin, poc, needed_by, window_from, window_locked, at_risk,
+   delivery_on, delivery_how,
+   clients!inner ( id, name, kind, contact, email, phone ),
+   quotes ( id, status, total ),
+   job_money ( deposit_due, deposit_owed, balance_owed ),
+   job_events ( at )`
+
+function factsFrom(r: any, minimumOrder: number): ProjectFacts {
+  const quote = r.quotes?.[0] ?? null
+  // See data.local.ts's factsFrom for why poc falls back to the client's
+  // named contact.
+  const money = r.job_money?.[0] ?? null
+  // Postgres already hands these back as real booleans and real timestamps;
+  // the only normalising needed is picking the newest event date.
+  const events: string[] = (r.job_events ?? []).map((e: any) => e.at)
+  return {
+    phase: r.phase,
+    priority: r.priority,
+    createdAt: r.created_at,
+    neededBy: r.needed_by ?? null,
+    windowFrom: r.window_from ?? null,
+    windowLocked: r.window_locked === true,
+    atRisk: r.at_risk === true,
+    deliveryOn: r.delivery_on ?? null,
+    deliveryHow: r.delivery_how ?? null,
+    brief: r.brief ?? null,
+    poc: r.poc ?? r.clients?.contact ?? null,
+    quoteStatus: (quote?.status as QuoteStatus | undefined) ?? null,
+    quoteTotal: quote?.total == null ? null : Number(quote.total),
+    depositDue: Number(money?.deposit_due ?? 0),
+    depositOwed: Number(money?.deposit_owed ?? 0),
+    balanceOwed: Number(money?.balance_owed ?? 0),
+    lastActivityAt: events.length ? events.reduce((a, b) => (a > b ? a : b)) : null,
+    minimumOrder,
+  }
+}
+
+function toJobListRow(r: any, minimumOrder = 0): Omit<JobListRow, 'gateAnswers'> {
+  const quote = r.quotes?.[0] ?? null
+  return {
+    jobId: r.id,
+    ref: r.ref,
+    title: r.title,
+    clientId: r.clients.id,
+    clientName: r.clients.name,
+    clientKind: asClientKind(r.clients.kind),
+    createdAt: r.created_at,
+    phase: r.phase,
+    priority: r.priority,
+    quoteId: quote?.id ?? null,
+    quoteStatus: quote?.status ?? null,
+    total: quote?.total == null ? null : Number(quote.total),
+    facts: factsFrom(r, minimumOrder),
+  }
+}
+
+/** job_id -> phase -> item key -> answer, in one round trip. */
+async function loadGateAnswers(
+  jobIds: string[],
+): Promise<Record<string, Record<string, Record<string, GateAnswer>>>> {
+  const out: Record<string, Record<string, Record<string, GateAnswer>>> = {}
+  if (jobIds.length === 0) return out
+  const { data, error } = await supabase
+    .from('job_gates')
+    .select('job_id, phase, item_key, checked, note')
+    .in('job_id', jobIds)
+  if (error) throw error
+  for (const r of (data ?? []) as any[]) {
+    const byPhase = (out[r.job_id] ??= {})
+    const byKey = (byPhase[r.phase] ??= {})
+    byKey[r.item_key] = { checked: r.checked === true, note: r.note ?? null }
+  }
+  return out
+}
+
+/** See data.local.ts's updateJobPhase — same contract, Postgres-side. */
+export async function updateJobPhase(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  toPhase: JobPhase,
+): Promise<void> {
+  const { data: job, error: readErr } = await supabase
+    .from('jobs')
+    .select('phase')
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+    .single()
+  if (readErr) throw readErr
+  const fromPhase = job?.phase as JobPhase | undefined
+  if (!fromPhase || fromPhase === toPhase) return
+
+  const { error: updErr } = await supabase
+    .from('jobs')
+    .update({ phase: toPhase, updated_at: new Date().toISOString() })
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+  if (updErr) throw updErr
+
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: jobId,
+    actor_id: actorId,
+    kind: 'phase_change',
+    from_phase: fromPhase,
+    to_phase: toPhase,
   })
+  if (evErr) throw evErr
+}
+
+/** See data.local.ts's updateJobPriority — no event log, same reasoning. */
+export async function updateJobPriority(
+  shopId: string,
+  jobId: string,
+  priority: JobPriority,
+): Promise<void> {
+  const { error } = await supabase
+    .from('jobs')
+    .update({ priority })
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+  if (error) throw error
 }
 
 /**
@@ -383,4 +540,267 @@ export async function loadQuoteForPrint(quoteId: string) {
     .single()
   if (error) throw error
   return data
+}
+
+/* ------------------------------------------------------------------ */
+/* Project detail, stage gates, clients                                */
+/* ------------------------------------------------------------------ */
+
+/** The live rate card's minimum_order, for the under-minimum flag. Its own
+ *  query because it is one number per shop, not per project. */
+async function currentMinimumOrder(shopId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('rate_cards')
+    .select('minimum_order')
+    .eq('shop_id', shopId)
+    .order('effective_from', { ascending: false })
+    .limit(1)
+  if (error) throw error
+  return Number(data?.[0]?.minimum_order ?? 0)
+}
+
+/** See data.local.ts's loadProjectDetail — same contract, Postgres-side. */
+export async function loadProjectDetail(shopId: string, jobId: string): Promise<ProjectDetail> {
+  const { data, error } = await supabase
+    .from('jobs')
+    .select(JOB_SELECT)
+    .eq('shop_id', shopId)
+    .eq('id', jobId)
+    .single()
+  if (error) throw error
+  const r = data as any
+  if (!r) throw new Error('That project no longer exists.')
+
+  const [gates, minimumOrder, events, payments] = await Promise.all([
+    loadGateAnswers([jobId]),
+    currentMinimumOrder(shopId),
+    supabase
+      .from('job_events')
+      .select('id, kind, body, from_phase, to_phase, at, profiles ( full_name )')
+      .eq('job_id', jobId)
+      .order('at', { ascending: false }),
+    supabase
+      .from('payments')
+      .select('id, kind, amount, method, received_on, note, profiles ( full_name )')
+      .eq('job_id', jobId)
+      .order('received_on', { ascending: false }),
+  ])
+  if (events.error) throw events.error
+  if (payments.error) throw payments.error
+
+  const quote = r.quotes?.[0] ?? null
+  return {
+    jobId: r.id,
+    ref: r.ref,
+    title: r.title,
+    brief: r.brief ?? null,
+    phase: r.phase,
+    priority: r.priority,
+    assetOrigin: r.asset_origin,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    client: {
+      id: r.clients.id,
+      name: r.clients.name,
+      kind: asClientKind(r.clients.kind),
+      contact: r.clients.contact ?? null,
+      email: r.clients.email ?? null,
+      phone: r.clients.phone ?? null,
+    },
+    quote: quote ? { id: quote.id, status: quote.status, total: quote.total ?? null } : null,
+    facts: factsFrom(r, minimumOrder),
+    gates: gates[jobId] ?? {},
+    payments: ((payments.data ?? []) as any[]).map(
+      (p): PaymentRow => ({
+        id: p.id,
+        kind: p.kind,
+        amount: Number(p.amount),
+        method: p.method,
+        receivedOn: p.received_on,
+        note: p.note ?? null,
+        recordedBy: p.profiles?.full_name ?? null,
+      }),
+    ),
+    events: ((events.data ?? []) as any[]).map(
+      (e): ProjectEvent => ({
+        id: e.id,
+        kind: e.kind,
+        body: e.body ?? null,
+        fromPhase: e.from_phase ?? null,
+        toPhase: e.to_phase ?? null,
+        at: e.at,
+        actorName: e.profiles?.full_name ?? null,
+      }),
+    ),
+  }
+}
+
+/** See data.local.ts's setGateItem — same upsert, same reasoning about why
+ *  the item key is never validated against gates.ts. */
+export async function setGateItem(
+  _shopId: string,
+  jobId: string,
+  actorId: string,
+  phase: JobPhase,
+  itemKey: string,
+  checked: boolean,
+  note: string | null,
+): Promise<void> {
+  const { error } = await supabase.from('job_gates').upsert(
+    {
+      job_id: jobId,
+      phase,
+      item_key: itemKey,
+      checked,
+      note,
+      actor_id: actorId,
+      at: new Date().toISOString(),
+    },
+    { onConflict: 'job_id,phase,item_key' },
+  )
+  if (error) throw error
+}
+
+/** See data.local.ts's addProjectNote. */
+export async function addProjectNote(jobId: string, actorId: string, body: string): Promise<void> {
+  const text = body.trim()
+  if (!text) return
+  const { error } = await supabase
+    .from('job_events')
+    .insert({ job_id: jobId, actor_id: actorId, kind: 'note', body: text })
+  if (error) throw error
+  const { error: updErr } = await supabase
+    .from('jobs')
+    .update({ updated_at: new Date().toISOString() })
+    .eq('id', jobId)
+  if (updErr) throw updErr
+}
+
+/** See data.local.ts's updateProjectFields — present keys only. */
+export async function updateProjectFields(
+  shopId: string,
+  jobId: string,
+  fields: ProjectFieldsInput,
+): Promise<void> {
+  const map: Record<string, string> = {
+    poc: 'poc',
+    neededBy: 'needed_by',
+    windowFrom: 'window_from',
+    windowLocked: 'window_locked',
+    atRisk: 'at_risk',
+    deliveryOn: 'delivery_on',
+    deliveryHow: 'delivery_how',
+    priority: 'priority',
+  }
+  const row: Record<string, unknown> = {}
+  for (const [key, column] of Object.entries(map)) {
+    if (key in fields) row[column] = (fields as Record<string, unknown>)[key] ?? null
+  }
+  if (Object.keys(row).length === 0) return
+  row.updated_at = new Date().toISOString()
+  const { error } = await supabase.from('jobs').update(row).eq('id', jobId).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+/**
+ * See data.local.ts's listClients for what `value` counts and why.
+ *
+ * PostgREST has no GROUP BY, so the rollups are done here over an embed
+ * rather than in SQL. A shop's client list is tens of rows, not thousands;
+ * the alternative is a database view that would then need its own migration
+ * and its own RLS policy to say the same thing.
+ */
+export async function listClients(shopId: string): Promise<ClientRow[]> {
+  const { data, error } = await supabase
+    .from('clients')
+    .select(
+      `id, name, kind, contact, email, phone,
+       jobs ( id, phase, quotes ( status, total ), job_money ( balance_owed ), job_events ( at ) )`,
+    )
+    .eq('shop_id', shopId)
+    .order('name')
+  if (error) throw error
+  return ((data ?? []) as any[]).map((c) => {
+    const jobs: any[] = c.jobs ?? []
+    let value = 0
+    let owed = 0
+    let last: string | null = null
+    for (const j of jobs) {
+      const q = j.quotes?.[0]
+      if (q && (q.status === 'sent' || q.status === 'accepted')) value += Number(q.total ?? 0)
+      owed += Number(j.job_money?.[0]?.balance_owed ?? 0)
+      for (const e of j.job_events ?? []) if (!last || e.at > last) last = e.at
+    }
+    return {
+      id: c.id,
+      name: c.name,
+      kind: asClientKind(c.kind),
+      contact: c.contact ?? null,
+      email: c.email ?? null,
+      phone: c.phone ?? null,
+      projects: jobs.length,
+      active: jobs.filter((j) => j.phase !== 'delivered').length,
+      value,
+      owed,
+      lastActivity: last,
+    }
+  })
+}
+
+/** See data.local.ts's updateClientRecord — present keys only. */
+export async function updateClientRecord(
+  shopId: string,
+  clientId: string,
+  input: ClientEditInput,
+): Promise<void> {
+  const allowed = ['name', 'kind', 'contact', 'email', 'phone'] as const
+  const row: Record<string, unknown> = {}
+  for (const key of allowed) {
+    if (key in input) row[key] = (input as Record<string, unknown>)[key] ?? null
+  }
+  if (Object.keys(row).length === 0) return
+  const { error } = await supabase
+    .from('clients')
+    .update(row)
+    .eq('id', clientId)
+    .eq('shop_id', shopId)
+  if (error) throw error
+}
+
+/** See data.local.ts's recordPayment — append-only, same reasoning. */
+export async function recordPayment(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: PaymentInput,
+): Promise<string> {
+  const amount = Number(input.amount)
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('A payment needs an amount greater than zero.')
+  }
+  const { data, error } = await supabase
+    .from('payments')
+    .insert({
+      shop_id: shopId,
+      job_id: jobId,
+      quote_id: input.quoteId,
+      kind: input.kind,
+      amount,
+      method: input.method,
+      received_on: input.receivedOn,
+      note: input.note,
+      recorded_by: actorId,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: jobId,
+    actor_id: actorId,
+    kind: 'payment',
+    body: `${input.kind} of ${amount.toFixed(2)} by ${input.method}${input.note ? ` — ${input.note}` : ''}`,
+  })
+  if (evErr) throw evErr
+  return data.id as string
 }

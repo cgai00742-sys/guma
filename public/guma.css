@@ -375,7 +375,14 @@ select[multiple]{height:auto;min-height:96px;padding:4px}
 input:hover,select:hover,textarea:hover{border-color:var(--line-strong)}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--info);outline-offset:1px;border-color:var(--info)}
 input:disabled,select:disabled,textarea:disabled{background:var(--panel);color:var(--txt-3);opacity:.6;cursor:not-allowed}
-input[type="date"]{color-scheme:dark}
+/* Native browser chrome (date picker icon, number up/down spinner) renders
+   using the page's declared color-scheme, not our custom palette — and it
+   was never declared, so WebKit fell back to light-scheme controls: a
+   dark-grey spinner on our dark input fields, nearly invisible. Declaring
+   dark here (once, globally, for every input type that draws native chrome)
+   fixes contrast everywhere at once — Setup, Settings, Intake, every
+   screen — instead of needing a per-screen patch. */
+input[type="date"],input[type="number"]{color-scheme:dark}
 input::-webkit-calendar-picker-indicator{opacity:.6;cursor:pointer;filter:invert(1)}
 input::-webkit-calendar-picker-indicator:hover{opacity:1}
 

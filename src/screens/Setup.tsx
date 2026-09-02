@@ -8,11 +8,21 @@
  * is a hint, a pre-filled input is a recommendation, and this tool has no
  * business recommending what another shop should charge.
  *
+ * Almost nothing here is required, on purpose. The two exceptions (see
+ * stepError below) are structural, not preferential: a shop needs a name to
+ * put on a quote, and a printer that's been named needs real rate/wear
+ * numbers rather than silently defaulting to 0 (which would misreport every
+ * job on it as free machine time). Everything else — address, tax details,
+ * electricity rate, every hourly rate, materials — stays skippable exactly
+ * as before.
+ *
  * Cinematic register: this is a screen someone passes through exactly once.
  */
 import { useMemo, useState, type FormEvent } from 'react'
 import { makeMoney } from '../lib/pricing'
 import { setupShop, type SetupPayload } from '../lib/data'
+import { taxHintFor, US_STATES } from '../lib/taxHelp'
+import TaxNameHint from '../components/TaxNameHint'
 
 const STEPS = ['Your shop', 'Your rates', 'First machine'] as const
 
@@ -44,6 +54,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
   const [name, setName] = useState('')
   const [legalName, setLegalName] = useState('')
   const [address, setAddress] = useState('')
+  const [state, setState] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [licenseNo, setLicenseNo] = useState('')
@@ -72,6 +83,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
   const [pWatts, setPWatts] = useState('')
 
   const { money } = useMemo(() => makeMoney(currency, locale), [currency, locale])
+  const taxHint = useMemo(() => taxHintFor(state), [state])
   const num = (v: string) => (v.trim() === '' ? 0 : Number(v))
   // Distinct from num(): blank means "not supplied," not zero. Zero would
   // falsely claim free electricity or a printer that draws no power at all,
@@ -79,12 +91,21 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
   // on to say "this margin is an estimate" honestly.
   const numOrNull = (v: string) => (v.trim() === '' ? null : Number(v))
 
-  // Nothing on this screen blocks Continue. A shop without a name yet, or one
-  // that isn't ready to say where it operates, still gets a working tool —
-  // it just costs machine time as a break-even estimate until the numbers
-  // that would make it exact (address-driven context, electricity rate) are
-  // filled in. See pricing.ts's costsIncomplete.
-  const canNext = true
+  // Only two things actually block Continue, both structural rather than
+  // preferential — see the header comment. Everything else (address,
+  // electricity rate, every rate on step 2, tax details) stays optional: a
+  // shop without a name yet, or one that isn't ready to say where it
+  // operates, still gets a working tool — it just costs machine time as a
+  // break-even estimate until the numbers that would make it exact
+  // (address-driven context, electricity rate) are filled in. See
+  // pricing.ts's costsIncomplete.
+  const stepError =
+    step === 0 && name.trim() === ''
+      ? 'Shop name is required — it goes on every quote.'
+      : step === 2 && pName.trim() !== '' && (pRate.trim() === '' || pWear.trim() === '')
+        ? 'Rate and wear per hour are required once a printer has a name — otherwise its machine time would price as free.'
+        : null
+  const canNext = stepError === null
 
   async function finish(e: FormEvent) {
     e.preventDefault()
@@ -96,6 +117,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
           name: name.trim(),
           legal_name: legalName.trim(),
           address: address.trim(),
+          state: state.trim(),
           email: email.trim(),
           phone: phone.trim(),
           license_no: licenseNo.trim(),
@@ -181,7 +203,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
           {step === 0 && (
             <>
               <div className="fld" style={{ marginTop: 14 }}>
-                <label className="lbl" htmlFor="w-name">Shop name</label>
+                <label className="lbl" htmlFor="w-name">Shop name <span style={{ color: 'var(--warn)' }}>*</span></label>
                 <input id="w-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Kōlea 3D" />
                 <div className="hint">What clients call you. Appears on every quote.</div>
               </div>
@@ -197,12 +219,27 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                 </div>
               </div>
 
-              <div className="fld" style={{ marginTop: 10 }}>
-                <label className="lbl" htmlFor="w-addr">Address</label>
-                <input id="w-addr" value={address} onChange={(e) => setAddress(e.target.value)} />
-                <div className="hint">
-                  Optional — leave it blank if you're not ready to say. It just means Guma can't connect your
-                  machine costs to where you actually run them.
+              <div className="grid2" style={{ marginTop: 10 }}>
+                <div className="fld">
+                  <label className="lbl" htmlFor="w-addr">Mailing address</label>
+                  <input id="w-addr" value={address} onChange={(e) => setAddress(e.target.value)} />
+                  <div className="hint">
+                    Optional — leave it blank if you're not ready to say. It just means Guma can't connect your
+                    machine costs to where you actually run them.
+                  </div>
+                </div>
+                <div className="fld">
+                  <label className="lbl" htmlFor="w-state">State</label>
+                  <select id="w-state" value={state} onChange={(e) => setState(e.target.value)}>
+                    <option value="">— not set —</option>
+                    {US_STATES.map(([code, label]) => (
+                      <option key={code} value={code}>{label}</option>
+                    ))}
+                  </select>
+                  <div className="hint">
+                    Optional. Only used to suggest the right tax name below — Hawaii's GET isn't a "sales tax," for
+                    example. Never affects pricing.
+                  </div>
                 </div>
               </div>
 
@@ -246,6 +283,8 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <div className="hint">Three decimals allowed. 0 if you don't charge it.</div>
                 </div>
               </div>
+
+              {taxHint && <TaxNameHint hint={taxHint} onUseLabel={setTaxLabel} />}
 
               <div className="fld" style={{ marginTop: 10 }}>
                 <label className="lbl" htmlFor="w-kwh">Your electricity rate, $/kWh</label>
@@ -371,12 +410,12 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   </select>
                 </div>
                 <div className="fld">
-                  <label className="lbl" htmlFor="w-prate">Rate per hour</label>
+                  <label className="lbl" htmlFor="w-prate">Rate per hour{pName.trim() && <span style={{ color: 'var(--warn)' }}> *</span>}</label>
                   <input id="w-prate" type="number" min="0" value={pRate} onChange={(e) => setPRate(e.target.value)} />
                   <div className="hint">Power, space, your attention.</div>
                 </div>
                 <div className="fld">
-                  <label className="lbl" htmlFor="w-pwear">Wear per hour</label>
+                  <label className="lbl" htmlFor="w-pwear">Wear per hour{pName.trim() && <span style={{ color: 'var(--warn)' }}> *</span>}</label>
                   <input id="w-pwear" type="number" min="0" value={pWear} onChange={(e) => setPWear(e.target.value)} />
                   <div className="hint">Machine price ÷ lifetime hours is a fair start.</div>
                 </div>
@@ -387,7 +426,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                 <input id="w-pwatts" type="number" min="0" value={pWatts} onChange={(e) => setPWatts(e.target.value)} placeholder="from the spec sheet" />
                 <div className="hint">
                   Optional. Paired with your electricity rate above, this is what turns "machine time" from a guess
-                  into an actual cost — without it Guma prices the job the same either way, it just can't show you
+                  into an actual cost — without it Guma prices the project the same either way, it just can't show you
                   the real margin on it.
                 </div>
               </div>
@@ -402,6 +441,10 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
             <div className="alert" style={{ marginTop: 12 }}>
               <span>{error}</span>
             </div>
+          )}
+
+          {stepError && (
+            <div className="gblock" style={{ marginTop: 12 }}>{stepError}</div>
           )}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 18, alignItems: 'center' }}>

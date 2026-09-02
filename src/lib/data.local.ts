@@ -24,7 +24,7 @@
  */
 import Database from '@tauri-apps/plugin-sql'
 import type { MaterialRef, PrinterRef } from './pricing'
-import { NeedsSetup } from './data.types'
+import { NeedsSetup, asClientKind } from './data.types'
 import type {
   Shop,
   RateCardRow,
@@ -37,9 +37,31 @@ import type {
   SaveQuoteArgs,
   SavedQuote,
   JobListRow,
+  JobPhase,
+  JobPriority,
+  ProjectDetail,
+  ProjectEvent,
+  ProjectFacts,
+  ProjectFieldsInput,
+  GateAnswer,
+  ClientRow,
+  ClientEditInput,
+  PaymentRow,
+  PaymentInput,
+  QuoteStatus,
 } from './data.types'
 
-export { NeedsSetup, toRateSet } from './data.types'
+export {
+  NeedsSetup,
+  toRateSet,
+  asClientKind,
+  CLIENT_KINDS,
+  CLIENT_KIND_LABEL,
+  PAYMENT_KINDS,
+  PAYMENT_METHODS,
+  PAYMENT_KIND_LABEL,
+  PAYMENT_METHOD_LABEL,
+} from './data.types'
 export type {
   Shop,
   RateCardRow,
@@ -52,6 +74,18 @@ export type {
   SaveQuoteArgs,
   SavedQuote,
   JobListRow,
+  JobPhase,
+  JobPriority,
+  ProjectDetail,
+  ProjectEvent,
+  ProjectFacts,
+  ProjectFieldsInput,
+  GateAnswer,
+  ClientRow,
+  ClientEditInput,
+  PaymentRow,
+  PaymentInput,
+  QuoteStatus,
 } from './data.types'
 
 let dbPromise: Promise<Database> | null = null
@@ -362,39 +396,197 @@ export async function nextJobRef(shopId: string): Promise<string> {
  *  yet), so a plain left join is enough; `quotes.job_id` isn't declared
  *  unique though, so if that changes this would need to pick the latest
  *  version explicitly rather than assume one row back. */
+/**
+ * Every project, newest first, with enough attached to compute its flags
+ * and its current gate on the client without a second query per card.
+ *
+ * The money columns come from the job_money view rather than being summed
+ * here: payments are append-only facts and the view is the one place that
+ * knows how to fold them, so a second implementation of that arithmetic in
+ * TypeScript is a second thing to get wrong.
+ */
 export async function listJobs(shopId: string): Promise<JobListRow[]> {
   const d = await db()
-  const rows = await d.select<
-    {
-      job_id: string
-      ref: string
-      title: string
-      client_name: string
-      created_at: string
-      quote_id: string | null
-      quote_status: JobListRow['quoteStatus']
-      total: number | null
-    }[]
-  >(
-    `select j.id as job_id, j.ref, j.title, c.name as client_name, j.created_at,
-            q.id as quote_id, q.status as quote_status, q.total
-     from jobs j
-     join clients c on c.id = j.client_id
-     left join quotes q on q.job_id = j.id
-     where j.shop_id = ?
-     order by j.created_at desc`,
+  // created_at alone is not a total order: two projects saved in the same
+  // millisecond tie, and SQLite is then free to return them in any order
+  // (which it does — the order changed the moment this query grew a join).
+  // ref is sequential per shop per year, so it breaks the tie the same way
+  // a human would.
+  const rows = await d.select<JobListSqlRow[]>(
+    `${JOB_LIST_SQL} order by j.created_at desc, j.ref desc`,
     [shopId],
   )
+  const jobIds = rows.map((r) => r.job_id)
+  const gates = await loadGateAnswers(d, jobIds)
   return rows.map((r) => ({
+    ...toJobListRow(r),
+    gateAnswers: gates[r.job_id]?.[r.phase] ?? {},
+  }))
+}
+
+/** Shared by listJobs and loadProjectDetail so the two can never disagree
+ *  about what a project's facts are. */
+const JOB_LIST_SQL = `
+  select j.id as job_id, j.ref, j.title, j.brief, j.created_at, j.updated_at,
+         j.phase, j.priority, j.asset_origin, j.poc,
+         j.needed_by, j.window_from, j.window_locked, j.at_risk,
+         j.delivery_on, j.delivery_how,
+         c.id as client_id, c.name as client_name, c.kind as client_kind,
+         c.contact as client_contact, c.email as client_email, c.phone as client_phone,
+         q.id as quote_id, q.status as quote_status, q.total,
+         coalesce(m.deposit_due, 0)  as deposit_due,
+         coalesce(m.deposit_owed, 0) as deposit_owed,
+         coalesce(m.balance_owed, 0) as balance_owed,
+         (select max(at) from job_events e where e.job_id = j.id) as last_activity_at,
+         coalesce((select minimum_order from rate_cards
+                   where shop_id = j.shop_id
+                   order by effective_from desc limit 1), 0) as minimum_order
+  from jobs j
+  join clients c on c.id = j.client_id
+  left join quotes q on q.job_id = j.id
+  left join job_money m on m.job_id = j.id
+  where j.shop_id = ?`
+
+interface JobListSqlRow {
+  job_id: string
+  ref: string
+  title: string
+  brief: string | null
+  created_at: string
+  updated_at: string
+  phase: JobPhase
+  priority: JobPriority
+  asset_origin: 'model' | 'fix' | 'ready'
+  poc: string | null
+  needed_by: string | null
+  window_from: string | null
+  window_locked: number
+  at_risk: number
+  delivery_on: string | null
+  delivery_how: string | null
+  client_id: string
+  client_name: string
+  client_kind: string | null
+  client_contact: string | null
+  client_email: string | null
+  client_phone: string | null
+  quote_id: string | null
+  quote_status: QuoteStatus | null
+  total: number | null
+  deposit_due: number
+  deposit_owed: number
+  balance_owed: number
+  last_activity_at: string | null
+  minimum_order: number
+}
+
+function factsFrom(r: JobListSqlRow): ProjectFacts {
+  return {
+    phase: r.phase,
+    priority: r.priority,
+    createdAt: r.created_at,
+    neededBy: r.needed_by,
+    windowFrom: r.window_from,
+    // SQLite has no boolean type; 0/1 becomes a real boolean here so that
+    // nothing downstream has to remember which backend it came from.
+    windowLocked: Number(r.window_locked) === 1,
+    atRisk: Number(r.at_risk) === 1,
+    deliveryOn: r.delivery_on,
+    deliveryHow: r.delivery_how,
+    brief: r.brief,
+    // A project's own point of contact overrides the client's, but until
+    // someone sets one the client's named contact IS the person to chase —
+    // asking for it twice would be busywork dressed as diligence.
+    poc: r.poc ?? r.client_contact,
+    quoteStatus: r.quote_status,
+    quoteTotal: r.total == null ? null : Number(r.total),
+    depositDue: Number(r.deposit_due ?? 0),
+    depositOwed: Number(r.deposit_owed ?? 0),
+    balanceOwed: Number(r.balance_owed ?? 0),
+    lastActivityAt: r.last_activity_at,
+    minimumOrder: Number(r.minimum_order ?? 0),
+  }
+}
+
+function toJobListRow(r: JobListSqlRow): Omit<JobListRow, 'gateAnswers'> {
+  return {
     jobId: r.job_id,
     ref: r.ref,
     title: r.title,
+    clientId: r.client_id,
     clientName: r.client_name,
+    clientKind: asClientKind(r.client_kind),
     createdAt: r.created_at,
+    phase: r.phase,
+    priority: r.priority,
     quoteId: r.quote_id,
     quoteStatus: r.quote_status,
-    total: r.total,
-  }))
+    total: r.total == null ? null : Number(r.total),
+    facts: factsFrom(r),
+  }
+}
+
+/** job_id -> phase -> item key -> answer. One query for any number of jobs. */
+async function loadGateAnswers(
+  d: Awaited<ReturnType<typeof db>>,
+  jobIds: string[],
+): Promise<Record<string, Record<string, Record<string, GateAnswer>>>> {
+  const out: Record<string, Record<string, Record<string, GateAnswer>>> = {}
+  if (jobIds.length === 0) return out
+  const marks = jobIds.map(() => '?').join(',')
+  const rows = await d.select<
+    { job_id: string; phase: string; item_key: string; checked: number; note: string | null }[]
+  >(
+    `select job_id, phase, item_key, checked, note from job_gates where job_id in (${marks})`,
+    jobIds,
+  )
+  for (const r of rows) {
+    const byPhase = (out[r.job_id] ??= {})
+    const byKey = (byPhase[r.phase] ??= {})
+    byKey[r.item_key] = { checked: Number(r.checked) === 1, note: r.note }
+  }
+  return out
+}
+
+export async function updateJobPhase(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  toPhase: JobPhase,
+): Promise<void> {
+  const d = await db()
+  const rows = await d.select<{ phase: JobPhase }[]>(
+    'select phase from jobs where id = ? and shop_id = ?',
+    [jobId, shopId],
+  )
+  const fromPhase = rows[0]?.phase
+  if (!fromPhase || fromPhase === toPhase) return
+  await d.execute(
+    `update jobs set phase = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     where id = ? and shop_id = ?`,
+    [toPhase, jobId, shopId],
+  )
+  await d.execute(
+    `insert into job_events (job_id, actor_id, kind, from_phase, to_phase)
+     values (?, ?, 'phase_change', ?, ?)`,
+    [jobId, actorId, fromPhase, toPhase],
+  )
+}
+
+/** Priority has no history worth keeping (unlike phase, it's a triage
+ *  label a shop might flip back and forth on the same afternoon), so this
+ *  is a plain column update — no job_events row. */
+export async function updateJobPriority(
+  shopId: string,
+  jobId: string,
+  priority: JobPriority,
+): Promise<void> {
+  const d = await db()
+  await d.execute('update jobs set priority = ? where id = ? and shop_id = ?', [
+    priority,
+    jobId,
+    shopId,
+  ])
 }
 
 export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
@@ -533,4 +725,332 @@ export async function loadQuoteForPrint(quoteId: string) {
     jobs: job ? { ...job, clients: client } : null,
     shops: shop,
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Project detail, stage gates, clients                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One project, everything the detail screen draws: the project itself, its
+ * client, its quote, its derived money, every gate answer on every phase,
+ * and the full activity log.
+ *
+ * Four queries rather than one join: the events and the gates are both
+ * one-to-many, and folding them into the main row would multiply it out
+ * and then need un-multiplying in TypeScript. Against a local SQLite file
+ * on the same machine, four round trips is not a cost worth designing
+ * around.
+ */
+export async function loadProjectDetail(shopId: string, jobId: string): Promise<ProjectDetail> {
+  const d = await db()
+  const rows = await d.select<JobListSqlRow[]>(`${JOB_LIST_SQL} and j.id = ?`, [shopId, jobId])
+  const r = rows[0]
+  if (!r) throw new Error('That project no longer exists.')
+
+  const gatesByPhase = (await loadGateAnswers(d, [jobId]))[jobId] ?? {}
+
+  const payments = await d.select<
+    {
+      id: string
+      kind: PaymentRow['kind']
+      amount: number
+      method: PaymentRow['method']
+      received_on: string
+      note: string | null
+      recorded_by_name: string | null
+    }[]
+  >(
+    `select p.id, p.kind, p.amount, p.method, p.received_on, p.note,
+            pr.full_name as recorded_by_name
+     from payments p
+     left join profiles pr on pr.id = p.recorded_by
+     where p.job_id = ?
+     order by p.received_on desc, p.created_at desc`,
+    [jobId],
+  )
+
+  const events = await d.select<
+    {
+      id: number
+      kind: string
+      body: string | null
+      from_phase: JobPhase | null
+      to_phase: JobPhase | null
+      at: string
+      actor_name: string | null
+    }[]
+  >(
+    `select e.id, e.kind, e.body, e.from_phase, e.to_phase, e.at, p.full_name as actor_name
+     from job_events e
+     left join profiles p on p.id = e.actor_id
+     where e.job_id = ?
+     order by e.at desc, e.id desc`,
+    [jobId],
+  )
+
+  return {
+    jobId: r.job_id,
+    ref: r.ref,
+    title: r.title,
+    brief: r.brief,
+    phase: r.phase,
+    priority: r.priority,
+    assetOrigin: r.asset_origin,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    client: {
+      id: r.client_id,
+      name: r.client_name,
+      kind: asClientKind(r.client_kind),
+      contact: r.client_contact,
+      email: r.client_email,
+      phone: r.client_phone,
+    },
+    quote:
+      r.quote_id && r.quote_status
+        ? { id: r.quote_id, status: r.quote_status, total: r.total == null ? null : Number(r.total) }
+        : null,
+    facts: factsFrom(r),
+    gates: gatesByPhase,
+    payments: payments.map(
+      (p): PaymentRow => ({
+        id: p.id,
+        kind: p.kind,
+        amount: Number(p.amount),
+        method: p.method,
+        receivedOn: p.received_on,
+        note: p.note,
+        recordedBy: p.recorded_by_name,
+      }),
+    ),
+    events: events.map(
+      (e): ProjectEvent => ({
+        id: e.id,
+        kind: e.kind,
+        body: e.body,
+        fromPhase: e.from_phase,
+        toPhase: e.to_phase,
+        at: e.at,
+        actorName: e.actor_name,
+      }),
+    ),
+  }
+}
+
+/**
+ * Tick, untick, or annotate one gate item.
+ *
+ * Upsert rather than insert-or-update-in-two-steps: (job_id, phase,
+ * item_key) is the primary key, so ON CONFLICT is the whole story. `at`
+ * and `actor_id` are refreshed on every write — a note edited three weeks
+ * later should say so.
+ *
+ * Nothing here validates the item key against gates.ts. That is deliberate:
+ * the checklist is allowed to change, and an answer to a question that has
+ * since been reworded is still a fact about what someone did.
+ */
+export async function setGateItem(
+  _shopId: string,
+  jobId: string,
+  actorId: string,
+  phase: JobPhase,
+  itemKey: string,
+  checked: boolean,
+  note: string | null,
+): Promise<void> {
+  const d = await db()
+  await d.execute(
+    `insert into job_gates (job_id, phase, item_key, checked, note, actor_id, at)
+     values (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+     on conflict (job_id, phase, item_key) do update set
+       checked = excluded.checked,
+       note = excluded.note,
+       actor_id = excluded.actor_id,
+       at = excluded.at`,
+    [jobId, phase, itemKey, checked ? 1 : 0, note, actorId],
+  )
+}
+
+/** A human update on the project. Same table as phase changes, so the
+ *  activity log is one ordered story rather than two interleaved ones. */
+export async function addProjectNote(jobId: string, actorId: string, body: string): Promise<void> {
+  const text = body.trim()
+  if (!text) return
+  const d = await db()
+  await d.execute(
+    `insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'note', ?)`,
+    [jobId, actorId, text],
+  )
+  await d.execute(
+    `update jobs set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?`,
+    [jobId],
+  )
+}
+
+/**
+ * Edit the handful of fields the detail screen owns. Only the keys actually
+ * present in `fields` are written, so a screen that draws one section can
+ * save one section without silently clearing the rest.
+ */
+export async function updateProjectFields(
+  shopId: string,
+  jobId: string,
+  fields: ProjectFieldsInput,
+): Promise<void> {
+  const map: Record<string, string> = {
+    poc: 'poc',
+    neededBy: 'needed_by',
+    windowFrom: 'window_from',
+    windowLocked: 'window_locked',
+    atRisk: 'at_risk',
+    deliveryOn: 'delivery_on',
+    deliveryHow: 'delivery_how',
+    priority: 'priority',
+  }
+  const sets: string[] = []
+  const args: unknown[] = []
+  for (const [key, column] of Object.entries(map)) {
+    if (!(key in fields)) continue
+    const v = (fields as Record<string, unknown>)[key]
+    sets.push(`${column} = ?`)
+    args.push(typeof v === 'boolean' ? (v ? 1 : 0) : (v ?? null))
+  }
+  if (sets.length === 0) return
+  sets.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`)
+  const d = await db()
+  await d.execute(`update jobs set ${sets.join(', ')} where id = ? and shop_id = ?`, [
+    ...args,
+    jobId,
+    shopId,
+  ])
+}
+
+/**
+ * Every client, with what they are actually worth to the shop.
+ *
+ * `value` counts sent and accepted quotes only. A draft is a number the
+ * shop typed to itself; putting it in a client's lifetime value is how a
+ * pipeline starts lying to the person running it.
+ */
+export async function listClients(shopId: string): Promise<ClientRow[]> {
+  const d = await db()
+  const rows = await d.select<
+    {
+      id: string
+      name: string
+      kind: string | null
+      contact: string | null
+      email: string | null
+      phone: string | null
+      projects: number
+      active: number
+      value: number | null
+      owed: number | null
+      last_activity: string | null
+    }[]
+  >(
+    `select c.id, c.name, c.kind, c.contact, c.email, c.phone,
+            count(distinct j.id) as projects,
+            count(distinct case when j.phase <> 'delivered' then j.id end) as active,
+            coalesce(sum(case when q.status in ('sent','accepted') then q.total end), 0) as value,
+            coalesce(sum(m.balance_owed), 0) as owed,
+            (select max(e.at) from job_events e
+             join jobs j2 on j2.id = e.job_id
+             where j2.client_id = c.id) as last_activity
+     from clients c
+     left join jobs j on j.client_id = c.id
+     left join quotes q on q.job_id = j.id
+     left join job_money m on m.job_id = j.id
+     where c.shop_id = ?
+     group by c.id, c.name, c.kind, c.contact, c.email, c.phone
+     order by c.name collate nocase`,
+    [shopId],
+  )
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    kind: asClientKind(r.kind),
+    contact: r.contact,
+    email: r.email,
+    phone: r.phone,
+    projects: Number(r.projects ?? 0),
+    active: Number(r.active ?? 0),
+    value: Number(r.value ?? 0),
+    owed: Number(r.owed ?? 0),
+    lastActivity: r.last_activity,
+  }))
+}
+
+/** Edit a client from the Clients screen. Same present-keys-only rule as
+ *  updateProjectFields. */
+export async function updateClientRecord(
+  shopId: string,
+  clientId: string,
+  input: ClientEditInput,
+): Promise<void> {
+  const allowed = ['name', 'kind', 'contact', 'email', 'phone'] as const
+  const sets: string[] = []
+  const args: unknown[] = []
+  for (const key of allowed) {
+    if (!(key in input)) continue
+    sets.push(`${key} = ?`)
+    args.push((input as Record<string, unknown>)[key] ?? null)
+  }
+  if (sets.length === 0) return
+  const d = await db()
+  await d.execute(`update clients set ${sets.join(', ')} where id = ? and shop_id = ?`, [
+    ...args,
+    clientId,
+    shopId,
+  ])
+}
+
+/**
+ * Record a payment against a project.
+ *
+ * Append-only, on purpose. There is no "mark this quote paid" column
+ * anywhere in the schema — every owed figure in the app is the job_money
+ * view folding these rows at read time, so a payment recorded here moves
+ * the deposit-owed number, the balance-owed number, the project's flags
+ * and the client's ledger in the same instant, with nothing to keep in
+ * sync. A mistake is corrected by recording a refund, not by rewriting
+ * history.
+ *
+ * A matching note goes on the activity log so the money and the story of
+ * the project stay in one place.
+ */
+export async function recordPayment(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: PaymentInput,
+): Promise<string> {
+  const amount = Number(input.amount)
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('A payment needs an amount greater than zero.')
+  }
+  const id = crypto.randomUUID()
+  const d = await db()
+  await d.execute(
+    `insert into payments (id, shop_id, job_id, quote_id, kind, amount, method, received_on, note, recorded_by)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      shopId,
+      jobId,
+      input.quoteId,
+      input.kind,
+      amount,
+      input.method,
+      input.receivedOn,
+      input.note,
+      actorId,
+    ],
+  )
+  await d.execute(
+    `insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'payment', ?)`,
+    [jobId, actorId, `${input.kind} of ${amount.toFixed(2)} by ${input.method}${input.note ? ` — ${input.note}` : ''}`],
+  )
+  return id
 }
