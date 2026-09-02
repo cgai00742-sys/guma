@@ -140,6 +140,33 @@ export default function App() {
             <div className="attn crit" style={{ marginTop: 16 }}>
               <b>Could not load the shop.</b>
               <div style={{ marginTop: 6, fontFamily: 'var(--mono)', fontSize: 11 }}>{ctxError}</div>
+              {/* The one startup failure with a known, specific fix. Showing
+                  the raw sqlx string and nothing else is how a two-minute
+                  repair becomes a bug report. */}
+              {/previously applied but has been modified/i.test(ctxError) && (
+                <div style={{ marginTop: 12, fontSize: 12, lineHeight: 1.6 }}>
+                  A migration file changed after it had already been applied to this database.
+                  Nothing is lost — run this in the project folder, then start the app again:
+                  <div
+                    style={{
+                      fontFamily: 'var(--mono)',
+                      fontSize: 11,
+                      marginTop: 8,
+                      padding: '8px 10px',
+                      background: 'var(--panel-2)',
+                      border: '1px solid var(--line)',
+                      borderRadius: 'var(--radius)',
+                      userSelect: 'all',
+                    }}
+                  >
+                    npm run db:repair
+                  </div>
+                  <div style={{ marginTop: 8, color: 'var(--txt-3)' }}>
+                    It backs the database up first, and prints what it changed. Add{' '}
+                    <code>-- --dry-run</code> to see the plan without touching anything.
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         ) : !ctx ? (
