@@ -196,7 +196,18 @@ function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean })
               <div className="mark">
                 <b>Guma</b>
               </div>
-              <div className="sub">{ctx?.shop.name ?? ''}</div>
+              <div className="sub">
+                {ctx?.shop.name ?? ''}
+                {/* Which code is actually running. If this does not match
+                    the commit you expect, you are looking at an old build
+                    and editing source will not change it. */}
+                <span
+                  style={{ marginLeft: 8, opacity: 0.55, fontFamily: 'var(--mono)', fontSize: 10 }}
+                  title={`Build ${__BUILD_STAMP__} · ${__BUILD_MODE__ === 'dev' ? 'dev server (live source)' : 'bundled build (frozen at build time)'}`}
+                >
+                  {__BUILD_MODE__ === 'dev' ? 'dev' : 'build'} {__BUILD_STAMP__}
+                </span>
+              </div>
             </div>
           </div>
           <div className="tabs" style={{ border: 'none' }}>
