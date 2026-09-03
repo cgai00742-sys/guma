@@ -19,19 +19,54 @@ Guma is that layer. It reads your machines; it does not drive them.
 
 ## What it does today
 
+**Quoting and money**
+
 - **Live quoting.** Enter a job in front of the client and watch the price build
   line by line — design time, material, machine time, wear, finishing.
 - **Cost and margin, for your eyes.** What the job costs *you*, with your own
-  hours counted at the rate you charge, so margin means what's left after
+  hours counted at the rate you charge, so margin means what is left after
   paying yourself.
 - **A quote PDF** with your logo, the arithmetic behind every line, the deposit,
   your terms and a signature rule.
-- **Rates that live in the database.** Every rate, markup, minimum, deposit
-  percentage and tax figure is a row you edit in the app. None of them is a
-  constant in the code.
+- **Material priced at what you actually paid.** Log a spool purchase and Guma
+  costs your filament at the weighted average of every purchase, not at a
+  figure typed once during setup. Until you log one, it says the number is an
+  estimate rather than pretending otherwise.
+- **Payments, append-only.** Record a deposit or a balance; the owed figures,
+  the flags and the client's ledger all move at once. Nothing is ever "marked
+  paid" — a mistake is corrected with a refund, which is what an accountant
+  expects to find.
 
-Designed and still to build: the pipeline board, printer fleet, payments and
-wall display.
+**Running the work**
+
+- **A pipeline board.** Seven stages, drag to advance. Every card carries a
+  three-slot signal strip — money owed, overdue or stalled, promise at risk —
+  so the board reads by pattern before you read a word.
+- **Stage gates.** A short checklist per stage. Some items are automatic: a
+  quote priced, a deposit collected, a part off the machine. You clear those by
+  doing the thing, not by ticking a box.
+- **Flags that say what to do.** Overdue, stalled, not agreed, deposit unpaid,
+  delivered-and-unpaid, under your own minimum, underwater. Each one carries the
+  cause with real numbers in it and one sentence of what to do about it.
+- **A build sheet.** Parts, copies, and per-part QC. A reprint needs a reason —
+  and it is counted as the cost it is, because it burned material and machine
+  time twice.
+- **Clients.** Not a rolodex: type, projects, active work, quoted value and what
+  they still owe, all derived from real rows.
+
+**Knowing whether it was worth it**
+
+- **Quoted against actual.** Log build runs and your hours, and the project page
+  shows the two side by side, line by line, with the margin you actually got.
+- **A closeout one-pager.** Printable. The post-mortem inside the shop; a case
+  study outside it, with the cost block on a toggle.
+
+**Not built, on purpose:** anything that drives a printer. Guma reads machines;
+it does not control them. Slicing, queueing and machine control are OctoPrint's
+and Klipper's job, and they are good at it.
+
+Still designed and not yet built: the printer fleet screen, a public intake
+form, and the wall display.
 
 ## The one rule
 
@@ -62,23 +97,29 @@ developer" (right-click → Open → Open); Windows may show a SmartScreen
 warning ("More info" → "Run anyway").
 
 **Running it in a browser instead**, self-hosted with your own Supabase
-project: click the green "Code" button above → "Download ZIP" → unzip it,
-then:
+project. One thing to know before you choose this: **the desktop app is the
+supported path for 1.0.** The browser build shares the same pricing engine and
+the same screens, and its migrations ship in `supabase/migrations/`, but the
+five migrations added in the 1.0 run (clients, payments, actuals, the build
+sheet, drafts) have not yet been applied to a live Postgres by anyone. They are
+written for parity and reviewed, not proven. If you want Guma today, download
+the desktop app; if you want the browser build, expect to be the first person
+to run those files and please open an issue when something is wrong with them.
 
-- **Mac:** double-click `install.command`. If macOS says it's from an
-  unidentified developer, right-click it → Open → Open — that confirmation is
-  only needed the first time.
+With that said: click the green "Code" button above → "Download ZIP" → unzip
+it, then:
+
+- **Mac:** double-click `install.command`. If macOS says it is from an
+  unidentified developer, right-click it → Open → Open — only needed once.
 - **Windows:** double-click `install.bat`.
 
 Either one checks for Node, installs Guma's dependencies, walks you through
-creating a free Supabase project (that's Guma's database — yours alone, never
-shared), and starts Guma at `http://localhost:5173`. It tells you in plain
-language if something's missing rather than failing silently. Leave that
-window open while you use Guma; closing it stops the shop.
+creating a free Supabase project (that is Guma's database — yours alone, never
+shared), and starts Guma at `http://localhost:5173`. Leave that window open
+while you use Guma; closing it stops the shop.
 
-Node itself is the one thing the installer can't do for you — if you don't
-have it, it'll point you to https://nodejs.org (the free LTS version) and ask
-you to run the installer again once it's in.
+Node itself is the one thing the installer cannot do for you — if you do not
+have it, it will point you to https://nodejs.org (the free LTS version).
 
 **The developer way**, if you'd rather drive it yourself:
 
@@ -101,11 +142,11 @@ Nothing is seeded for you, and nothing here is required to get started —
 skip anything you're not ready to decide and fill it in later.
 
 ```bash
-npm test                    # the pricing tests
 npm run build               # production bundle in dist/
 ```
 
-`dist/` is a static site. Any static host serves it.
+`dist/` is a static site. Any static host serves it. (The full script list is
+under **Layout**, below.)
 
 ## How the money works
 
@@ -130,14 +171,32 @@ number on a quote a client is already holding.
 public/guma.css            the design system. Do not re-derive these tokens.
 public/doc-page.js         the print engine. It owns all print geometry.
 src/lib/pricing.ts         THE quote calculation. One copy, no second implementation.
+src/lib/gates.ts           stage checklists and flags. Pure; the questions live
+                           here, only the answers live in the database.
+src/lib/actuals.ts         quoted against actual. Pure.
+src/lib/dates.ts           calendar dates in the shop's timezone, never UTC.
 src/lib/data.ts            picks a backend at runtime: local SQLite in the
                            desktop app, hosted Supabase in the browser.
                            Screens only ever import from here.
 src/lib/data.local.ts      every database call, against the SQLite file the desktop app owns
 src/lib/data.supabase.ts   every database call, against your hosted Supabase project
-src/screens/               Setup · Settings · Intake · QuoteDoc (+ SignIn, browser build only)
-src-tauri/                 the desktop app shell (Tauri) and its SQLite schema
-supabase/migrations/       schema, row-level security, the setup function — browser build only
+src/screens/               Setup · Intake · Projects (board + list) · Project ·
+                           Clients · Settings · QuoteDoc · Closeout
+                           (+ SignIn, browser build only)
+src-tauri/migrations/      the desktop schema. A shipped migration is FROZEN —
+                           see src/lib/migrations.test.ts.
+supabase/migrations/       the same schema for the browser build
+scripts/repair-migrations.mjs   `npm run db:repair`, for a database whose
+                           migration checksums have drifted
+```
+
+Useful scripts:
+
+```bash
+npm test                   # 117 tests, including a full intake-to-delivered walk
+npm run tauri dev          # the desktop app against live source
+npm run db:repair          # fix a database that will not open after a schema change
+npm run migrations:lock    # record a NEW migration's checksum
 ```
 
 ## Contributing

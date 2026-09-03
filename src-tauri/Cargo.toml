@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.0"
+version = "1.0.0"
 description = "Guma - quoting, costing and margin for small 3D-print shops."
 authors = ["Guma contributors"]
 license = "AGPL-3.0-only"
