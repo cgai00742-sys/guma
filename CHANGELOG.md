@@ -137,6 +137,34 @@ dev dependencies, and three screens are tested as they actually draw:
 Every one of those bugs typechecked, passed its logic tests, and was broken the
 moment a person looked at the screen. 176 tests now, up from 122.
 
+### Connect your own AI — `guma-mcp`
+
+Guma does not call a model. A model calls Guma.
+
+`npm run mcp:build` produces `mcp/dist/guma-mcp.mjs`, a dependency-free MCP
+server you point Claude, Cursor or anything else that speaks the protocol at.
+Eleven tools: read the shop and its rates, price a job with Guma's own engine,
+read projects with their gates and flags, create a draft, add notes, tick
+manual gate items, advance a stage whose gate is clear, log runs and hours.
+
+The design decision worth stating: the server runs `src/lib/data.local.ts`
+**unmodified**, by aliasing the Tauri SQL plugin to a `node:sqlite` connection
+at build time. There is no second data layer for a model to be wrong in, and
+no way for the server and the app to disagree about what a project is. The
+same holds for money — `guma_price_quote` runs `src/lib/pricing.ts` against
+the shop's own rate card.
+
+That is what makes the one rule structural instead of promised. A model
+supplies hours and grams; it cannot supply a price, because **no tool accepts
+one**. And no tool can record a payment, move a quote to accepted, change a
+rate, take a draft in, or delete anything — a list that `tools.test.ts` fails
+on if it ever shrinks.
+
+Consequences: no API key field, no provider list, no prompt templates, no GPU,
+and nothing to rewrite when models change. Needs Node 22+ to run the server;
+the app itself still needs nothing. Anything an assistant creates arrives as a
+**draft**, off the board, for a person to decide on.
+
 ### The suite runs in Chatham now
 
 A test fixture built from `Date.UTC` passed on every UTC machine and failed

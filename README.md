@@ -68,6 +68,53 @@ and Klipper's job, and they are good at it.
 Still designed and not yet built: the printer fleet screen, a public intake
 form, and the wall display.
 
+## Connect your own AI
+
+Guma does not call a model. A model calls Guma.
+
+```
+npm run mcp:build
+```
+
+Then point any MCP client at the built command. For Claude Desktop, in
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "guma": {
+      "command": "node",
+      "args": ["/absolute/path/to/app-v2/mcp/dist/guma-mcp.mjs"]
+    }
+  }
+}
+```
+
+Add `"--read-only"` to `args` if you want it to look and never touch. It
+finds the database the desktop app uses on its own; `--db <path>` or the
+`GUMA_DB` environment variable override that. Needs Node 22 or newer — the
+app itself still needs nothing.
+
+Now you can hand an assistant a rambling customer email and get back a
+correctly priced draft sitting in Guma, waiting for you to decide on it.
+
+**Eleven tools.** Read the shop, its rates and its materials; price a job
+with Guma's own engine; list and read projects with their gates and flags;
+list clients; create a **draft**; add notes; tick manual gate items; advance
+a stage when its gate is genuinely clear; log build runs and hours.
+
+**What no tool can do**, in any mode — these are refusals, not omissions:
+
+- record, edit or refund a payment
+- set a quote to sent, accepted or declined
+- change a rate, markup, deposit or minimum
+- take a draft in as a real project
+- delete anything at all
+
+The first three are money. The fourth is the moment a shop agrees to do work.
+The fifth cannot be undone. A person does those in the app, having looked at
+them. `src/lib/mcp/tools.test.ts` fails if that list ever shrinks.
+
 ## The one rule
 
 **The AI reads the mess. The math stays deterministic.**
@@ -77,9 +124,14 @@ snapped bracket into a filled-in job form. They have no business producing a
 number that lands on a document someone signs.
 
 So the pricing engine is one tested module with no model anywhere near it, and
-every figure traces back to a rate you set. AI features are optional, provider-
-agnostic, and degrade to the manual form when nothing is configured. **Guma
-never requires a GPU.**
+every figure traces back to a rate you set.
+
+The MCP server above is how that rule stops being a promise and becomes a
+shape. A model asks Guma for a price; it cannot state one, because no tool
+accepts one. It supplies hours and grams — the mess it is good at reading —
+and `src/lib/pricing.ts` supplies the arithmetic. There is no API key field
+in this app, no provider list, no prompt templates, and **Guma never requires
+a GPU**. Use whatever assistant you already pay for, or none.
 
 ## Wherever you are
 
@@ -208,6 +260,10 @@ src/screens/               Setup · Intake · Projects (board + list) · Project
 src-tauri/migrations/      the desktop schema. A shipped migration is FROZEN —
                            see src/lib/migrations.test.ts.
 supabase/migrations/       the same schema for the browser build
+mcp/                       the MCP server: stdio transport, the SQLite shim,
+                           and where it looks for your database
+src/lib/mcp/tools.ts       the eleven tools, and the list of what none of
+                           them can do
 scripts/repair-migrations.mjs   `npm run db:repair`, for a database whose
                            migration checksums have drifted
 ```

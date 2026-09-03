@@ -1,5 +1,8 @@
 node_modules
 dist
+
+# built by `npm run mcp:build`
+mcp/dist
 .env
 .DS_Store
 

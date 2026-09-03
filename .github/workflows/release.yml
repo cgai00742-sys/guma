@@ -92,6 +92,15 @@ jobs:
       # a whole hour. Two seconds each, and the last release-blocking bug
       # this project had was exactly this shape. Linux only: the sweep is
       # about the code's arithmetic, not the platform's.
+      # Proves the bundle still builds and starts. It is the integration
+      # every other MCP test mocks around: the vite alias, the node:sqlite
+      # shim, and data.local.ts running outside Tauri.
+      - name: Build the MCP server
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          npm run mcp:build
+          node mcp/dist/guma-mcp.mjs --help
+
       - name: Sweep the timezones
         if: matrix.platform == 'ubuntu-22.04'
         run: npm run test:tz

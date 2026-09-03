@@ -187,7 +187,7 @@ export function buildTools(): ToolDef[] {
     {
       name: 'guma_list_projects',
       description:
-        'Every project on the board: stage, client, what it was quoted at, what is still owed, when it is due, and its flags. Flags are derived live and each carries the reason with real numbers in it — quote them rather than paraphrasing.',
+        'Every project on the board: stage, client, what it was quoted at, what is still owed, when it is due, its gate progress and its flags. quoted_total is null until a quote has actually been sent — a draft price is a number the shop typed to itself. Flags are derived live and each carries the reason with real numbers in it; quote the reason rather than paraphrasing it.',
       inputSchema: obj({
         include_drafts: bool('Include saved drafts that have not been taken in. Default false.'),
         phase: str('Only this stage: intake, design, approval, scheduled, build, review, delivered.'),
@@ -195,9 +195,35 @@ export function buildTools(): ToolDef[] {
       handler: async (a, ctx) => {
         const rows = await local.listJobs(ctx.shop.id)
         return rows
-          .filter((r: any) => (a.include_drafts ? true : r.takenInAt ?? r.taken_in_at ?? true))
-          .filter((r: any) => (a.phase ? r.phase === a.phase : true))
-          .map((r: any) => ({ ...r, stage: PHASE_LABEL[r.phase as keyof typeof PHASE_LABEL] ?? r.phase }))
+          // facts.takenInAt is null on a draft. Reading the wrong field here
+          // and falling back to `true` would silently put every draft on the
+          // board — which is the exact distinction migration 0008 exists to
+          // draw, so it is worth being explicit about.
+          .filter((r) => (a.include_drafts ? true : r.facts.takenInAt !== null))
+          .filter((r) => (a.phase ? r.phase === a.phase : true))
+          .map((r) => ({
+            job_id: r.jobId,
+            ref: r.ref,
+            title: r.title,
+            client: r.clientName,
+            phase: r.phase,
+            stage: PHASE_LABEL[r.phase],
+            priority: r.priority,
+            is_draft: r.facts.takenInAt === null,
+            quote_status: r.quoteStatus,
+            // Null until the quote has actually been sent. A draft price is
+            // a number the shop typed to itself, and counting it is how a
+            // pipeline starts lying to the person reading it.
+            quoted_total: r.total,
+            needed_by: r.facts.neededBy,
+            deposit_owed: r.facts.depositOwed,
+            balance_owed: r.facts.balanceOwed,
+            gate: (() => {
+              const g = gateStatus(r.phase, r.gateAnswers, r.facts)
+              return { cleared: g.done, total: g.total, blocked: g.blocked, reason: g.reason }
+            })(),
+            flags: flagsFor(r.facts),
+          }))
       },
     },
 
