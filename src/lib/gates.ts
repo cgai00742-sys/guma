@@ -1,3 +1,4 @@
+import { daysBetweenLocal } from './dates'
 import type { GateAnswer, JobPhase, ProjectFacts } from './data.types'
 
 // The client-kind vocabulary, GateAnswer and ProjectFacts all live in
@@ -357,12 +358,7 @@ export interface Flag {
 /** No activity for this long and a project is drifting, not progressing. */
 export const STALLED_DAYS = 14
 
-function daysBetween(from: string, to: Date): number {
-  const a = Date.parse(from.length <= 10 ? `${from}T00:00:00Z` : from)
-  if (Number.isNaN(a)) return 0
-  const b = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate())
-  return Math.floor((b - a) / 86_400_000)
-}
+
 
 function money(n: number): string {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -379,7 +375,7 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
   const started = phaseIndex(f.phase) >= phaseIndex('design')
 
   if (!delivered && f.neededBy) {
-    const late = daysBetween(f.neededBy, now)
+    const late = daysBetweenLocal(f.neededBy, now)
     if (late > 0) {
       out.push({
         key: 'overdue',
@@ -450,7 +446,7 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
   }
 
   if (!delivered && f.lastActivityAt) {
-    const quiet = daysBetween(f.lastActivityAt, now)
+    const quiet = daysBetweenLocal(f.lastActivityAt, now)
     if (quiet >= STALLED_DAYS) {
       out.push({
         key: 'stalled',

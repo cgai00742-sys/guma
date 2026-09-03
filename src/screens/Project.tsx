@@ -81,6 +81,7 @@ import {
   type ResolvedGateItem,
 } from '../lib/gates'
 import { makeMoney } from '../lib/pricing'
+import { todayISO } from '../lib/dates'
 import { buildComparison, type Comparison } from '../lib/actuals'
 
 const DELIVERY_METHODS = [
@@ -980,7 +981,7 @@ function PaymentLog({
   const [kind, setKind] = useState<PaymentKind>(suggestion?.kind ?? 'balance')
   const [amount, setAmount] = useState(suggestion ? suggestion.amount.toFixed(2) : '')
   const [method, setMethod] = useState<PaymentMethod>('transfer')
-  const [when, setWhen] = useState(() => new Date().toISOString().slice(0, 10))
+  const [when, setWhen] = useState(todayISO)
   const [why, setWhy] = useState('')
 
   const n = Number(amount)
@@ -1548,12 +1549,12 @@ function RunLog({
     outcome: 'success',
     failureReason: null,
     note: null,
-    startedAt: new Date().toISOString().slice(0, 10),
+    startedAt: todayISO(),
   })
   const [work, setWork] = useState({
     kind: 'design' as WorkKind,
     hours: '',
-    workedOn: new Date().toISOString().slice(0, 10),
+    workedOn: todayISO(),
     note: '',
   })
 

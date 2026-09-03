@@ -36,6 +36,7 @@ import {
   type QuoteInputs,
 } from '../lib/pricing'
 import { nextJobRef, saveQuote, takeProjectIn, toRateSet, type ShopContext } from '../lib/data'
+import { addDaysISO } from '../lib/dates'
 
 const ASSET_NOTES: Record<AssetOrigin, string> = {
   model:
@@ -126,8 +127,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
     setSaving(mode)
     setError(null)
     try {
-      const validUntil = new Date()
-      validUntil.setDate(validUntil.getDate() + ctx.shop.quote_valid_days)
+
 
       const saved = await saveQuote({
         shopId: ctx.shop.id,
@@ -161,7 +161,9 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 rates_snapshot: buildRatesSnapshot(rates, material, printer),
                 total: Number(q.total.toFixed(2)),
                 deposit_due: q.deposit,
-                valid_until: validUntil.toISOString().slice(0, 10),
+                // Local calendar date: a quote that expires a day early because
+                // the shop is west of Greenwich is a quote the client argues about.
+                valid_until: addDaysISO(ctx.shop.quote_valid_days),
               }
             : undefined,
       })

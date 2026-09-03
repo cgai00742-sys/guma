@@ -36,6 +36,7 @@ import {
   type ShopContext,
 } from '../lib/data'
 import { makeMoney } from '../lib/pricing'
+import { todayISO } from '../lib/dates'
 
 const INK = '#16222E'
 const MUTED = '#5A6B7C'
@@ -226,7 +227,13 @@ export function CloseoutDocument({
           <Fact label="Machine time" value={`${a.machineHours || 0} h`} sub={`${a.runs} run${a.runs === 1 ? '' : 's'}`} />
           <Fact
             label="Material"
-            value={a.materialUnits ? `${a.materialUnits.toLocaleString()} ${ctx.materials[0]?.unit ?? 'g'}` : '—'}
+            // The unit comes from the runs that actually happened, not from
+            // whichever material happens to be first in the shop's list.
+            value={
+              a.materialUnits
+                ? `${a.materialUnits.toLocaleString()} ${detail.runs.find((r) => r.unit)?.unit ?? 'g'}`
+                : '—'
+            }
             sub={a.failedUnits > 0 ? `${a.failedUnits.toLocaleString()} into failed runs` : 'no failures'}
           />
           <Fact
@@ -431,7 +438,7 @@ export function CloseoutDocument({
       >
         {ctx.shop.name}
         {ctx.shop.email ? ` · ${ctx.shop.email}` : ''} · closed out{' '}
-        {longDate(new Date().toISOString().slice(0, 10))}
+        {longDate(todayISO())}
       </footer>
     </doc-page>
   )

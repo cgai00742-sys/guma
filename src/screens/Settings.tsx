@@ -35,6 +35,7 @@ import {
   type MaterialRow,
   type MaterialPurchaseRow,
 } from '../lib/data'
+import { todayISO } from '../lib/dates'
 import { taxHintFor, US_STATES } from '../lib/taxHelp'
 import TaxNameHint from '../components/TaxNameHint'
 
@@ -1287,7 +1288,7 @@ function PurchaseLog({
   const [bulk, setBulk] = useState(material.unit === 'g')
   const [qty, setQty] = useState(material.unit === 'g' ? '1' : '1000')
   const [cost, setCost] = useState('')
-  const [when, setWhen] = useState(() => new Date().toISOString().slice(0, 10))
+  const [when, setWhen] = useState(todayISO)
   const [supplier, setSupplier] = useState('')
   const [note, setNote] = useState('')
 
