@@ -37,6 +37,14 @@ import {
 } from '../lib/data'
 import { todayISO } from '../lib/dates'
 import { taxHintFor, US_STATES } from '../lib/taxHelp'
+import {
+  currencyOptions,
+  currencySymbol,
+  osCurrency,
+  osLocale,
+  paperForRegion,
+  regionOf,
+} from '../lib/locale'
 import TaxNameHint from '../components/TaxNameHint'
 
 /**
@@ -86,7 +94,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
   const card = ctx.rateCard
   // Currency comes from the shop record, not from the code.
   const { money } = useMemo(
-    () => makeMoney(ctx.shop.currency || 'USD', ctx.shop.locale || 'en-US'),
+    () => makeMoney(ctx.shop.currency || osCurrency(), ctx.shop.locale || osLocale()),
     [ctx.shop.currency, ctx.shop.locale],
   )
   const [draft, setDraft] = useState<Draft>({
@@ -496,7 +504,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                 {money(q.finishingAmt)}
               </span>
               <span className="k">
-                {ctx.shop.tax_label} · {trimPct(Number(ctx.shop.tax_pct))}%
+                {ctx.shop.tax_label} · {trimPct(Number(ctx.shop.tax_pct), ctx.shop.locale)}%
               </span>
               <span className="v" style={{ fontFamily: 'var(--mono)', textAlign: 'right' }}>
                 {money(q.tax)}
@@ -542,7 +550,15 @@ function IdentityPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
     phone: shop.phone ?? '',
     license_no: shop.license_no ?? '',
     electricity_rate_kwh: shop.electricity_rate_kwh,
+    currency: shop.currency ?? '',
+    locale: shop.locale ?? '',
+    paper: shop.paper ?? '',
   })
+  // A shop can bill in a currency that isn't its region's, and can move. Both
+  // are editable here; neither is asked twice, and neither has a US default.
+  const region = regionOf(draft.locale || osLocale())
+  const currencies = useMemo(() => currencyOptions(draft.locale), [draft.locale])
+  const derivedPaper = paperForRegion(region)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -610,23 +626,25 @@ function IdentityPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
             <label className="lbl" htmlFor="id-addr">Mailing address</label>
             <input id="id-addr" value={draft.address} onChange={str('address')} placeholder="optional" />
           </div>
-          <div className="fld">
-            <label className="lbl" htmlFor="id-state">State</label>
-            <select
-              id="id-state"
-              value={draft.state}
-              onChange={(e) => {
-                setDraft((d) => ({ ...d, state: e.target.value }))
-                setDirty(true)
-              }}
-            >
-              <option value="">— not set —</option>
-              {US_STATES.map(([code, label]) => (
-                <option key={code} value={code}>{label}</option>
-              ))}
-            </select>
-            <div className="hint">Only used to suggest the right tax name on the Quote terms tab.</div>
-          </div>
+          {region === 'US' && (
+            <div className="fld">
+              <label className="lbl" htmlFor="id-state">State</label>
+              <select
+                id="id-state"
+                value={draft.state}
+                onChange={(e) => {
+                  setDraft((d) => ({ ...d, state: e.target.value }))
+                  setDirty(true)
+                }}
+              >
+                <option value="">— not set —</option>
+                {US_STATES.map(([code, label]) => (
+                  <option key={code} value={code}>{label}</option>
+                ))}
+              </select>
+              <div className="hint">Only used to suggest the right tax name on the Quote terms tab.</div>
+            </div>
+          )}
         </div>
         <div className="grid3" style={{ marginTop: 10 }}>
           <div className="fld">
@@ -645,9 +663,74 @@ function IdentityPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
       </div>
 
       <div className="pane" style={{ margin: '12px 0 0' }}>
+        <h3>Money, numbers and paper</h3>
+        <div className="hint" style={{ marginBottom: 10, lineHeight: 1.55 }}>
+          Set once, at setup, from this computer. Change them here if you bill in a currency that isn't your
+          region's, or if you've moved. There is no timezone setting: Guma reads the clock, so "today" is
+          always the same day your menu bar says it is.
+        </div>
+        <div className="grid3">
+          <div className="fld">
+            <label className="lbl" htmlFor="id-cur">Currency</label>
+            <select
+              id="id-cur"
+              value={draft.currency}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, currency: e.target.value }))
+                setDirty(true)
+              }}
+            >
+              <option value="">— choose —</option>
+              {currencies.map((c) => (
+                <option key={c.code} value={c.code}>{c.code} — {c.label}</option>
+              ))}
+            </select>
+            <div className="hint">
+              Changes how amounts are shown from now on. It does not convert anything already recorded.
+            </div>
+          </div>
+          <div className="fld">
+            <label className="lbl" htmlFor="id-locale">Number and date format</label>
+            <input
+              id="id-locale"
+              value={draft.locale}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, locale: e.target.value }))
+                setDirty(true)
+              }}
+              placeholder={osLocale() || 'e.g. en-GB'}
+            />
+            <div className="hint">
+              A language tag such as <code>en-GB</code>, <code>de-DE</code>, <code>ja-JP</code>. Taken from this
+              computer at setup. Blank means follow the computer.
+            </div>
+          </div>
+          <div className="fld">
+            <label className="lbl" htmlFor="id-paper">Paper</label>
+            <select
+              id="id-paper"
+              value={draft.paper}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, paper: e.target.value }))
+                setDirty(true)
+              }}
+            >
+              <option value="">Follow my region — {derivedPaper === 'a4' ? 'A4' : 'US Letter'}</option>
+              <option value="a4">A4</option>
+              <option value="letter">US Letter</option>
+              <option value="legal">US Legal</option>
+            </select>
+            <div className="hint">The size quotes and closeout sheets are laid out for.</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="pane" style={{ margin: '12px 0 0' }}>
         <h3>What power costs you</h3>
         <div className="fld">
-          <label className="lbl" htmlFor="id-kwh">Your electricity rate, $/kWh</label>
+          <label className="lbl" htmlFor="id-kwh">
+            Your electricity rate, {currencySymbol(draft.currency, draft.locale) || 'per'}/kWh
+          </label>
           <input
             id="id-kwh"
             type="number"

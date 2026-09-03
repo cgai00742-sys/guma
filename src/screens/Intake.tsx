@@ -516,7 +516,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
               />
               <span>
                 <span style={{ fontSize: 13, color: 'var(--txt)', display: 'block' }}>
-                  Rush project — {trimPct(rates.rushPct)}% surcharge
+                  Rush project — {trimPct(rates.rushPct, rates.locale)}% surcharge
                 </span>
                 <span style={{ fontSize: 11, color: 'var(--txt-3)' }}>
                   Jumps the queue and takes a machine off whatever it is on.
@@ -811,7 +811,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             >
               <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 14 }}>
                 <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--txt)' }}>
-                  {trimPct(rates.depositPct)}%{' '}
+                  {trimPct(rates.depositPct, rates.locale)}%{' '}
                   {rates.depositWhen === 'print' ? 'due before printing' : 'due before design starts'}
                 </span>
                 <span
@@ -933,11 +933,11 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                   'Deposit',
                   rates.depositWhen === 'none'
                     ? 'none'
-                    : `${trimPct(rates.depositPct)}% before ${rates.depositWhen}`,
+                    : `${trimPct(rates.depositPct, rates.locale)}% before ${rates.depositWhen}`,
                 ],
-                ['Rush surcharge', `${trimPct(rates.rushPct)}%`],
+                ['Rush surcharge', `${trimPct(rates.rushPct, rates.locale)}%`],
                 ['Shop minimum', money0(rates.minimumOrder)],
-                [rates.taxLabel, `${trimPct(rates.taxPct)}%`],
+                [rates.taxLabel, `${trimPct(rates.taxPct, rates.locale)}%`],
               ].map(([k, v]) => (
                 <span key={k} style={{ display: 'contents' }}>
                   <span className="k">{k}</span>

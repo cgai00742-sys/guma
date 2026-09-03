@@ -36,7 +36,8 @@ import {
   type ShopContext,
 } from '../lib/data'
 import { makeMoney } from '../lib/pricing'
-import { todayISO } from '../lib/dates'
+import { formatDate, todayISO } from '../lib/dates'
+import { osLocale, paperFor } from '../lib/locale'
 
 const INK = '#16222E'
 const MUTED = '#5A6B7C'
@@ -45,12 +46,7 @@ const RULE = '#D6DEE6'
 const HAIR = '#E4EAF0'
 const MONO = "'JetBrains Mono',monospace"
 
-const longDate = (iso: string) =>
-  new Date(iso + (iso.length === 10 ? 'T00:00:00' : '')).toLocaleDateString('en-US', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  })
+const longDate = (iso: string, locale: string) => formatDate(iso, locale, 'long')
 
 export default function Closeout() {
   const { jobId } = useParams()
@@ -179,6 +175,7 @@ export function CloseoutDocument({
 }) {
   const rates = useMemo(() => toRateSet(ctx.rateCard, ctx.shop), [ctx.rateCard, ctx.shop])
   const { money } = useMemo(() => makeMoney(rates.currency, rates.locale), [rates])
+  const docLocale = rates.locale || osLocale()
   const comparison = useMemo(
     () =>
       buildComparison(detail, {
@@ -195,7 +192,7 @@ export function CloseoutDocument({
   const delivered = detail.facts.deliveryOn
 
   return (
-    <doc-page size="letter" margin="18mm">
+    <doc-page size={paperFor(ctx.shop)} margin="18mm">
       <header style={{ borderBottom: `2px solid ${INK}`, paddingBottom: 10, marginBottom: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <div style={{ fontSize: 20, fontWeight: 700, color: INK, letterSpacing: '-0.01em' }}>
@@ -213,7 +210,7 @@ export function CloseoutDocument({
       <div style={{ fontSize: 12, color: MUTED, marginBottom: 18 }}>
         {detail.client.name}
         {detail.facts.poc ? ` · ${detail.facts.poc}` : ''} · {PHASE_LABEL[detail.phase]}
-        {delivered ? ` · delivered ${longDate(delivered)}` : ' · not yet delivered'}
+        {delivered ? ` · delivered ${longDate(delivered, docLocale)}` : ' · not yet delivered'}
       </div>
 
       {detail.brief && (
@@ -253,7 +250,7 @@ export function CloseoutDocument({
           />
           <Fact
             label="Handover"
-            value={delivered ? longDate(delivered) : 'pending'}
+            value={delivered ? longDate(delivered, docLocale) : 'pending'}
             sub={detail.facts.deliveryHow ?? (detail.facts.neededBy ? `due ${detail.facts.neededBy}` : '—')}
           />
         </Grid>
@@ -438,7 +435,7 @@ export function CloseoutDocument({
       >
         {ctx.shop.name}
         {ctx.shop.email ? ` · ${ctx.shop.email}` : ''} · closed out{' '}
-        {longDate(todayISO())}
+        {longDate(todayISO(), docLocale)}
       </footer>
     </doc-page>
   )

@@ -58,3 +58,37 @@ export function daysBetweenLocal(fromISO: string, to: Date): number {
   if (Number.isNaN(parsed.getTime())) return 0
   return Math.round((localMidnight(to) - localMidnight(parsed)) / 86_400_000)
 }
+
+/**
+ * Parse a stored date. Guma writes plain 'YYYY-MM-DD' for calendar dates and
+ * full ISO timestamps for events; both must land on the local calendar day
+ * the shop meant, so a bare date is read as local midnight rather than UTC.
+ */
+export function parseStored(iso: string): Date {
+  return new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso)
+}
+
+/**
+ * A date as the shop's own locale writes it — "3 September 2026" in en-GB,
+ * "September 3, 2026" in en-US, "3. September 2026" in de-DE. The locale is
+ * the shop's, not the machine's: a quote reprinted on a borrowed laptop
+ * should read exactly as the one that was sent.
+ */
+export function formatDate(
+  iso: string,
+  locale: string,
+  style: 'long' | 'short' = 'long',
+): string {
+  const d = parseStored(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const opts: Intl.DateTimeFormatOptions = {
+    day: 'numeric',
+    month: style === 'long' ? 'long' : 'short',
+    year: 'numeric',
+  }
+  try {
+    return d.toLocaleDateString(locale || undefined, opts)
+  } catch {
+    return d.toLocaleDateString(undefined, opts)
+  }
+}

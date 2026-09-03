@@ -57,6 +57,37 @@ afterwards whether it was worth doing.
   because it burned material and machine time twice. The sheet locks to QC
   from Review onwards.
 
+### Wherever you are
+
+Guma is downloaded and run by whoever wants it, so this release takes out the
+places where it quietly assumed the United States.
+
+- **No timezone setting, and there never will be one.** Dates are built from
+  the operating system's own local calendar fields, so "today" is always the
+  day your menu bar says it is. A stored timezone is a second source of truth
+  that can disagree with the clock on screen; a picker is a question with a
+  wrong answer available. Change your system's region and Guma follows.
+- **Currency is the whole ISO list**, read from the runtime's own CLDR data
+  and named in your language — not the ten-currency list that used to ship,
+  which was a statement about whose money counted. The first guess comes from
+  your machine's region; a region Guma doesn't recognise gets no guess rather
+  than a wrong one.
+- **Number and date formats come from the operating system.** The basis lines
+  under a quote (`740 g at ...`, `21 h on ...`) now group and point the same
+  way as the money beside them — a German quote reading "1,250 g" next to
+  "1.250,00 €" was a bug the shop had to explain to a client.
+- **Documents print on your paper.** A4 or Letter, derived from your region
+  (A4 for anywhere Guma isn't sure, since it is the ISO standard and the
+  larger share of the world), overridable in Settings. The quote and the
+  closeout sheet were both laid out for US Letter, which crops or shrinks on
+  an A4 printer.
+- **The US state field only appears for US shops.** Its only job is to get the
+  name of a US tax right — Hawaii's GET is not a "sales tax" — and it was the
+  first thing a shop in Lagos or Lyon hit on the setup wizard.
+- A test (`src/lib/locale.test.ts`) now walks the source and fails the build
+  if `'en-US'`, `'USD'` or a timezone setting reappears anywhere it doesn't
+  belong. Three separate bugs in this codebase have been exactly that.
+
 ### Fixed
 
 - **Dates were UTC.** Every calendar date the app stores — a payment's date,

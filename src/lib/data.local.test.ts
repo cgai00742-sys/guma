@@ -31,7 +31,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { priceQuote, round2, type RateSet } from './pricing'
+import { makeMoney, priceQuote, round2, type RateSet } from './pricing'
 import type { SaveQuoteArgs, SetupPayload } from './data.types'
 import { flagsFor, gateStatus } from './gates'
 import type { GateAnswer } from './data.types'
@@ -177,6 +177,60 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(round2(q.total)).toBe(1063.23)
     expect(q.deposit).toBe(531.62)
     expect(q.balance).toBe(531.61)
+  })
+
+  it('stores a shop that is not in the United States, and keeps it that way', async () => {
+    // Migration 0009 added `paper`, and setup now writes currency, locale
+    // and paper from the machine rather than from a default. This is the
+    // round trip: a German shop billing in euros on A4 must survive SQLite
+    // and come back unchanged, with no US value substituted anywhere.
+    const local = await import('./data.local')
+    const shopId = await local.setupShop({
+      ...SETUP_PAYLOAD,
+      shop: { ...SHOP_INPUT, currency: 'EUR', locale: 'de-DE', paper: 'a4', state: '' },
+    })
+
+    const ctx = await local.loadShopContext()
+    expect(ctx.shop.currency).toBe('EUR')
+    expect(ctx.shop.locale).toBe('de-DE')
+    expect(ctx.shop.paper).toBe('a4')
+    expect(ctx.shop.state).toBeNull()
+
+    const rates = local.toRateSet(ctx.rateCard, ctx.shop)
+    expect(rates.currency).toBe('EUR')
+    expect(rates.locale).toBe('de-DE')
+
+    // Same arithmetic, formatted in euros with German grouping — and the
+    // basis lines under it follow the same locale, which was the actual bug:
+    // "1,250 g" printed beside "1.250,00 €" on one document.
+    const q = priceQuote(MAST_BRACKETS, rates, ctx.materials[0], ctx.printers[0])
+    expect(round2(q.total)).toBe(1063.23)
+    const { money } = makeMoney(rates.currency, rates.locale)
+    expect(money(q.total)).toContain('€')
+    expect(money(q.total)).toContain('1.063,23')
+    const design = q.lines.find((l) => l.key === 'design')
+    expect(design?.basis).toContain('6 h')
+    expect(design?.basis).not.toContain('$')
+
+    // Editing identity keeps all three, and a blank paper is stored as
+    // "follow my locale" rather than as the empty string.
+    await local.saveShopIdentity(shopId, {
+      name: 'Werkstatt',
+      legal_name: '',
+      address: '',
+      state: '',
+      email: '',
+      phone: '',
+      license_no: '',
+      electricity_rate_kwh: null,
+      currency: 'EUR',
+      locale: 'de-DE',
+      paper: '',
+    })
+    const after = await local.loadShopContext()
+    expect(after.shop.name).toBe('Werkstatt')
+    expect(after.shop.currency).toBe('EUR')
+    expect(after.shop.paper).toBeNull()
   })
 
   it('assigns sequential job refs per year', async () => {

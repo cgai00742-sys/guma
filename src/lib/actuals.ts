@@ -121,7 +121,7 @@ export function compareToQuote(
       pct: null,
       detail: anyRuns
         ? `${actuals.machineHours} machine hour${actuals.machineHours === 1 ? '' : 's'}` +
-          (actuals.powerCost > 0 ? '' : ' — no wattage or $/kWh on file, so this is the rate you charge, not what it cost')
+          (actuals.powerCost > 0 ? '' : ' — no wattage or electricity rate on file, so this is the rate you charge, not what it cost')
         : 'No runs recorded yet',
     },
     {

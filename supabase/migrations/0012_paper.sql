@@ -1,0 +1,22 @@
+-- Guma: what size paper this shop's documents print on.
+--
+-- The quote and the closeout sheet were both laid out for US Letter, which
+-- is correct in about a dozen countries and wrong in every other one: an A4
+-- printer given a Letter page either crops the bottom or shrinks the whole
+-- thing and throws the margins out. Guma is downloaded and run by whoever
+-- wants it, so the page size has to be the shop's, not the author's.
+--
+-- Null rather than a default on purpose. A null here means "nobody has said,
+-- so work it out from the locale" (see src/lib/locale.ts: Letter in the
+-- regions that use Letter, A4 everywhere else, which is the honest way round
+-- since A4 is the ISO standard and the larger share of the world). Writing a
+-- default of 'letter' into the schema would make every shop on earth look as
+-- though it had chosen Letter, and there would then be no way to tell a
+-- deliberate choice from an unanswered question.
+--
+-- Existing installs are left null and so start printing on whatever their
+-- own locale implies -- which for the shops running Guma today is Letter,
+-- exactly what they had, and for anyone else is the size they should have
+-- had all along.
+
+alter table shops add column paper text;

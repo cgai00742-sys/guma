@@ -187,8 +187,11 @@ export function makeMoney(currency: string, locale: string): MoneyFormat {
       style: 'currency', currency, minimumFractionDigits: 0, maximumFractionDigits: 0,
     })
   } catch {
-    two = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    zero = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
+    // No currency style at all rather than someone else's currency: a number
+    // with no symbol is obviously incomplete, a number with the wrong symbol
+    // reads as a price.
+    two = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    zero = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 })
   }
   return {
     money: (n) => two.format(round2(n)),
@@ -196,11 +199,40 @@ export function makeMoney(currency: string, locale: string): MoneyFormat {
   }
 }
 
-const trimNum = (n: number) =>
-  Number(n.toFixed(2)).toLocaleString('en-US', { maximumFractionDigits: 2 })
-/** Percentages carry three places — some jurisdictions levy e.g. 4.712%. */
-const trimPct = (n: number) =>
-  Number(n.toFixed(3)).toLocaleString('en-US', { maximumFractionDigits: 3 })
+/**
+ * Plain numbers on a quote's basis line ("740 g at ...", "21 h on ...") are
+ * grouped and pointed the shop's own way, not one hard-coded region's: a
+ * German quote reading "1.250 g" beside "1.250,00 €" is right, and the same
+ * line reading "1,250 g" beside it is a bug the shop has to explain to a
+ * client. Falls back to the runtime's locale rather than to en-US.
+ */
+const trimCache = new Map<string, { trimNum: (n: number) => string; trimPct: (n: number) => string }>()
+
+const makeTrim = (locale: string) => {
+  const hit = trimCache.get(locale)
+  if (hit) return hit
+  const fmt = (max: number) => {
+    try {
+      return new Intl.NumberFormat(locale || undefined, { maximumFractionDigits: max })
+    } catch {
+      return new Intl.NumberFormat(undefined, { maximumFractionDigits: max })
+    }
+  }
+  const two = fmt(2)
+  // Percentages carry three places — some jurisdictions levy e.g. 4.712%.
+  const three = fmt(3)
+  const made = {
+    trimNum: (n: number) => two.format(Number(n.toFixed(2))),
+    trimPct: (n: number) => three.format(Number(n.toFixed(3))),
+  }
+  trimCache.set(locale, made)
+  return made
+}
+
+/** Standalone forms for screens that show a rate outside a priced quote.
+ *  Pass the shop's locale; omitting it uses the machine's. */
+export const trimNum = (n: number, locale = '') => makeTrim(locale).trimNum(n)
+export const trimPct = (n: number, locale = '') => makeTrim(locale).trimPct(n)
 
 export function priceQuote(
   input: QuoteInputs,
@@ -209,6 +241,7 @@ export function priceQuote(
   printer: PrinterRef | null,
 ): PricedQuote {
   const { money, money0 } = makeMoney(rates.currency, rates.locale)
+  const { trimNum, trimPct } = makeTrim(rates.locale)
   const qty = Math.max(1, input.quantity || 1)
   const needsDesign = input.assetOrigin !== 'ready'
 
@@ -461,4 +494,4 @@ export function ratesFromSnapshot(snap: RatesSnapshot): {
   }
 }
 
-export { round2, trimNum, trimPct }
+export { round2 }

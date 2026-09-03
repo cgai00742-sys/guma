@@ -25,6 +25,7 @@
 import Database from '@tauri-apps/plugin-sql'
 import type { MaterialRef, PrinterRef } from './pricing'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody } from './data.types'
+import { osCurrency, osLocale } from './locale'
 import type {
   Shop,
   RateCardRow,
@@ -145,14 +146,15 @@ export async function setupShop(p: SetupPayload): Promise<string> {
   await d.execute(
     `insert into shops
       (id, name, slug, currency, locale, tax_label, tax_pct, legal_name, address,
-       state, email, phone, license_no, quote_valid_days, lead_days, electricity_rate_kwh)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       state, email, phone, license_no, quote_valid_days, lead_days, electricity_rate_kwh,
+       paper)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       shopId,
       (shop.name as string) || 'My shop',
       slugify((shop.name as string) || 'shop'),
-      (shop.currency as string) || 'USD',
-      (shop.locale as string) || 'en-US',
+      (shop.currency as string) || osCurrency(),
+      (shop.locale as string) || osLocale(),
       (shop.tax_label as string) || 'Tax',
       (shop.tax_pct as number) ?? 0,
       (shop.legal_name as string) || null,
@@ -164,6 +166,10 @@ export async function setupShop(p: SetupPayload): Promise<string> {
       (shop.quote_valid_days as number) ?? 30,
       (shop.lead_days as number) ?? 10,
       (shop.electricity_rate_kwh as number | null) ?? null,
+      // Null means "follow the locale" -- see 0009_paper.sql. The wizard
+      // sends the size its region implies so the choice is visible in
+      // Settings, but a blank is a legitimate, self-correcting value.
+      (shop.paper as string) || null,
     ],
   )
 
@@ -334,7 +340,8 @@ export async function saveShopIdentity(shopId: string, next: ShopIdentityInput):
   const d = await db()
   await d.execute(
     `update shops set name = ?, legal_name = ?, address = ?, state = ?, email = ?, phone = ?,
-       license_no = ?, electricity_rate_kwh = ? where id = ?`,
+       license_no = ?, electricity_rate_kwh = ?, currency = ?, locale = ?, paper = ?
+     where id = ?`,
     [
       next.name.trim() || 'My shop',
       next.legal_name.trim() || null,
@@ -344,6 +351,11 @@ export async function saveShopIdentity(shopId: string, next: ShopIdentityInput):
       next.phone.trim() || null,
       next.license_no.trim() || null,
       next.electricity_rate_kwh,
+      next.currency.trim() || osCurrency(),
+      next.locale.trim() || osLocale(),
+      // '' is stored as null: "follow my locale", which stays true if the
+      // shop later changes its locale.
+      next.paper.trim() || null,
       shopId,
     ],
   )

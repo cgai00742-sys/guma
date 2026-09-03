@@ -238,6 +238,11 @@ export async function saveShopIdentity(shopId: string, next: ShopIdentityInput):
       phone: next.phone.trim() || null,
       license_no: next.license_no.trim() || null,
       electricity_rate_kwh: next.electricity_rate_kwh,
+      currency: next.currency.trim() || 'USD',
+      locale: next.locale.trim() || 'en-US',
+      // `paper` is omitted for the same PostgREST reason as `state` above --
+      // the hosted schema has no such column until 0012_paper.sql is applied.
+      // The desktop build, which is the supported one, stores it.
     })
     .eq('id', shopId)
     .select()

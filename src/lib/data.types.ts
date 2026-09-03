@@ -12,6 +12,7 @@
  * know this file exists.
  */
 import type { MaterialRef, PrinterRef, RateSet } from './pricing'
+import { osCurrency, osLocale } from './locale'
 
 export interface Shop {
   id: string
@@ -26,7 +27,8 @@ export interface Shop {
   legal_name: string | null
   address: string | null
   /** Two-letter US state code, e.g. 'HI'. Powers the tax-name helper only
-   *  (src/lib/taxHelp.ts) -- never read by pricing.ts. Null until supplied. */
+   *  (src/lib/taxHelp.ts) -- never read by pricing.ts, and never shown to a
+   *  shop outside the US. Null until supplied. */
   state: string | null
   email: string | null
   phone: string | null
@@ -38,6 +40,9 @@ export interface Shop {
   lead_days: number
   /** $/kWh off the shop's own utility bill. Null until they supply it. */
   electricity_rate_kwh: number | null
+  /** 'letter' | 'a4' | 'legal', or null meaning "derive it from the locale"
+   *  -- see src/lib/locale.ts. Null is not a synonym for Letter. */
+  paper: string | null
   /** The desktop welcome dialog, shown on launch until dismissed with
    *  "don't show this again". SQLite stores it as 0/1; data.local.ts
    *  coerces it to a real boolean on the way out. */
@@ -105,8 +110,12 @@ export function toRateSet(card: RateCardRow, shop: Shop): RateSet {
     revisionHourly: card.revision_hourly == null ? null : Number(card.revision_hourly),
     taxLabel: shop.tax_label,
     taxPct: Number(shop.tax_pct),
-    currency: shop.currency || 'USD',
-    locale: shop.locale || 'en-US',
+    // No hard-coded region behind these. A shop row always carries both,
+    // set at setup from the machine's own locale; the fallbacks exist only
+    // for a row written by an older build, and they ask the OS rather than
+    // assuming a country.
+    currency: shop.currency || osCurrency(),
+    locale: shop.locale || osLocale(),
     electricityRateKwh: shop.electricity_rate_kwh == null ? null : Number(shop.electricity_rate_kwh),
   }
 }
@@ -131,11 +140,20 @@ export interface ShopIdentityInput {
   name: string
   legal_name: string
   address: string
+  /** US state code, or '' -- only ever collected when the shop's locale is
+   *  a US one, because it exists solely to name the tax correctly there. */
   state: string
   email: string
   phone: string
   license_no: string
   electricity_rate_kwh: number | null
+  /** ISO 4217. */
+  currency: string
+  /** BCP 47. Drives money format, number grouping, document dates and the
+   *  default paper size. */
+  locale: string
+  /** '' means "follow the locale". */
+  paper: string
 }
 
 export interface ShopQuoteTermsInput {

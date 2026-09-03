@@ -53,6 +53,12 @@ pub fn run() {
       sql: include_str!("../migrations/0008_drafts.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 9,
+      description: "paper size: documents print A4 or Letter, whichever the shop uses",
+      sql: include_str!("../migrations/0009_paper.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

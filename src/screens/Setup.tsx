@@ -16,28 +16,31 @@
  * electricity rate, every hourly rate, materials — stays skippable exactly
  * as before.
  *
+ * Nothing here is keyed to a country either. The currency list is every
+ * currency the runtime knows, named in the user's own language; the number
+ * and date format is the one the operating system is already set to; the
+ * page size follows from that; and the US state field only exists for shops
+ * whose machine says they are in the US, because its only job is to get the
+ * name of a US tax right. There is no timezone question -- see
+ * src/lib/locale.ts for why there never will be.
+ *
  * Cinematic register: this is a screen someone passes through exactly once.
  */
 import { useMemo, useState, type FormEvent } from 'react'
 import { makeMoney } from '../lib/pricing'
 import { setupShop, type SetupPayload } from '../lib/data'
 import { taxHintFor, US_STATES } from '../lib/taxHelp'
+import {
+  currencyOptions,
+  currencySymbol,
+  osCurrency,
+  osLocale,
+  paperForRegion,
+  regionOf,
+} from '../lib/locale'
 import TaxNameHint from '../components/TaxNameHint'
 
 const STEPS = ['Your shop', 'Your rates', 'First machine'] as const
-
-const CURRENCIES = [
-  ['USD', 'en-US', 'US dollar'],
-  ['CAD', 'en-CA', 'Canadian dollar'],
-  ['EUR', 'de-DE', 'Euro'],
-  ['GBP', 'en-GB', 'Pound sterling'],
-  ['AUD', 'en-AU', 'Australian dollar'],
-  ['NZD', 'en-NZ', 'New Zealand dollar'],
-  ['JPY', 'ja-JP', 'Japanese yen'],
-  ['SEK', 'sv-SE', 'Swedish krona'],
-  ['PLN', 'pl-PL', 'Polish złoty'],
-  ['BRL', 'pt-BR', 'Brazilian real'],
-] as const
 
 const STARTER_MATERIALS = [
   { name: 'PLA', kind: 'PLA', swatch: '#5A6B7C', unit: 'g' as const, perKg: '' },
@@ -58,8 +61,13 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [licenseNo, setLicenseNo] = useState('')
-  const [currency, setCurrency] = useState('USD')
-  const [locale, setLocale] = useState('en-US')
+  // The machine already knows where it is. Asking again would only give the
+  // shop a chance to disagree with its own clock and number formatting.
+  const locale = useMemo(osLocale, [])
+  const region = useMemo(() => regionOf(locale), [locale])
+  const [currency, setCurrency] = useState(osCurrency)
+  const paper = useMemo(() => paperForRegion(region), [region])
+  const currencies = useMemo(() => currencyOptions(locale), [locale])
   const [taxLabel, setTaxLabel] = useState('')
   const [taxPct, setTaxPct] = useState('')
   const [electricityRate, setElectricityRate] = useState('')
@@ -117,12 +125,13 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
           name: name.trim(),
           legal_name: legalName.trim(),
           address: address.trim(),
-          state: state.trim(),
+          state: region === 'US' ? state.trim() : '',
           email: email.trim(),
           phone: phone.trim(),
           license_no: licenseNo.trim(),
           currency,
           locale,
+          paper,
           tax_label: taxLabel.trim() || 'Tax',
           tax_pct: num(taxPct),
           electricity_rate_kwh: numOrNull(electricityRate),
@@ -228,19 +237,35 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                     machine costs to where you actually run them.
                   </div>
                 </div>
-                <div className="fld">
-                  <label className="lbl" htmlFor="w-state">State</label>
-                  <select id="w-state" value={state} onChange={(e) => setState(e.target.value)}>
-                    <option value="">— not set —</option>
-                    {US_STATES.map(([code, label]) => (
-                      <option key={code} value={code}>{label}</option>
-                    ))}
-                  </select>
-                  <div className="hint">
-                    Optional. Only used to suggest the right tax name below — Hawaii's GET isn't a "sales tax," for
-                    example. Never affects pricing.
+                {region === 'US' ? (
+                  <div className="fld">
+                    <label className="lbl" htmlFor="w-state">State</label>
+                    <select id="w-state" value={state} onChange={(e) => setState(e.target.value)}>
+                      <option value="">— not set —</option>
+                      {US_STATES.map(([code, label]) => (
+                        <option key={code} value={code}>{label}</option>
+                      ))}
+                    </select>
+                    <div className="hint">
+                      Optional. Only used to suggest the right tax name below — Hawaii's GET isn't a "sales tax," for
+                      example. Never affects pricing.
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="fld">
+                    <span className="lbl">Formats</span>
+                    <div
+                      className="hint"
+                      style={{ marginTop: 6, lineHeight: 1.55 }}
+                    >
+                      Numbers, dates and page size follow this computer:{' '}
+                      <b>{locale || 'system default'}</b>
+                      {region ? ` · ${region}` : ''} · {paper === 'a4' ? 'A4' : 'US Letter'}. Nothing to set,
+                      and no timezone to keep in sync — Guma reads the clock. Change your system language or
+                      region and Guma follows.
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="grid2" style={{ marginTop: 10 }}>
@@ -257,20 +282,15 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
               <div className="grid3" style={{ marginTop: 10 }}>
                 <div className="fld">
                   <label className="lbl" htmlFor="w-cur">Currency</label>
-                  <select
-                    id="w-cur"
-                    value={currency}
-                    onChange={(e) => {
-                      const hit = CURRENCIES.find((c) => c[0] === e.target.value)
-                      setCurrency(e.target.value)
-                      if (hit) setLocale(hit[1])
-                    }}
-                  >
-                    {CURRENCIES.map(([code, , label]) => (
-                      <option key={code} value={code}>{code} — {label}</option>
+                  <select id="w-cur" value={currency} onChange={(e) => setCurrency(e.target.value)}>
+                    <option value="">— choose —</option>
+                    {currencies.map((c) => (
+                      <option key={c.code} value={c.code}>{c.code} — {c.label}</option>
                     ))}
                   </select>
-                  <div className="hint">Sample: {money(1234.5)}</div>
+                  <div className="hint">
+                    {currency ? `Sample: ${money(1234.5)}` : 'Pick the currency you invoice in.'}
+                  </div>
                 </div>
                 <div className="fld">
                   <label className="lbl" htmlFor="w-taxlabel">Tax name</label>
@@ -287,7 +307,9 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
               {taxHint && <TaxNameHint hint={taxHint} onUseLabel={setTaxLabel} />}
 
               <div className="fld" style={{ marginTop: 10 }}>
-                <label className="lbl" htmlFor="w-kwh">Your electricity rate, $/kWh</label>
+                <label className="lbl" htmlFor="w-kwh">
+                  Your electricity rate, {currencySymbol(currency, locale) || 'per'}/kWh
+                </label>
                 <input
                   id="w-kwh"
                   type="number"

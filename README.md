@@ -81,6 +81,28 @@ every figure traces back to a rate you set. AI features are optional, provider-
 agnostic, and degrade to the manual form when nothing is configured. **Guma
 never requires a GPU.**
 
+## Wherever you are
+
+Guma has no country baked into it. It reads your machine and gets out of the
+way:
+
+- **No timezone question.** Dates come from the operating system's clock, so
+  "today" is the day your menu bar says it is. Nothing to set, nothing to keep
+  in sync when a laptop crosses a border.
+- **Your currency**, from the full ISO list, named in your own language. Your
+  machine's region supplies the first guess; you can bill in something else.
+- **Your number and date formats**, from the same place — including the
+  arithmetic printed under each quote line, not just the money.
+- **Your paper.** Quotes and closeout sheets lay out on A4 or Letter,
+  whichever your region uses, overridable in Settings.
+- **No US-only fields for non-US shops.** The one that exists — a state, used
+  solely to name a US tax correctly — only appears if your machine says you
+  are in the US.
+
+Guma ships no tax rates for anywhere. The tax name and percentage are yours to
+supply, because a rate compiled into an app goes stale and it is not this
+project's call to make for your shop.
+
 ## Install
 
 **The desktop app (recommended).** Grab the installer for your OS from the

@@ -21,6 +21,8 @@ import {
   type QuoteInputs,
   type RatesSnapshot,
 } from '../lib/pricing'
+import { formatDate } from '../lib/dates'
+import { osCurrency, osLocale, paperFor } from '../lib/locale'
 
 /** <doc-page> is a custom element defined by doc-page.js. */
 declare module 'react' {
@@ -43,18 +45,11 @@ const RULE = '#D6DEE6'
 const HAIR = '#E4EAF0'
 const MONO = "'JetBrains Mono',monospace"
 
-const longDate = (iso: string) =>
-  new Date(iso + (iso.length === 10 ? 'T00:00:00' : '')).toLocaleDateString('en-US', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  })
-const shortDate = (iso: string) =>
-  new Date(iso + (iso.length === 10 ? 'T00:00:00' : '')).toLocaleDateString('en-US', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  })
+// Dates on a document are written the shop's way, not the author's — and the
+// shop's way is whatever locale the quote was PRICED in, so a reprint reads
+// identically to the copy the client already has. See src/lib/dates.ts.
+const longDate = (iso: string, locale: string) => formatDate(iso, locale, 'long')
+const shortDate = (iso: string, locale: string) => formatDate(iso, locale, 'short')
 
 /** Container: reads the sent quote by id. */
 export default function QuoteDoc() {
@@ -138,7 +133,8 @@ export function QuoteDocument({ row }: { row: any }) {
 
   const { q, rates } = priced
   // A reprinted quote formats in the currency it was PRICED in, not today's.
-  const { money } = makeMoney(rates.currency || 'USD', rates.locale || 'en-US')
+  const { money } = makeMoney(rates.currency || osCurrency(), rates.locale || osLocale())
+  const docLocale = rates.locale || osLocale()
   const shop = row.shops
   const job = row.jobs
   const client = job.clients
@@ -194,7 +190,7 @@ export function QuoteDocument({ row }: { row: any }) {
           Save as PDF
         </button>
       </div>
-      <doc-page margin="0.7in">
+      <doc-page size={paperFor(shop)} margin="0.7in">
       {/* ------------------------------------------------- repeating header */}
       <div
         slot="header"
@@ -238,7 +234,7 @@ export function QuoteDocument({ row }: { row: any }) {
       >
         <span>
           Quote {job.ref}
-          {row.valid_until ? ` · valid until ${longDate(row.valid_until)}` : ''}
+          {row.valid_until ? ` · valid until ${longDate(row.valid_until, docLocale)}` : ''}
         </span>
         <span>
           {shop.legal_name} · {shop.address}
@@ -276,8 +272,8 @@ export function QuoteDocument({ row }: { row: any }) {
               {(
                 [
                   ['Quote no.', job.ref],
-                  ['Issued', shortDate((row.sent_at ?? row.created_at).slice(0, 10))],
-                  ...(row.valid_until ? [['Valid until', shortDate(row.valid_until)]] : []),
+                  ['Issued', shortDate((row.sent_at ?? row.created_at).slice(0, 10), docLocale)],
+                  ...(row.valid_until ? [['Valid until', shortDate(row.valid_until, docLocale)]] : []),
                   ['Turnaround', `${shop.lead_days} business days`],
                 ] as [string, string][]
               ).map(([k, v]) => (
@@ -508,7 +504,7 @@ export function QuoteDocument({ row }: { row: any }) {
               </div>
             </div>
             <div style={{ fontSize: 9.5, lineHeight: 1.6, color: '#3C4C5C', marginTop: 6, textWrap: 'pretty' }}>
-              {trimPct(rates.depositPct)}% of the total.{' '}
+              {trimPct(rates.depositPct, rates.locale)}% of the total.{' '}
               {q.needsDesign
                 ? `Modelling begins once it clears; the ${shop.lead_days}-day turnaround is counted from that day, not from today.`
                 : 'The project is scheduled onto a machine once it clears.'}{' '}
