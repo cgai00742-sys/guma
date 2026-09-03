@@ -79,9 +79,22 @@ jobs:
         # can ship a broken build. Runs once per platform, which is the
         # point -- the SQLite tests exercise a real engine, and "works on
         # Linux" is not the same claim as "works on Windows".
+        #
+        # The suite itself runs pinned to Pacific/Chatham (see
+        # vite.config.ts). Every date in Guma is a local calendar date, and
+        # a UTC runner cannot tell correct code from code that only agrees
+        # with UTC -- which has already cost this project two bugs.
         run: |
           npx tsc -b --noEmit
           npm test
+
+      # Six timezones from UTC-10 to UTC+14, including two that are not on
+      # a whole hour. Two seconds each, and the last release-blocking bug
+      # this project had was exactly this shape. Linux only: the sweep is
+      # about the code's arithmetic, not the platform's.
+      - name: Sweep the timezones
+        if: matrix.platform == 'ubuntu-22.04'
+        run: npm run test:tz
 
       - uses: tauri-apps/tauri-action@v0
         env:

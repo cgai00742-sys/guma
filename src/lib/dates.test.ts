@@ -28,6 +28,19 @@ const HAWAII_AFTERNOON = new Date('2026-09-03T01:00:00Z')
  */
 const inHawaii = HAWAII_AFTERNOON.getHours() === 15
 const when = inHawaii ? describe : describe.skip
+
+/**
+ * The suite is pinned away from UTC in vite.config.ts. If that pin is ever
+ * removed, every local-calendar assertion in this project quietly starts
+ * passing for the wrong reason, so this says so out loud rather than
+ * letting the coverage evaporate in silence.
+ */
+describe('the suite is not running in Greenwich', () => {
+  it('has a non-zero UTC offset, so local and UTC cannot agree by accident', () => {
+    const offset = new Date(2026, 6, 1, 12).getTimezoneOffset()
+    expect(offset, 'TZ pin missing from vite.config.ts — see the comment there').not.toBe(0)
+  })
+})
 if (!inHawaii) {
   console.warn(
     'dates.test.ts skipped: this runtime ignores process.env.TZ, so the ' +

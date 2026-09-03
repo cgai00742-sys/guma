@@ -17,7 +17,27 @@ import {
 } from './gates'
 import type { GateAnswer, JobPhase, ProjectFacts } from './data.types'
 
-const NOW = new Date('2026-09-02T12:00:00Z')
+/**
+ * Midday on 2 September 2026, in whatever timezone this runs in.
+ *
+ * Deliberately NOT `new Date('2026-09-02T12:00:00Z')`. That is one fixed
+ * instant, and every shop reads it as a different calendar day: at +12:45 it
+ * is already the 3rd, at -10 it is 2am on the 2nd. Flags are counted in
+ * whole local days (see daysBetweenLocal), so a fixture pinned to a UTC
+ * instant makes "due today" mean "one day overdue" for a third of the world
+ * — and the test then passes or fails depending on where the machine is,
+ * which is worse than either.
+ *
+ * A local construction says what these tests actually mean: it is lunchtime
+ * on the 2nd at this shop, wherever that is.
+ */
+const NOW = new Date(2026, 8, 2, 12, 0, 0)
+
+/** An instant that fell on the shop's OWN calendar day `n` days ago, at 9am
+ *  local — far enough from either midnight that no DST shift moves it. */
+function localDaysAgo(n: number, from: Date = NOW): string {
+  return new Date(from.getFullYear(), from.getMonth(), from.getDate() - n, 9, 0, 0).toISOString()
+}
 
 function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
   return {
@@ -174,13 +194,11 @@ describe('flagsFor', () => {
 
   it('stalls exactly at the threshold, not before', () => {
     const at = new Date(NOW)
-    const dayBefore = new Date(Date.UTC(2026, 8, 2 - (STALLED_DAYS - 1)))
-    const dayOf = new Date(Date.UTC(2026, 8, 2 - STALLED_DAYS))
     expect(
-      flagsFor(facts({ lastActivityAt: dayBefore.toISOString() }), at).map((f) => f.key),
+      flagsFor(facts({ lastActivityAt: localDaysAgo(STALLED_DAYS - 1) }), at).map((f) => f.key),
     ).not.toContain('stalled')
     expect(
-      flagsFor(facts({ lastActivityAt: dayOf.toISOString() }), at).map((f) => f.key),
+      flagsFor(facts({ lastActivityAt: localDaysAgo(STALLED_DAYS) }), at).map((f) => f.key),
     ).toContain('stalled')
   })
 

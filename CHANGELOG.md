@@ -137,6 +137,24 @@ dev dependencies, and three screens are tested as they actually draw:
 Every one of those bugs typechecked, passed its logic tests, and was broken the
 moment a person looked at the screen. 176 tests now, up from 122.
 
+### The suite runs in Chatham now
+
+A test fixture built from `Date.UTC` passed on every UTC machine and failed
+on the author's own, in Hawaii. `daysBetweenLocal` was right; the fixture was
+counting UTC days and asserting local ones, so the answer depended on where
+the machine was.
+
+Fixtures now construct their instants locally, and `vitest` is pinned to
+`Pacific/Chatham` — UTC+12:45, across the date line, with daylight saving.
+Anything that survives it survives Berlin. `npm run test:tz` sweeps six zones
+from UTC-10 to UTC+14, and the release workflow runs the sweep before
+building. A test in `dates.test.ts` fails if the pin is ever removed, so the
+coverage cannot evaporate quietly.
+
+Three tests were wrong in a UTC+12:45 zone and one in UTC-10. None of them
+were code bugs — which is the point: a suite that only runs in Greenwich
+cannot tell correct code from code that agrees with Greenwich.
+
 ### For contributors
 
 - A shipped migration is frozen. `src/lib/migrations.test.ts` fails if one is

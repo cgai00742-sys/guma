@@ -14,7 +14,8 @@
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
     "migrations:lock": "node -e \"const fs=require('fs'),c=require('crypto'),p=require('path'),d='src-tauri/migrations',o={};for(const f of fs.readdirSync(d).filter(f=>f.endsWith('.sql')).sort())o[f]=c.createHash('sha384').update(fs.readFileSync(p.join(d,f))).digest('hex');fs.writeFileSync(p.join(d,'checksums.json'),JSON.stringify(o,null,2)+'\\n');console.log('locked',Object.keys(o).length,'migrations')\"",
-    "db:repair": "node scripts/repair-migrations.mjs"
+    "db:repair": "node scripts/repair-migrations.mjs",
+    "test:tz": "for tz in UTC Pacific/Honolulu Pacific/Chatham Asia/Kolkata Pacific/Kiritimati America/St_Johns; do echo \"--- $tz\"; TZ=$tz npx vitest run --silent || exit 1; done"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",
