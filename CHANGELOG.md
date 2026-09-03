@@ -114,6 +114,29 @@ places where it quietly assumed the United States.
 - Installers are unsigned; expect one warning on first open.
 - No printer control, ever. That is OctoPrint's and Klipper's job.
 
+### Render tests
+
+The gap named in the 1.0 notes is closed. `jsdom` and Testing Library are now
+dev dependencies, and three screens are tested as they actually draw:
+
+- **Setup** — the state dropdown appears only for a US machine, the currency
+  guess and its sample follow the locale, and no rate input arrives pre-filled
+  with someone else's numbers.
+- **Intake** — all three ways out exist, all three refuse until there is a
+  client and a title, Save draft does not take the project in, Intake does and
+  lands on the project rather than stranding you on the form, and every button
+  locks while a save is in flight.
+- **Project** — rendered against a real SQLite database with every migration
+  applied and no mock below the screen, so it exercises the schema,
+  `data.local.ts`, the dispatcher, `gates.ts`, `pricing.ts` and the page in one
+  pass. It asserts the brief has an editor, the quote status has a control, and
+  every unmet automatic gate item prints the `fix` hint that names what clears
+  it — which is the three dead ends of "I tried to move a new project forward
+  but no success", made permanent.
+
+Every one of those bugs typechecked, passed its logic tests, and was broken the
+moment a person looked at the screen. 176 tests now, up from 122.
+
 ### For contributors
 
 - A shipped migration is frozen. `src/lib/migrations.test.ts` fails if one is
