@@ -68,7 +68,20 @@ jobs:
           node-version: lts/*
 
       - name: install frontend dependencies
-        run: npm install
+        # ci, not install: it installs exactly what the lockfile says and
+        # fails loudly if package.json and the lockfile disagree. This
+        # project has already lost a deploy to a lockfile regenerated on the
+        # wrong platform; a release build is the last place to find out.
+        run: npm ci
+
+      - name: typecheck and test
+        # A release that ships without running the suite is a release that
+        # can ship a broken build. Runs once per platform, which is the
+        # point -- the SQLite tests exercise a real engine, and "works on
+        # Linux" is not the same claim as "works on Windows".
+        run: |
+          npx tsc -b --noEmit
+          npm test
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -79,12 +92,20 @@ jobs:
           tagName: guma-v__VERSION__
           releaseName: 'Guma v__VERSION__'
           releaseBody: |
-            Early desktop build. No account or internet connection needed —
-            your shop lives in one local file on this computer. First launch
-            goes straight into the setup wizard.
+            No account and no internet connection needed — your shop lives in
+            one file on this computer, and the first launch goes straight into
+            the setup wizard.
 
-            Unsigned for now — see the README for the "unidentified
-            developer" / SmartScreen workaround on first open.
+            See CHANGELOG.md for what is in this release and, just as
+            importantly, its Known Limits.
+
+            Unsigned for now — the README has the "unidentified developer"
+            (macOS) and SmartScreen (Windows) workaround for first open.
+          # Draft on purpose: a human reads the notes and checks the four
+          # installers actually exist before anyone can download them.
           releaseDraft: true
-          prerelease: true
+          # prerelease was true through 0.x. A 1.0 that GitHub refuses to
+          # show as "Latest release" is a 1.0 the README's download link
+          # cannot find.
+          prerelease: false
           args: ${{ matrix.args }}
