@@ -33,6 +33,7 @@ export type {
   ShopContext,
   SetupPayload,
   ShopIdentityInput,
+  ShopCostsInput,
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
@@ -65,6 +66,7 @@ export type {
 } from './data.types'
 import type {
   ShopIdentityInput,
+  ShopCostsInput,
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
@@ -249,6 +251,75 @@ export async function saveShopIdentity(shopId: string, next: ShopIdentityInput):
     .single()
   if (error) throw error
   return data as Shop
+}
+
+/**
+ * The cost-of-doing-business figures. Three of the four columns arrive with
+ * 0013_true_cost.sql, which has not been applied to a live Postgres — see
+ * the PostgREST note on saveShopIdentity for why sending an unknown column
+ * fails the WHOLE request rather than one field. The desktop build, which
+ * is the supported one, stores all four.
+ */
+export async function saveShopCosts(shopId: string, next: ShopCostsInput): Promise<Shop> {
+  const { data, error } = await supabase
+    .from('shops')
+    .update({ electricity_rate_kwh: next.electricity_rate_kwh })
+    .eq('id', shopId)
+    .select()
+    .single()
+  if (error) throw error
+  return data as Shop
+}
+
+/** Add a client directly, rather than only as a side effect of a quote. */
+export async function createClient(shopId: string, input: ClientEditInput): Promise<string> {
+  const name = (input.name ?? '').trim()
+  if (!name) throw new Error('A client needs a name.')
+  const { data: dupes, error: dupeErr } = await supabase
+    .from('clients')
+    .select('id')
+    .eq('shop_id', shopId)
+    .ilike('name', name)
+  if (dupeErr) throw dupeErr
+  if (dupes && dupes.length > 0) {
+    throw new Error(
+      `You already have a client called "${name}". Open that one rather than making a second — ` +
+        'two clients with one name is how a balance owed goes missing.',
+    )
+  }
+  const { data, error } = await supabase
+    .from('clients')
+    .insert({
+      shop_id: shopId,
+      name,
+      contact: input.contact?.trim() || null,
+      email: input.email?.trim() || null,
+      phone: input.phone?.trim() || null,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  return (data as { id: string }).id
+}
+
+/** Delete a client with nothing recorded against them. Same refusal as the
+ *  local backend: jobs.client_id does not cascade, on purpose. */
+export async function deleteClient(shopId: string, clientId: string): Promise<void> {
+  const { count, error: countErr } = await supabase
+    .from('jobs')
+    .select('id', { count: 'exact', head: true })
+    .eq('client_id', clientId)
+  if (countErr) throw countErr
+  const n = count ?? 0
+  if (n > 0) {
+    throw new Error(
+      `That client has ${n} project${n === 1 ? '' : 's'}. Deleting them would take those projects, ` +
+        'their payments and their build history with them. Delete the projects first if you mean ' +
+        'to, or rename the client instead.',
+    )
+  }
+  const { error } = await supabase.from('clients').delete().eq('id', clientId).eq('shop_id', shopId)
+  if (error) throw error
 }
 
 /** Tax, validity windows, and the text printed on every quote's terms block. */

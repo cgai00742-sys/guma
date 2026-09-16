@@ -34,6 +34,7 @@ import type {
   ShopContext,
   SetupPayload,
   ShopIdentityInput,
+  ShopCostsInput,
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
@@ -147,8 +148,8 @@ export async function setupShop(p: SetupPayload): Promise<string> {
     `insert into shops
       (id, name, slug, currency, locale, tax_label, tax_pct, legal_name, address,
        state, email, phone, license_no, quote_valid_days, lead_days, electricity_rate_kwh,
-       paper)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       paper, overhead_monthly, productive_hours_month, failure_pct)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       shopId,
       (shop.name as string) || 'My shop',
@@ -170,6 +171,9 @@ export async function setupShop(p: SetupPayload): Promise<string> {
       // sends the size its region implies so the choice is visible in
       // Settings, but a blank is a legitimate, self-correcting value.
       (shop.paper as string) || null,
+      (shop.overhead_monthly as number | null) ?? null,
+      (shop.productive_hours_month as number | null) ?? null,
+      (shop.failure_pct as number | null) ?? null,
     ],
   )
 
@@ -356,6 +360,31 @@ export async function saveShopIdentity(shopId: string, next: ShopIdentityInput):
       // '' is stored as null: "follow my locale", which stays true if the
       // shop later changes its locale.
       next.paper.trim() || null,
+      shopId,
+    ],
+  )
+  const rows = await d.select<Shop[]>('select * from shops where id = ?', [shopId])
+  return rows[0]
+}
+
+/**
+ * The four numbers behind "what did this actually cost me".
+ *
+ * Null is a real value here and is written as null rather than coerced to
+ * zero: pricing.ts distinguishes "this shop has no overhead" (impossible)
+ * from "nobody has told me the overhead" (common), and only the second one
+ * should make the cost panel say a line is missing.
+ */
+export async function saveShopCosts(shopId: string, next: ShopCostsInput): Promise<Shop> {
+  const d = await db()
+  await d.execute(
+    `update shops set electricity_rate_kwh = ?, overhead_monthly = ?,
+       productive_hours_month = ?, failure_pct = ? where id = ?`,
+    [
+      next.electricity_rate_kwh,
+      next.overhead_monthly,
+      next.productive_hours_month,
+      next.failure_pct,
       shopId,
     ],
   )
@@ -1208,6 +1237,82 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
     owed: Number(r.owed ?? 0),
     lastActivity: r.last_activity,
   }))
+}
+
+/**
+ * Add a client without going through a quote.
+ *
+ * Until now the ONLY way a client could come into existence was as a side
+ * effect of saving a quote, which meant a shop could not enter the people
+ * it already works with before it had work to enter, could not fix a name
+ * typed wrong on the first job, and had no way to keep a contact it had
+ * spoken to but not yet quoted. That is a CRM that only records history,
+ * and a shop's client list is the one thing it brings with it.
+ *
+ * A name is the only requirement, because it is the only thing that has to
+ * be true. Matching is case-insensitive so "Hafen GmbH" and "hafen gmbh"
+ * do not become two clients who each owe you half.
+ */
+export async function createClient(shopId: string, input: ClientEditInput): Promise<string> {
+  const name = (input.name ?? '').trim()
+  if (!name) throw new Error('A client needs a name.')
+  const d = await db()
+  const dupes = await d.select<{ id: string }[]>(
+    'select id from clients where shop_id = ? and name = ? collate nocase',
+    [shopId, name],
+  )
+  if (dupes[0]) {
+    throw new Error(
+      `You already have a client called "${name}". Open that one rather than making a second — ` +
+        'two clients with one name is how a balance owed goes missing.',
+    )
+  }
+  const id = uuid()
+  await d.execute(
+    `insert into clients (id, shop_id, name, kind, contact, email, phone)
+     values (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      shopId,
+      name,
+      input.kind ?? 'individual',
+      input.contact?.trim() || null,
+      input.email?.trim() || null,
+      input.phone?.trim() || null,
+    ],
+  )
+  return id
+}
+
+/**
+ * Delete a client, but only one with nothing recorded against them.
+ *
+ * `jobs.client_id` has no `on delete cascade` and that is deliberate: a
+ * cascade here would take the projects, their quotes, their payments and
+ * their build history with it, so a mistyped name cleaned up in the client
+ * list would silently delete money the shop had actually received. So this
+ * refuses and says how many projects are in the way, and the shop deletes
+ * those from their own pages — where the warning names what goes with them
+ * — or renames the client instead.
+ */
+export async function deleteClient(shopId: string, clientId: string): Promise<void> {
+  const d = await db()
+  const rows = await d.select<{ n: number; name: string }[]>(
+    `select count(j.id) as n, max(c.name) as name
+       from clients c left join jobs j on j.client_id = c.id
+      where c.id = ? and c.shop_id = ?`,
+    [clientId, shopId],
+  )
+  const n = Number(rows[0]?.n ?? 0)
+  if (n > 0) {
+    throw new Error(
+      `${rows[0]?.name ?? 'That client'} has ${n} project${n === 1 ? '' : 's'}. ` +
+        'Deleting them would take those projects, their payments and their build history with them. ' +
+        'Delete the projects first if you mean to, or rename the client instead.',
+    )
+  }
+  const res = await d.execute('delete from clients where id = ? and shop_id = ?', [clientId, shopId])
+  if (res.rowsAffected === 0) throw new Error('That client no longer exists.')
 }
 
 /** Edit a client from the Clients screen. Same present-keys-only rule as

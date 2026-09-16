@@ -33,9 +33,18 @@ import {
   trimPct,
   type AssetOrigin,
   type DesignBilling,
+  type PricedQuote,
   type QuoteInputs,
 } from '../lib/pricing'
-import { nextJobRef, saveQuote, takeProjectIn, toRateSet, type ShopContext } from '../lib/data'
+import {
+  listClients,
+  nextJobRef,
+  saveQuote,
+  takeProjectIn,
+  toRateSet,
+  type ClientRow,
+  type ShopContext,
+} from '../lib/data'
 import { addDaysISO } from '../lib/dates'
 
 const ASSET_NOTES: Record<AssetOrigin, string> = {
@@ -54,6 +63,19 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
     () => makeMoney(rates.currency, rates.locale),
     [rates.currency, rates.locale],
   )
+
+  /**
+   * The shop's existing clients, so a repeat job attaches to the client it
+   * belongs to instead of creating a near-duplicate from a slightly
+   * different spelling. saveQuote matches on the name, so "Hafen GmbH" and
+   * "Hafen Gmbh" were two clients, each holding half the ledger.
+   */
+  const [clients, setClients] = useState<ClientRow[]>([])
+  useEffect(() => {
+    listClients(ctx.shop.id)
+      .then(setClients)
+      .catch(() => setClients([]))
+  }, [ctx.shop.id])
 
   const [ref, setRef] = useState<string>('…')
   useEffect(() => {
@@ -285,12 +307,48 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 <label className="lbl" htmlFor="q-client">
                   Client *
                 </label>
+                {clients.length > 0 && (
+                  <select
+                    aria-label="Pick an existing client"
+                    value={clients.some((c) => c.name === client) ? client : ''}
+                    style={{ marginBottom: 6 }}
+                    onChange={(e) => {
+                      const hit = clients.find((c) => c.name === e.target.value)
+                      setClient(e.target.value)
+                      // Their details come with them: a repeat client should
+                      // not have their phone number retyped every job, and
+                      // retyping is where a second spelling comes from.
+                      if (hit) {
+                        setContact(hit.contact ?? '')
+                        setEmail(hit.email ?? '')
+                        setPhone(hit.phone ?? '')
+                      }
+                    }}
+                  >
+                    <option value="">— someone new —</option>
+                    {clients.map((c) => (
+                      <option key={c.id} value={c.name}>
+                        {c.name}
+                        {c.active > 0 ? ` · ${c.active} active` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <input
                   id="q-client"
                   value={client}
                   onChange={(e) => setClient(e.target.value)}
                   placeholder="Who is paying"
                 />
+                <div className="hint">
+                  {clients.some((c) => c.name === client)
+                    ? 'This project joins their existing ledger.'
+                    : client.trim()
+                      ? 'A new client — they will appear on the Clients screen once this is saved.'
+                      : clients.length > 0
+                        ? 'Pick a client above, or type a new name.'
+                        : 'Your first client. Typing a name here creates them.'}
+                </div>
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="q-need">
@@ -851,60 +909,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           )}
 
           {/* Owner-only. Never shown to a client, never printed. */}
-          <div className="pane" style={{ margin: 0 }}>
-            <h3>What this project costs you</h3>
-            <div className="kv" style={{ gridTemplateColumns: '1fr auto', gap: '6px 12px' }}>
-              {/* The margin below is only as honest as this line. A material
-                  whose cost was typed at setup and never checked against a
-                  receipt is a guess, and saying so here is cheaper than
-                  discovering it a year of quotes later. */}
-              <span className="k">
-                Material at cost
-                {material?.costBasis === 'estimate' && (
-                  <span
-                    style={{ color: 'var(--warn)', fontSize: 10, marginLeft: 6 }}
-                    title="Nothing has been logged for this material, so this is the figure typed at setup. Log a spool purchase in Shop settings → Materials and Guma prices off what you actually paid."
-                  >
-                    estimated
-                  </span>
-                )}
-              </span>
-              <span className="v" style={{ fontFamily: 'var(--mono)', textAlign: 'right' }}>
-                {money(q.materialCost)}
-              </span>
-              <span className="k">Machine time + wear</span>
-              <span className="v" style={{ fontFamily: 'var(--mono)', textAlign: 'right' }}>
-                {money(q.machineAmt + q.wearAmt)}
-              </span>
-              <span className="k">Your hours</span>
-              <span className="v" style={{ fontFamily: 'var(--mono)', textAlign: 'right' }}>
-                {money(q.yourHours)}
-              </span>
-              <span className="k" style={{ color: 'var(--txt-2)' }}>
-                Margin after costs {q.costsIncomplete ? '(estimate)' : ''}
-              </span>
-              <span
-                className="v"
-                style={{
-                  fontFamily: 'var(--mono)',
-                  textAlign: 'right',
-                  color:
-                    q.margin < 0
-                      ? 'var(--red)'
-                      : q.marginPctOfTotal < 0.15
-                        ? 'var(--warn)'
-                        : 'var(--ok)',
-                }}
-              >
-                {money(q.margin)}
-              </span>
-            </div>
-            <div className="hint">
-              {q.costsIncomplete
-                ? "Your hours are counted at the rate you charge. Machine time is priced as break-even here because the printer's wattage or your electricity rate isn't set (Machines and Identity tabs in Settings) — the real margin is likely higher."
-                : "Your hours are counted at the rate you charge, so margin here is what's left over after paying yourself."}
-            </div>
-          </div>
+          <CostPanel q={q} money={money} qty={input.quantity || 1} />
 
           <div className="pane" style={{ margin: 0 }}>
             <h3>Rates used</h3>
@@ -954,6 +959,179 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * What this print actually costs the shop.
+ *
+ * The panel this replaces showed four lines, and one of them was wrong: it
+ * listed the machine's HOURLY RATE as a cost. That rate is a price the shop
+ * chose, not money it spends, so every shop that had filled in its
+ * electricity rate was being shown a cost higher than the truth and a
+ * margin lower than the truth — the one direction of error that makes a
+ * shop turn down work it should take.
+ *
+ * What a print costs is well established and it is six things, not four:
+ * the material, the power, a reserve against machine wear, a share of the
+ * overhead that is paid whether or not the machine runs, an allowance for
+ * the plates that fail, and the shop's own hours. Guma counted four of them
+ * and silently treated the other two as zero.
+ *
+ * Two rules hold this panel together:
+ *
+ *   Nothing unmeasured is shown as zero. A line Guma cannot compute is
+ *   named, with the field that would fix it, and the total says it is
+ *   incomplete. A cost total presented as complete when two of its lines
+ *   are quietly missing reads as a margin the shop does not have.
+ *
+ *   Break-even is stated outright. "What is the lowest I could charge for
+ *   this" is the question behind every discount conversation, and a shop
+ *   should never have to work it out in its head while a client is waiting.
+ */
+function CostPanel({
+  q,
+  money,
+  qty,
+}: {
+  q: PricedQuote
+  money: (n: number) => string
+  qty: number
+}) {
+  const rows: [string, string, string?][] = [
+    ['Material, at what you paid', money(q.materialCost)],
+    ...(q.electricityCost > 0
+      ? ([['Power for the machines', money(q.electricityCost)]] as [string, string][])
+      : []),
+    ['Machine wear reserve', money(q.wearAmt)],
+    ...(q.overheadCost > 0
+      ? ([
+          [
+            'Overhead for those hours',
+            money(q.overheadCost),
+            'Rent, software, insurance and the rest, shared across the machine-hours you actually bill.',
+          ],
+        ] as [string, string, string][])
+      : []),
+    ...(q.failureCost > 0
+      ? ([
+          [
+            'Allowance for failed plates',
+            money(q.failureCost),
+            'A failed plate burns its material and its hours twice and earns once. This is what you expect that to cost on a job this size.',
+          ],
+        ] as [string, string, string][])
+      : []),
+    [
+      'Your own hours',
+      money(q.yourHours),
+      'Design and finishing, counted at the rate you charge for them — so margin is what is left AFTER paying yourself.',
+    ],
+  ]
+
+  const thin = q.margin < 0 ? 'var(--red)' : q.marginPctOfTotal < 0.15 ? 'var(--warn)' : 'var(--ok)'
+
+  return (
+    <div className="pane" style={{ margin: 0 }}>
+      <h3>
+        What this print costs you
+        {q.missingCosts.length > 0 && (
+          <span style={{ color: 'var(--warn)', fontSize: 10, marginLeft: 8, letterSpacing: 0 }}>
+            incomplete
+          </span>
+        )}
+      </h3>
+
+      <div className="kv" style={{ gridTemplateColumns: '1fr auto', gap: '6px 12px' }}>
+        {rows.map(([k, v, why]) => (
+          <span key={k} style={{ display: 'contents' }}>
+            <span className="k" title={why}>
+              {k}
+            </span>
+            <span className="v" style={{ fontFamily: 'var(--mono)', textAlign: 'right' }}>
+              {v}
+            </span>
+          </span>
+        ))}
+
+        <span
+          className="k"
+          style={{ color: 'var(--txt)', fontWeight: 600, borderTop: '1px solid var(--line)', paddingTop: 7 }}
+        >
+          Total cost
+        </span>
+        <span
+          className="v"
+          style={{
+            fontFamily: 'var(--mono)',
+            textAlign: 'right',
+            fontWeight: 600,
+            borderTop: '1px solid var(--line)',
+            paddingTop: 7,
+          }}
+        >
+          {money(q.totalCost)}
+        </span>
+
+        {qty > 1 && (
+          <>
+            <span className="k" style={{ color: 'var(--txt-3)' }}>
+              Per piece
+            </span>
+            <span
+              className="v"
+              style={{ fontFamily: 'var(--mono)', textAlign: 'right', color: 'var(--txt-3)' }}
+            >
+              {money(q.costPerUnit)}
+            </span>
+          </>
+        )}
+
+        <span className="k" style={{ color: 'var(--txt-3)' }} title="Charge less than this and you are paying to do the work.">
+          Break even at
+        </span>
+        <span
+          className="v"
+          style={{ fontFamily: 'var(--mono)', textAlign: 'right', color: 'var(--txt-3)' }}
+        >
+          {money(q.breakEven)}
+        </span>
+
+        <span className="k" style={{ color: 'var(--txt-2)', fontWeight: 600 }}>
+          You keep
+        </span>
+        <span
+          className="v"
+          style={{ fontFamily: 'var(--mono)', textAlign: 'right', fontWeight: 600, color: thin }}
+        >
+          {money(q.margin)}
+          <span style={{ fontSize: 10, color: 'var(--txt-3)', marginLeft: 6 }}>
+            {q.total > 0 ? `${Math.round(q.marginPctOfTotal * 100)}%` : ''}
+          </span>
+        </span>
+      </div>
+
+      {q.missingCosts.length > 0 ? (
+        <div className="notice" style={{ marginTop: 10 }}>
+          <span>
+            <b>Some of your costs are not on file, so this total is lower than the truth.</b>
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
+              {q.missingCosts.map((m) => (
+                <li key={m.key}>
+                  <b>{m.label}</b> — {m.fix}
+                </li>
+              ))}
+            </ul>
+          </span>
+        </div>
+      ) : (
+        <div className="hint">
+          Every line above is measured rather than assumed: the material from what you actually paid
+          for it, the power from this machine's draw and your own tariff, overhead and failures from
+          the figures you set. This is the real number.
+        </div>
+      )}
     </div>
   )
 }

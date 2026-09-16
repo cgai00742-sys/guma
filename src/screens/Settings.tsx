@@ -20,6 +20,7 @@ import {
 import {
   saveRateCard,
   saveShopIdentity,
+  saveShopCosts,
   saveShopQuoteTerms,
   savePrinter,
   listMaterials,
@@ -30,6 +31,7 @@ import {
   toRateSet,
   type ShopContext,
   type ShopIdentityInput,
+  type ShopCostsInput,
   type ShopQuoteTermsInput,
   type PrinterRow,
   type MaterialRow,
@@ -87,7 +89,7 @@ const DEPOSIT_HINTS: Record<Draft['deposit_when'], string> = {
   none: "Only if every client is someone you'd lend a truck to.",
 }
 
-type Tab = 'rates' | 'identity' | 'terms' | 'machines' | 'materials'
+type Tab = 'rates' | 'costs' | 'identity' | 'terms' | 'machines' | 'materials'
 
 export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
   const [tab, setTab] = useState<Tab>('rates')
@@ -202,6 +204,9 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
         >
           Materials
         </button>
+        <button type="button" className="tab" aria-selected={tab === 'costs'} onClick={() => setTab('costs')}>
+          What it costs you
+        </button>
         <button type="button" className="tab" aria-selected={tab === 'terms'} onClick={() => setTab('terms')}>
           Quote terms
         </button>
@@ -210,6 +215,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
         </button>
       </div>
 
+      {tab === 'costs' && <CostsPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'identity' && <IdentityPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'terms' && <QuoteTermsPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'machines' && <MachinesPane ctx={ctx} onSaved={onSaved} />}
@@ -587,7 +593,10 @@ function IdentityPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
   const missing = [
     !draft.name.trim() && 'shop name',
     !draft.address.trim() && 'address',
-    draft.electricity_rate_kwh == null && 'electricity rate',
+    // The electricity rate moved to "What it costs you" — every number that
+    // decides what a job COSTS now lives on one screen, because a shop
+    // cannot tell whether its cost figure is trustworthy when the things
+    // that make it trustworthy are scattered across three tabs.
   ].filter(Boolean) as string[]
 
   return (
@@ -721,33 +730,6 @@ function IdentityPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
               <option value="legal">US Legal</option>
             </select>
             <div className="hint">The size quotes and closeout sheets are laid out for.</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="pane" style={{ margin: '12px 0 0' }}>
-        <h3>What power costs you</h3>
-        <div className="fld">
-          <label className="lbl" htmlFor="id-kwh">
-            Your electricity rate, {currencySymbol(draft.currency, draft.locale) || 'per'}/kWh
-          </label>
-          <input
-            id="id-kwh"
-            type="number"
-            step="0.0001"
-            min="0"
-            value={draft.electricity_rate_kwh ?? ''}
-            onChange={(e) => {
-              const v = e.target.value
-              setDraft((d) => ({ ...d, electricity_rate_kwh: v.trim() === '' ? null : Number(v) }))
-              setDirty(true)
-            }}
-            placeholder="from your utility bill"
-          />
-          <div className="hint">
-            Never looked up or assumed — rates vary by utility, not just region, and this feeds a real dollar figure
-            on the Rates tab. Paired with each printer's wattage (Machines tab) to price actual machine-time cost
-            instead of treating it as break-even.
           </div>
         </div>
       </div>
@@ -1679,6 +1661,213 @@ function NewMaterial({
         </button>
         <button type="button" className="btn ghost" onClick={onCancel}>
           Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * What it costs you to run.
+ *
+ * Four numbers, on one screen, because they answer one question: is Guma's
+ * cost figure the truth or a fraction of it? They used to be one number
+ * buried under Identity and three that were never asked at all, and a shop
+ * reading "you keep $412" had no way to know that its rent and its failed
+ * plates had been counted as zero.
+ *
+ * Every field may be left blank, and blank is not zero. A blank says "not
+ * supplied", the cost panel on a quote names it and says the total is
+ * incomplete, and nothing is ever guessed on the shop's behalf — the same
+ * rule that governs every rate in this app.
+ */
+function CostsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
+  const shop = ctx.shop
+  const [draft, setDraft] = useState<ShopCostsInput>({
+    electricity_rate_kwh: shop.electricity_rate_kwh,
+    overhead_monthly: shop.overhead_monthly,
+    productive_hours_month: shop.productive_hours_month,
+    failure_pct: shop.failure_pct,
+  })
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const sym = currencySymbol(shop.currency, shop.locale) || ''
+  const { money } = useMemo(
+    () => makeMoney(shop.currency || osCurrency(), shop.locale || osLocale()),
+    [shop.currency, shop.locale],
+  )
+
+  const num = (k: keyof ShopCostsInput) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value
+    setDraft((d: ShopCostsInput) => ({ ...d, [k]: v.trim() === '' ? null : Number(v) }))
+    setDirty(true)
+  }
+
+  const perHour =
+    draft.overhead_monthly != null &&
+    draft.productive_hours_month != null &&
+    draft.productive_hours_month > 0
+      ? draft.overhead_monthly / draft.productive_hours_month
+      : null
+
+  const missing = [
+    draft.electricity_rate_kwh == null && 'your electricity rate',
+    perHour == null && 'your overhead',
+    draft.failure_pct == null && 'a failure allowance',
+  ].filter(Boolean) as string[]
+
+  async function save() {
+    setSaving(true)
+    setError(null)
+    try {
+      await saveShopCosts(shop.id, draft)
+      setDirty(false)
+      onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{ maxWidth: 640 }}>
+      {error && (
+        <div className="alert" style={{ marginBottom: 12 }}>
+          <span>{error}</span>
+        </div>
+      )}
+
+      {missing.length > 0 && (
+        <div className="notice" style={{ marginBottom: 14 }}>
+          <span>
+            <b>Guma is understating what your prints cost.</b> Without {missing.join(', ')}, those
+            lines are counted as nothing at all — so every margin you see is better than the real
+            one. None of these is required, and none of them changes what a client is charged. They
+            change what you know.
+          </span>
+        </div>
+      )}
+
+      <div className="pane" style={{ margin: 0 }}>
+        <h3>Power</h3>
+        <div className="fld">
+          <label className="lbl" htmlFor="c-kwh">
+            Your electricity rate, {sym || 'per'}/kWh
+          </label>
+          <input
+            id="c-kwh"
+            type="number"
+            step="0.0001"
+            min="0"
+            value={draft.electricity_rate_kwh ?? ''}
+            onChange={num('electricity_rate_kwh')}
+            placeholder="off your utility bill"
+          />
+          <div className="hint">
+            Never looked up or assumed — rates vary by utility, not just by region. Paired with each
+            printer's wattage (Machines tab) this prices the real power a job draws instead of
+            treating machine time as break-even.
+          </div>
+        </div>
+      </div>
+
+      <div className="pane" style={{ margin: '12px 0 0' }}>
+        <h3>Overhead</h3>
+        <p style={{ fontSize: 13, color: 'var(--txt-2)', margin: '0 0 12px', maxWidth: '62ch' }}>
+          What you pay every month whether or not a machine is running: rent, insurance, software
+          subscriptions, internet, the building's own power. It comes out of job margin, so a job
+          that does not carry its share of it is quietly losing you money.
+        </p>
+        <div className="grid2">
+          <div className="fld">
+            <label className="lbl" htmlFor="c-oh">
+              Monthly overhead{sym ? `, ${sym}` : ''}
+            </label>
+            <input
+              id="c-oh"
+              type="number"
+              step="1"
+              min="0"
+              value={draft.overhead_monthly ?? ''}
+              onChange={num('overhead_monthly')}
+              placeholder="add up one month's fixed bills"
+            />
+          </div>
+          <div className="fld">
+            <label className="lbl" htmlFor="c-hrs">
+              Productive machine-hours a month
+            </label>
+            <input
+              id="c-hrs"
+              type="number"
+              step="1"
+              min="0"
+              value={draft.productive_hours_month ?? ''}
+              onChange={num('productive_hours_month')}
+              placeholder="hours you actually bill"
+            />
+            <div className="hint">
+              Hours your machines run on work you are paid for — not hours in the month, and not
+              hours they are switched on. A guess you would defend is fine.
+            </div>
+          </div>
+        </div>
+        <div className="hint" style={{ marginTop: 10 }}>
+          {perHour != null ? (
+            <>
+              That is <b>{money(perHour)} per machine-hour</b> carried by every job. A 21-hour print
+              picks up {money(perHour * 21)} of it.
+            </>
+          ) : (
+            'Fill in both and Guma will show you what each machine-hour has to carry.'
+          )}
+        </div>
+      </div>
+
+      <div className="pane" style={{ margin: '12px 0 0' }}>
+        <h3>Plates that fail</h3>
+        <p style={{ fontSize: 13, color: 'var(--txt-2)', margin: '0 0 12px', maxWidth: '62ch' }}>
+          Prints warp, clog, shift and lose power. A failed plate burns its material and its machine
+          hours twice and earns once. This is the share of machine-side cost you expect to lose that
+          way — and it is the line most shops leave out, which is why their margin looks better on
+          paper than in the bank.
+        </p>
+        <div className="fld">
+          <label className="lbl" htmlFor="c-fail">
+            Failure allowance, %
+          </label>
+          <input
+            id="c-fail"
+            type="number"
+            step="0.5"
+            min="0"
+            max="100"
+            value={draft.failure_pct ?? ''}
+            onChange={num('failure_pct')}
+            placeholder="from your own logged runs"
+          />
+          <div className="hint">
+            Guma ships no figure for this, because yours is the only one worth costing against — log
+            your failed runs on their projects for a month and this becomes something you know
+            rather than something you picked. It is applied to material, power, wear and overhead,
+            not to your design hours: a failed plate does not make you model the part again.
+          </div>
+        </div>
+        <div className="notice" style={{ marginTop: 10 }}>
+          <span>
+            This never changes what a client is charged. It changes what you know you are earning.
+            If your margin looks thin once failures are counted, raise a rate deliberately — rather
+            than finding out later that every quote had quietly grown.
+          </span>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <button type="button" className="btn primary" onClick={() => void save()} disabled={!dirty || saving}>
+          {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
     </div>

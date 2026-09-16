@@ -27,6 +27,12 @@ const RATES: RateSet = {
   currency: 'USD',
   locale: 'en-US',
   electricityRateKwh: null,
+  // Null across the board: these fixtures predate the overhead and failure
+  // lines, and every figure they assert must be unchanged by adding them.
+  // That is the whole point of a null default — no shop's quote moves.
+  overheadMonthly: null,
+  productiveHoursMonth: null,
+  failurePct: null,
 }
 
 const PACF: MaterialRef = {
@@ -301,5 +307,113 @@ describe('electricity cost', () => {
     // the old pass-through assumption was hiding it, not being conservative.
     expect(round2(metered.margin)).toBe(258.2)
     expect(metered.margin).toBeGreaterThan(estimate.margin)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* The true cost of a print                                            */
+/* ------------------------------------------------------------------ */
+
+describe('what a print actually costs', () => {
+  /** The shop from the worked example, now with its real running costs on
+   *  file: 32c/kWh, EUR 2,400 a month of overhead across 300 billed
+   *  machine-hours, and one plate in twelve going wrong. */
+  const FULL: RateSet = {
+    ...RATES,
+    electricityRateKwh: 0.15,
+    overheadMonthly: 2400,
+    productiveHoursMonth: 300,
+    failurePct: 8,
+  }
+  /** The same printer with its wattage on file — without it there is no
+   *  honest power figure and the engine falls back, which is its own test
+   *  above. */
+  const METERED: PrinterRef = { ...XL, watts: 350 }
+  /** A material whose cost has been measured against real receipts rather
+   *  than typed once at setup. */
+  const PAID: MaterialRef = { ...PACF, costBasis: 'purchases' }
+
+  it('counts six things, not four', () => {
+    const q = priceQuote(MAST_BRACKETS, FULL, PACF, METERED)
+    expect(q.materialCost).toBeGreaterThan(0)
+    expect(q.electricityCost).toBeGreaterThan(0)
+    expect(q.wearAmt).toBeGreaterThan(0)
+    expect(q.overheadCost).toBeGreaterThan(0)
+    expect(q.failureCost).toBeGreaterThan(0)
+    expect(q.yourHours).toBeGreaterThan(0)
+    // And the total is exactly their sum — no rounding drift, nothing extra.
+    expect(q.totalCost).toBeCloseTo(
+      q.materialCost + q.electricityCost + q.wearAmt + q.overheadCost + q.failureCost + q.yourHours,
+      2,
+    )
+  })
+
+  it('allocates overhead per productive machine-hour', () => {
+    // EUR 2400 / 300 h = EUR 8/h. 21 machine-hours on this job.
+    const q = priceQuote(MAST_BRACKETS, FULL, PACF, METERED)
+    expect(q.overheadCost).toBeCloseTo(21 * 8, 2)
+  })
+
+  it('never divides by zero productive hours', () => {
+    // A shop that types 2400 and then 0 would otherwise have its entire
+    // month's rent allocated to one bracket.
+    const q = priceQuote(MAST_BRACKETS, { ...FULL, productiveHoursMonth: 0 }, PACF, METERED)
+    expect(q.overheadCost).toBe(0)
+    expect(Number.isFinite(q.totalCost)).toBe(true)
+    expect(q.missingCosts.map((m) => m.key)).toContain('overhead')
+  })
+
+  it('applies the failure allowance to machine-side cost, not to design hours', () => {
+    const q = priceQuote(MAST_BRACKETS, FULL, PACF, METERED)
+    const machineSide = q.materialCost + q.electricityCost + q.wearAmt + q.overheadCost
+    expect(q.failureCost).toBeCloseTo(machineSide * 0.08, 2)
+    // A failed plate does not make you model the part again, so counting
+    // design hours twice would overstate the loss on design-heavy jobs.
+    expect(q.failureCost).toBeLessThan((machineSide + q.yourHours) * 0.08)
+  })
+
+  it('leaves every existing quote alone when the new figures are not supplied', () => {
+    // The whole reason the columns default to null. A shop that upgrades
+    // must not find its margin has moved overnight.
+    const before = priceQuote(MAST_BRACKETS, RATES, PACF, XL)
+    expect(before.overheadCost).toBe(0)
+    expect(before.failureCost).toBe(0)
+    expect(round2(before.total)).toBe(1063.23)
+  })
+
+  it('names every cost it cannot measure, with the control that fixes it', () => {
+    const q = priceQuote(MAST_BRACKETS, RATES, PACF, XL)
+    const keys = q.missingCosts.map((m) => m.key)
+    expect(keys).toContain('overhead')
+    expect(keys).toContain('failure')
+    for (const m of q.missingCosts) {
+      // A missing line that does not say what would fill it in is just a
+      // complaint. Each one names a screen.
+      expect(m.fix).toMatch(/Shop settings|electricity rate|wattage/i)
+      expect(m.label.length).toBeGreaterThan(4)
+    }
+  })
+
+  it('says nothing is missing once everything is measured', () => {
+    const q = priceQuote(MAST_BRACKETS, FULL, PAID, METERED)
+    expect(q.missingCosts).toEqual([])
+  })
+
+  it('states a break-even price and a cost per piece', () => {
+    const q = priceQuote(MAST_BRACKETS, FULL, PACF, METERED)
+    expect(q.breakEven).toBeCloseTo(q.totalCost, 2)
+    expect(q.costPerUnit).toBeCloseTo(q.totalCost / q.qty, 2)
+    // Quoting at break-even earns exactly nothing, by definition.
+    expect(q.total - q.tax - q.totalCost).toBeCloseTo(q.margin, 2)
+  })
+
+  it('reports a smaller margin once the missing costs are filled in', () => {
+    // The point of the whole exercise: a shop that has not entered its
+    // overhead and its failure rate is being shown a margin it does not
+    // have.
+    const naive = priceQuote(MAST_BRACKETS, RATES, PACF, XL)
+    const honest = priceQuote(MAST_BRACKETS, FULL, PACF, METERED)
+    expect(honest.margin).toBeLessThan(naive.margin)
+    expect(honest.total).toBe(naive.total) // and the client pays the same
   })
 })

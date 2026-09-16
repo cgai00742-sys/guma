@@ -263,6 +263,9 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
         )}
       </div>
 
+      {jobs !== null && jobs.length === 0 ? (
+        <StartHere shop={ctx.shop} />
+      ) : (
       <div className="board">
         {columns.map((col) => (
           <section
@@ -312,6 +315,7 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
           </section>
         ))}
       </div>
+      )}
     </div>
   )
 }
@@ -454,5 +458,131 @@ function Kpi({
     >
       {body}
     </button>
+  )
+}
+
+/**
+ * The board, before there is anything on it.
+ *
+ * An empty board used to be seven empty columns each saying "Drop a project
+ * here", which tells a new owner nothing about what Guma is for or what to
+ * do first. This is the only screen in the app that gets to teach, because
+ * it is the only one a new shop is guaranteed to see — and it disappears
+ * for good the moment there is one project, which is the right lifespan for
+ * an instruction.
+ *
+ * The three steps are the real order of the work, not a feature tour: price
+ * something, tell Guma what it actually costs you, then log what it really
+ * took. The middle one is here because a shop that skips it gets a margin
+ * figure that is flattering and wrong, and will not find that out for a
+ * year.
+ */
+function StartHere({ shop }: { shop: ShopContext['shop'] }) {
+  const costsKnown =
+    shop.electricity_rate_kwh != null && shop.overhead_monthly != null && shop.failure_pct != null
+
+  const steps: { n: number; title: string; body: string; to?: string; cta?: string; done?: boolean }[] = [
+    {
+      n: 1,
+      title: 'Price a job',
+      body:
+        'Enter something you are quoting right now, or something you quoted last month and want to check. ' +
+        'The price builds line by line as you type — design time, material, machine hours, finishing — and ' +
+        'nothing is saved until you say so.',
+      to: '/intake',
+      cta: 'New project',
+    },
+    {
+      n: 2,
+      title: 'Tell Guma what it costs you to run',
+      body: costsKnown
+        ? 'Done — your electricity rate, your overhead and your failure allowance are all on file, so the cost figure on every quote is the real one.'
+        : 'Your electricity rate, your monthly overhead and what you lose to failed plates. Until these are in, ' +
+          'Guma counts them as nothing and every margin it shows you is better than the truth.',
+      to: '/settings',
+      cta: costsKnown ? 'Review them' : 'Fill these in',
+      done: costsKnown,
+    },
+    {
+      n: 3,
+      title: 'Take it in and work it',
+      body:
+        'A saved price is a draft and stays off this board. Take it in when the client says yes, and it appears ' +
+        'here at Intake with a short checklist for each stage. Log what the job actually took as you go, and the ' +
+        'project page will show you quoted against actual, line by line.',
+    },
+  ]
+
+  return (
+    <div className="pane" style={{ maxWidth: 720, marginTop: 4 }}>
+      <h3>Nothing here yet</h3>
+      <p style={{ fontSize: 14, color: 'var(--txt-2)', maxWidth: '64ch', margin: '0 0 4px' }}>
+        This board is where your projects live once they are real. Three things to do first — the
+        whole thing takes about ten minutes.
+      </p>
+
+      <ol style={{ listStyle: 'none', padding: 0, margin: '16px 0 0' }}>
+        {steps.map((s) => (
+          <li
+            key={s.n}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '30px minmax(0,1fr)',
+              gap: 14,
+              alignItems: 'start',
+              padding: '14px 0',
+              borderTop: '1px solid var(--line)',
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 26,
+                height: 26,
+                borderRadius: '50%',
+                display: 'grid',
+                placeItems: 'center',
+                fontFamily: 'var(--mono)',
+                fontSize: 12,
+                background: s.done ? 'var(--ok)' : 'var(--panel-2)',
+                color: s.done ? 'var(--panel)' : 'var(--txt-2)',
+                border: '1px solid var(--line)',
+              }}
+            >
+              {s.done ? '✓' : s.n}
+            </span>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{s.title}</div>
+              <div
+                style={{
+                  fontSize: 13,
+                  color: 'var(--txt-2)',
+                  lineHeight: 1.55,
+                  marginTop: 3,
+                  maxWidth: '62ch',
+                }}
+              >
+                {s.body}
+              </div>
+              {s.to && (
+                <Link
+                  to={s.to}
+                  className={s.n === 1 ? 'btn primary sm' : 'btn sm'}
+                  style={{ textDecoration: 'none', display: 'inline-flex', marginTop: 9 }}
+                >
+                  {s.cta}
+                </Link>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+
+      <div className="hint" style={{ marginTop: 14 }}>
+        Guma does not drive your printers and never will — that is OctoPrint's and Klipper's job. It
+        is the part that decides whether the shop survives: what a job costs you, what you charge,
+        and what is left.
+      </div>
+    </div>
   )
 }

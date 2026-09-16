@@ -23,9 +23,14 @@ Guma is that layer. It reads your machines; it does not drive them.
 
 - **Live quoting.** Enter a job in front of the client and watch the price build
   line by line — design time, material, machine time, wear, finishing.
-- **Cost and margin, for your eyes.** What the job costs *you*, with your own
-  hours counted at the rate you charge, so margin means what is left after
-  paying yourself.
+- **What the print actually costs you.** Six lines, not four: material at what
+  you really paid, the power this machine draws at your own tariff, a machine
+  wear reserve, a share of the overhead you pay whether or not it is running,
+  an allowance for the plates that fail, and your own hours at the rate you
+  charge. Plus cost per piece and the break-even price. Anything Guma cannot
+  measure is *named* rather than counted as zero — a cost total that looks
+  complete when two lines are silently missing reads as a margin you do not
+  have.
 - **A quote PDF** with your logo, the arithmetic behind every line, the deposit,
   your terms and a signature rule.
 - **Material priced at what you actually paid.** Log a spool purchase and Guma
@@ -52,7 +57,9 @@ Guma is that layer. It reads your machines; it does not drive them.
   and it is counted as the cost it is, because it burned material and machine
   time twice.
 - **Clients.** Not a rolodex: type, projects, active work, quoted value and what
-  they still owe, all derived from real rows.
+  they still owe, all derived from real rows. Add, edit and remove them
+  directly; a repeat job attaches to the client it belongs to instead of
+  creating a second one from a different spelling.
 
 **Knowing whether it was worth it**
 

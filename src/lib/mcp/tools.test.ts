@@ -250,12 +250,32 @@ describe('guma_price_quote', () => {
     expect(k.tool('guma_price_quote').writes).toBeFalsy()
   })
 
-  it('says so when the margin it would report is an estimate', async () => {
+  it('refuses to report a margin as fact while a cost line is missing', async () => {
     const k = await setup()
-    // No printer means no wattage, so machine time cannot be costed for real.
+    // No printer means no wattage; and this shop has entered no overhead and
+    // no failure allowance, so three of six cost lines are unmeasured.
     const q = await k.call('guma_price_quote', { ...JOB(k), printer_id: undefined })
     expect(q.costs_incomplete).toBe(true)
-    expect(q.note).toContain('estimate')
+    expect(q.note).toMatch(/understated|overstated/)
+    const keys = q.missing_costs.map((m: any) => m.key)
+    expect(keys).toContain('electricity')
+    expect(keys).toContain('overhead')
+    expect(keys).toContain('failure')
+    // Every one names the control that fixes it, not just the gap.
+    for (const m of q.missing_costs) expect(m.fix.length).toBeGreaterThan(20)
+  })
+
+  it('hands back the whole owner-only cost block, adding up', async () => {
+    const k = await setup()
+    const q = await k.call('guma_price_quote', JOB(k))
+    const c = q.cost
+    expect(c.total).toBeCloseTo(
+      c.material + c.electricity + c.machine_wear + c.overhead + c.failure_allowance + c.own_hours,
+      2,
+    )
+    expect(c.break_even).toBeCloseTo(c.total, 2)
+    expect(c.per_piece).toBeCloseTo(c.total / 12, 2)
+    expect(q.margin).toBeCloseTo(q.total - q.tax - c.total, 2)
   })
 })
 

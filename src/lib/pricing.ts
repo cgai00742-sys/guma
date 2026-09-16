@@ -47,6 +47,30 @@ export interface RateSet {
    * falls back to treating machine time as break-even until they do.
    */
   electricityRateKwh: number | null
+  /**
+   * Overhead the shop pays whether or not a machine is running — rent,
+   * insurance, software, internet, the building's own power. Allocated to
+   * jobs per productive machine-hour, which is the standard way and the
+   * only one that does not require inventing a number.
+   *
+   * Stored as the two figures an owner can actually answer rather than the
+   * one they cannot: nobody knows their "overhead per hour", everybody can
+   * add up a month of fixed bills and estimate the hours their machines
+   * run on paid work. Null until supplied; the cost panel says so instead
+   * of quietly costing overhead at zero.
+   */
+  overheadMonthly: number | null
+  productiveHoursMonth: number | null
+  /**
+   * What share of machine-side cost is lost to plates that fail — warps,
+   * clogs, shifts, power blips. A failed plate burns its material and its
+   * hours twice and earns once, so a shop that leaves this out has moved
+   * the loss somewhere it cannot see.
+   *
+   * It is a COST, never a surcharge: it changes what the shop knows it is
+   * earning, not what the client is asked to pay. Null until supplied.
+   */
+  failurePct: number | null
 }
 
 export interface MaterialRef {
@@ -149,11 +173,39 @@ export interface PricedQuote {
   deposit: number
   balance: number
   depositWaived: boolean
-  /** owner-only: never shown to a client */
+  /* --- owner-only, never shown to a client or printed on anything --- */
+  /** Overhead allocated to this job's machine hours. Zero when the shop has
+   *  not supplied both figures; `missingCosts` says which. */
+  overheadCost: number
+  /** The failure allowance on this job's machine-side costs. */
+  failureCost: number
+  /** Your own design and finishing hours, at the rate you charge for them. */
   yourHours: number
+  /** Everything above added up: what this job costs the shop to deliver. */
+  totalCost: number
+  /** The price at which this job earns exactly nothing, before tax. Quote
+   *  below this and the shop is paying to do the work. */
+  breakEven: number
+  /** What one piece costs to make. The figure a shop needs before agreeing
+   *  to "and can you do fifty more". */
+  costPerUnit: number
   margin: number
   marginPctOfTotal: number
+  /**
+   * Which cost inputs are not on file, so the panel can name them instead
+   * of presenting an incomplete total as a complete one. Empty means every
+   * cost in this quote is measured rather than assumed.
+   */
+  missingCosts: MissingCost[]
   qty: number
+}
+
+/** A cost Guma cannot compute yet, and the control that fixes it. */
+export interface MissingCost {
+  key: 'electricity' | 'overhead' | 'failure' | 'material'
+  label: string
+  /** Names the screen and field, in the shop's own words. */
+  fix: string
 }
 
 /** cost × the shop-wide multiplier, unless this material pins its own price. */
@@ -383,9 +435,70 @@ export function priceQuote(
     ? machineHours * ((printer!.watts as number) / 1000) * (rates.electricityRateKwh as number)
     : 0
   const costsIncomplete = needsElectricityData && !hasElectricityData
-  const margin = hasElectricityData
-    ? total - tax - materialCost - electricityCost - wearAmt - yourHours
-    : total - tax - materialCost - machineAmt - wearAmt - yourHours
+
+  // Overhead per productive machine-hour: a month of fixed bills divided by
+  // the machine-hours the shop actually bills in a month. Guarded against a
+  // zero denominator, which would otherwise allocate the shop's entire rent
+  // to one bracket.
+  const overheadPerHour =
+    rates.overheadMonthly != null &&
+    rates.productiveHoursMonth != null &&
+    rates.productiveHoursMonth > 0
+      ? rates.overheadMonthly / rates.productiveHoursMonth
+      : null
+  const overheadCost = overheadPerHour != null ? machineHours * overheadPerHour : 0
+
+  // The allowance applies to the MACHINE-side costs only. A failed plate
+  // burns its filament, its power, its wear and its share of the rent a
+  // second time; it does not usually make you model the part again, and
+  // counting design hours twice would overstate the loss on exactly the
+  // jobs where design dominates.
+  const machineSideCost =
+    materialCost + (hasElectricityData ? electricityCost : machineAmt) + wearAmt + overheadCost
+  const failureCost =
+    rates.failurePct != null && rates.failurePct > 0
+      ? (machineSideCost * rates.failurePct) / 100
+      : 0
+
+  const totalCost = machineSideCost + failureCost + yourHours
+  const margin = total - tax - totalCost
+
+  // Every cost Guma cannot measure yet, named with the control that fixes
+  // it. A total presented as complete when two of its lines are silently
+  // zero is worse than no total: it reads as a margin the shop does not
+  // have. Each `fix` names the screen and the field, in the shop's words.
+  const missingCosts: MissingCost[] = []
+  if (costsIncomplete) {
+    missingCosts.push({
+      key: 'electricity',
+      label: 'Power for the machines',
+      fix:
+        printer?.watts == null
+          ? `Set the wattage for ${printer ? printer.name : 'this printer'} under Shop settings → Machines.`
+          : 'Set your electricity rate under Shop settings → Identity.',
+    })
+  }
+  if (!byPiece && machineHours > 0 && overheadPerHour == null) {
+    missingCosts.push({
+      key: 'overhead',
+      label: 'Rent, software and the rest',
+      fix: 'Add your monthly overhead and your productive machine-hours under Shop settings → Cost of doing business.',
+    })
+  }
+  if (!byPiece && rates.failurePct == null) {
+    missingCosts.push({
+      key: 'failure',
+      label: 'Plates that fail',
+      fix: 'Set a failure allowance under Shop settings → Cost of doing business.',
+    })
+  }
+  if (material && material.costBasis === 'estimate' && materialCost > 0) {
+    missingCosts.push({
+      key: 'material',
+      label: 'What the filament really cost',
+      fix: `Log a spool purchase for ${material.name} under Shop settings → Materials — this is still the figure typed at setup.`,
+    })
+  }
 
   return {
     lines,
@@ -397,6 +510,12 @@ export function priceQuote(
     wearAmt,
     electricityCost,
     costsIncomplete,
+    overheadCost,
+    failureCost,
+    totalCost: round2(totalCost),
+    breakEven: round2(totalCost),
+    costPerUnit: round2(totalCost / qty),
+    missingCosts,
     finishingAmt,
     pieceAmt,
     byPiece,

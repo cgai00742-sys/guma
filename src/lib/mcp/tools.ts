@@ -152,7 +152,7 @@ export function buildTools(): ToolDef[] {
     {
       name: 'guma_price_quote',
       description:
-        'Price a job using the shop’s own rate card and Guma’s pricing engine, and return every line with the arithmetic behind it. This is the ONLY way to get a number out of Guma, and it writes nothing. Do not compute a price yourself and do not round, adjust or "sanity check" what comes back — the figures here are the ones the shop stands behind, including the minimum-order floor and the deposit rule.',
+        'Price a job using the shop’s own rate card and Guma’s pricing engine, and return every line with the arithmetic behind it, plus what the job actually COSTS the shop — material, power, machine wear, overhead, an allowance for failed plates, and their own hours. This is the ONLY way to get a number out of Guma, and it writes nothing. Do not compute a price yourself and do not round, adjust or "sanity check" what comes back. The cost block is owner-only and must never appear on anything a client sees; if missing_costs is non-empty, the cost is understated and the margin overstated, so say which lines are missing rather than quoting the margin as fact.',
       inputSchema: obj(QUOTE_PROPS),
       handler: async (a, ctx) => {
         const rates = toRateSet(ctx.rateCard, ctx.shop)
@@ -176,9 +176,29 @@ export function buildTools(): ToolDef[] {
           deposit_waived: q.depositWaived,
           balance: q.balance,
           per_unit: q.perUnit,
+          // Owner-only. Everything below is what the job COSTS the shop, and
+          // none of it belongs on anything a client sees.
+          cost: {
+            material: q.materialCost,
+            electricity: q.electricityCost,
+            machine_wear: q.wearAmt,
+            overhead: q.overheadCost,
+            failure_allowance: q.failureCost,
+            own_hours: q.yourHours,
+            total: q.totalCost,
+            per_piece: q.costPerUnit,
+            break_even: q.breakEven,
+          },
+          margin: q.margin,
+          margin_pct: Math.round(q.marginPctOfTotal * 100),
           costs_incomplete: q.costsIncomplete,
-          note: q.costsIncomplete
-            ? 'Margin on this job is an estimate: the printer wattage or the shop’s electricity rate is not on file, so machine time is costed at break-even. Say so if you report a margin.'
+          // Each entry names a cost Guma cannot measure and the field that
+          // would fix it. When this is non-empty the cost total is LOWER
+          // than the truth and the margin higher — say so rather than
+          // reporting the margin as fact.
+          missing_costs: q.missingCosts,
+          note: q.missingCosts.length
+            ? 'Some of this shop’s costs are not on file, so total cost is understated and margin overstated. Name what is missing rather than quoting the margin as fact.'
             : null,
         }
       },

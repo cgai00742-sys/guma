@@ -40,6 +40,15 @@ export interface Shop {
   lead_days: number
   /** $/kWh off the shop's own utility bill. Null until they supply it. */
   electricity_rate_kwh: number | null
+  /** What the shop pays every month whether or not a machine runs — rent,
+   *  insurance, software, internet. Null until supplied. */
+  overhead_monthly: number | null
+  /** Machine-hours the shop actually bills in a typical month. The
+   *  denominator that turns the figure above into a per-hour cost. */
+  productive_hours_month: number | null
+  /** Share of machine-side cost lost to failed plates, as a percentage.
+   *  A cost the shop absorbs, never a surcharge added to a quote. */
+  failure_pct: number | null
   /** 'letter' | 'a4' | 'legal', or null meaning "derive it from the locale"
    *  -- see src/lib/locale.ts. Null is not a synonym for Letter. */
   paper: string | null
@@ -117,6 +126,13 @@ export function toRateSet(card: RateCardRow, shop: Shop): RateSet {
     currency: shop.currency || osCurrency(),
     locale: shop.locale || osLocale(),
     electricityRateKwh: shop.electricity_rate_kwh == null ? null : Number(shop.electricity_rate_kwh),
+    // Null, not zero. Zero would claim the shop pays no rent and never
+    // fails a plate, and would present an incomplete cost as a complete
+    // one; null makes the cost panel name what is missing instead.
+    overheadMonthly: shop.overhead_monthly == null ? null : Number(shop.overhead_monthly),
+    productiveHoursMonth:
+      shop.productive_hours_month == null ? null : Number(shop.productive_hours_month),
+    failurePct: shop.failure_pct == null ? null : Number(shop.failure_pct),
   }
 }
 
@@ -154,6 +170,23 @@ export interface ShopIdentityInput {
   locale: string
   /** '' means "follow the locale". */
   paper: string
+}
+
+/**
+ * Everything that decides what a job COSTS, as opposed to what it sells for.
+ *
+ * Kept as one input and one screen on purpose. These four numbers were
+ * scattered — electricity under Identity, the other three not asked at all —
+ * and a shop cannot see whether its cost figure is trustworthy when the
+ * things that make it trustworthy live in three places. Every one of them
+ * may be null: a blank says "not supplied" and the cost panel names it,
+ * where a zero would quietly claim the shop pays no rent.
+ */
+export interface ShopCostsInput {
+  electricity_rate_kwh: number | null
+  overhead_monthly: number | null
+  productive_hours_month: number | null
+  failure_pct: number | null
 }
 
 export interface ShopQuoteTermsInput {

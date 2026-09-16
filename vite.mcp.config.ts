@@ -20,6 +20,11 @@ import { defineConfig } from 'vite'
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 
 export default defineConfig({
+  // No public/ copy. This is a Node command, not a web app: without this
+  // vite drops the brand SVGs, the fonts and Cloudflare's _headers file
+  // next to the server bundle, which is confusing at best and, on a machine
+  // where those files are read-only, fails the build outright.
+  publicDir: false,
   build: {
     ssr: true,
     target: 'node22',

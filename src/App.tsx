@@ -175,7 +175,9 @@ export default function App() {
           </div>
         ) : (
           <Routes>
-            <Route path="/" element={<Navigate to="/intake" replace />} />
+            {/* Home is the work. A project-management tool that opens on an
+                empty form is telling you its real subject is quoting. */}
+            <Route path="/" element={<Navigate to="/projects" replace />} />
             <Route path="/intake" element={<Intake ctx={ctx} />} />
             <Route path="/projects" element={<Projects ctx={ctx} />} />
             {/* The two screens Projects absorbed. Kept as redirects so any
@@ -185,7 +187,7 @@ export default function App() {
             <Route path="/project/:jobId" element={<Project ctx={ctx} />} />
             <Route path="/clients" element={<Clients ctx={ctx} />} />
             <Route path="/settings" element={<Settings ctx={ctx} onSaved={refresh} />} />
-            <Route path="*" element={<Navigate to="/intake" replace />} />
+            <Route path="*" element={<Navigate to="/projects" replace />} />
           </Routes>
         )}
       </main>
@@ -237,12 +239,24 @@ function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean })
               </div>
             </div>
           </div>
+          {/* Three places and one action. "New project" was a tab, which
+              made a blank form the shop's home screen and put starting
+              something on the same footing as looking at everything you
+              have — a quoting app's shape, not a project manager's. It is a
+              button now, and it is always one click away from wherever you
+              are. */}
           <div className="tabs" style={{ border: 'none' }}>
-            {tab('/intake', 'New project')}
             {tab('/projects', 'Projects')}
             {tab('/clients', 'Clients')}
             {tab('/settings', 'Shop settings')}
           </div>
+          <Link
+            to="/intake"
+            className="btn primary sm"
+            style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', whiteSpace: 'nowrap' }}
+          >
+            + New project
+          </Link>
           <span className="who">
             <b>{ctx?.profile.full_name ?? ''}</b>
           </span>

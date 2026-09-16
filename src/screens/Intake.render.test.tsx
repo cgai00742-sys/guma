@@ -20,11 +20,12 @@ const nextJobRef = vi.fn(async () => 'GUMA-2026-0007')
 // copy of it.
 const saveQuote = vi.fn(async (_args: any): Promise<any> => ({ jobId: 'job-7', quoteId: 'q-7' }))
 const takeProjectIn = vi.fn(async () => {})
+const listClients = vi.fn(async (): Promise<any[]> => [])
 const navigate = vi.fn()
 
 vi.mock('../lib/data', async () => {
   const types = await import('../lib/data.types')
-  return { nextJobRef, saveQuote, takeProjectIn, toRateSet: types.toRateSet }
+  return { nextJobRef, saveQuote, takeProjectIn, listClients, toRateSet: types.toRateSet }
 })
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
@@ -152,6 +153,38 @@ describe('what each button actually does', () => {
     release()
     await waitFor(() => expect(takeProjectIn).toHaveBeenCalledTimes(1))
     expect(saveQuote).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('picking a client who already exists', () => {
+  it('offers no picker at all when the shop has none yet, and says so', async () => {
+    await renderIntake()
+    expect(screen.queryByLabelText(/pick an existing client/i)).toBeNull()
+    expect(screen.getByText(/your first client/i)).toBeDefined()
+  })
+
+  it('lists existing clients and carries their details across', async () => {
+    listClients.mockResolvedValueOnce([
+      { id: 'c1', name: 'Hafen GmbH', kind: 'business', contact: 'Ilse Braun', email: 'ilse@hafen.de', phone: '+49 30 1', projects: 3, active: 1, value: 4200, owed: 0, lastActivity: null },
+    ])
+    await renderIntake()
+    const picker = await screen.findByLabelText(/pick an existing client/i)
+    const user = userEvent.setup()
+    await user.selectOptions(picker, 'Hafen GmbH')
+
+    // The whole point: a repeat job joins the ledger it belongs to rather
+    // than creating a second client from a different spelling.
+    expect((screen.getByLabelText(/^client/i) as HTMLInputElement).value).toBe('Hafen GmbH')
+    expect(screen.getByText(/joins their existing ledger/i)).toBeDefined()
+
+    await user.type(screen.getByLabelText(/project title|title/i), 'Deck cleats')
+    await user.click(screen.getByRole('button', { name: /^save draft$/i }))
+    await waitFor(() => expect(saveQuote).toHaveBeenCalledTimes(1))
+    expect(saveQuote.mock.calls[0]![0].client).toMatchObject({
+      name: 'Hafen GmbH',
+      contact: 'Ilse Braun',
+      email: 'ilse@hafen.de',
+    })
   })
 })
 

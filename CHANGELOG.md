@@ -2,6 +2,88 @@
 
 Notable changes, newest first. Dates are the day the work landed.
 
+## Unreleased
+
+The first round of changes driven by someone actually using the app rather
+than reading its tests.
+
+### You can add and remove clients
+
+A client used to come into existence only as a side effect of saving a quote.
+That made the Clients screen a history of who you had already billed rather
+than a list of who you work with — you could not enter the people you already
+know, fix a name typed wrong on the first job, or remove one created by a
+typo. All three work now, and intake has a picker so a repeat job joins the
+ledger it belongs to instead of creating a second client from a different
+spelling.
+
+Deleting a client who has projects is refused, on purpose, and says how many
+are in the way. `jobs.client_id` does not cascade: a cascade would mean that
+tidying up a typo in the client list silently deleted payments the shop had
+actually received.
+
+### What a print really costs
+
+Guma counted four costs — material, power, machine wear, your own hours — and
+silently treated two of the largest as zero.
+
+- **Overhead.** Rent, insurance, software, internet, the building's own power.
+  Paid whether or not a machine runs, and paid out of job margin. Allocated
+  per productive machine-hour, from two figures a shop can actually answer:
+  a month of fixed bills, and the machine-hours it really bills in a month.
+- **Failed plates.** A failed plate burns its material and its hours twice and
+  earns once. An allowance for it is standard in every serious costing guide
+  for print services, and a shop that leaves it out has moved the loss
+  somewhere it cannot see. Applied to material, power, wear and overhead — not
+  to design hours, since a failed plate does not make you model the part again.
+
+On the worked example the effect is not marginal. The same €1,205.90 job that
+showed €257 of margin shows **€65 once overhead and failures are counted** —
+25% down to 5%. Nothing about the quote changed; only what the shop knows.
+
+Both default to blank, and blank is not zero: an unsupplied cost is *named*
+on the quote's cost panel with the field that would fill it in, and the total
+says it is incomplete. **Neither changes what a client is charged.** A shop
+whose margin looks thin once failures are counted raises a rate deliberately,
+rather than finding out later that every quote had quietly grown.
+
+### Fixed: the cost panel was overstating cost
+
+It listed the machine's hourly *rate* as a cost. That rate is a price the shop
+chose, not money it spends — so every shop that had filled in its electricity
+rate was shown a cost higher than the truth and a margin lower than it, which
+is the direction of error that makes a shop turn down work it should take.
+
+The panel is now a real breakdown: every cost line, a total, cost per piece,
+the break-even price, and what you keep.
+
+### The app opens on the work
+
+"New project" was a tab, which made a blank form the shop's home screen and
+put *starting* something on the same footing as looking at everything you
+have — a quoting app's shape, not a project manager's. Projects is home; New
+project is a button, one click from anywhere.
+
+An empty board now teaches instead of showing seven empty columns: three
+numbered steps in the order the work actually happens, with the middle one
+being "tell Guma what it costs you to run", because a shop that skips it gets
+a flattering margin and will not find out for a year. It disappears for good
+once there is one project.
+
+Every cost input is on one Settings tab — *What it costs you* — rather than
+one buried under Identity and three never asked at all.
+
+### Also
+
+- `guma_price_quote` over MCP returns the full owner-only cost block, and
+  refuses to report a margin as fact while any cost line is missing.
+- The MCP build no longer copies the web app's `public/` folder into the
+  server bundle.
+- 234 tests, up from 211, including a render suite for the Clients screen —
+  written because two hundred passing tests never noticed you could not add a
+  client, since every one of them tested what the code did rather than what a
+  person could do with it.
+
 ## 1.0.0 — 2026-09-03
 
 The first release meant to be installed by someone who is not the author.

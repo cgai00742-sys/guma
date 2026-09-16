@@ -59,6 +59,12 @@ pub fn run() {
       sql: include_str!("../migrations/0009_paper.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 10,
+      description: "true cost: overhead allocation and a failure allowance",
+      sql: include_str!("../migrations/0010_true_cost.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

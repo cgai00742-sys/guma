@@ -34,6 +34,7 @@ import type {
   ShopContext,
   SetupPayload,
   ShopIdentityInput,
+  ShopCostsInput,
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
@@ -94,6 +95,7 @@ export type {
   ShopContext,
   SetupPayload,
   ShopIdentityInput,
+  ShopCostsInput,
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
@@ -157,6 +159,10 @@ export async function saveRateCard(
 
 export async function saveShopIdentity(shopId: string, next: ShopIdentityInput): Promise<Shop> {
   return (await backend()).saveShopIdentity(shopId, next)
+}
+
+export async function saveShopCosts(shopId: string, next: ShopCostsInput): Promise<Shop> {
+  return (await backend()).saveShopCosts(shopId, next)
 }
 
 export async function saveShopQuoteTerms(shopId: string, next: ShopQuoteTermsInput): Promise<Shop> {
@@ -237,6 +243,14 @@ export async function updateProjectFields(
 
 export async function listClients(shopId: string): Promise<ClientRow[]> {
   return (await backend()).listClients(shopId)
+}
+
+export async function createClient(shopId: string, input: ClientEditInput): Promise<string> {
+  return (await backend()).createClient(shopId, input)
+}
+
+export async function deleteClient(shopId: string, clientId: string): Promise<void> {
+  return (await backend()).deleteClient(shopId, clientId)
 }
 
 export async function updateClientRecord(

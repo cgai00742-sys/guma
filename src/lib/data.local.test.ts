@@ -233,6 +233,106 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(after.shop.paper).toBeNull()
   })
 
+  it('adds, edits and removes a client without a project existing', async () => {
+    // Until this existed the ONLY way a client came into being was as a
+    // side effect of saving a quote, so a shop could not enter the people
+    // it already works with, or fix a name typed wrong on the first job.
+    const local = await import('./data.local')
+    await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+
+    const id = await local.createClient(ctx.shop.id, {
+      name: 'Hafen GmbH',
+      kind: 'business',
+      contact: 'Ilse Braun',
+      email: 'ilse@hafen.de',
+    })
+    let rows = await local.listClients(ctx.shop.id)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ name: 'Hafen GmbH', kind: 'business', contact: 'Ilse Braun' })
+    expect(rows[0]!.projects).toBe(0)
+
+    await local.updateClientRecord(ctx.shop.id, id, { name: 'Hafen GmbH & Co', phone: '+49 30 1' })
+    rows = await local.listClients(ctx.shop.id)
+    expect(rows[0]!.name).toBe('Hafen GmbH & Co')
+    expect(rows[0]!.phone).toBe('+49 30 1')
+
+    await local.deleteClient(ctx.shop.id, id)
+    expect(await local.listClients(ctx.shop.id)).toHaveLength(0)
+  })
+
+  it('refuses a second client with the same name, whatever the casing', async () => {
+    // Two clients with one name is how a balance owed goes missing: half
+    // the ledger sits under each.
+    const local = await import('./data.local')
+    await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    await local.createClient(ctx.shop.id, { name: 'Hafen GmbH' })
+    await expect(local.createClient(ctx.shop.id, { name: 'hafen gmbh' })).rejects.toThrow(/already have/i)
+    await expect(local.createClient(ctx.shop.id, { name: '   ' })).rejects.toThrow(/needs a name/i)
+  })
+
+  it('refuses to delete a client who has projects, and says how many', async () => {
+    // jobs.client_id deliberately does NOT cascade: a cascade here would
+    // take real payments with it when someone tidies up a typo.
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const ref = await local.nextJobRef(shopId)
+    await local.saveQuote({
+      shopId,
+      ref,
+      client: { name: 'Hafen GmbH', contact: '', email: '', phone: '', source: '' },
+      job: { title: 'Mast brackets', brief: '', neededBy: null, assetOrigin: 'model' },
+      quote: {
+        design_billing: 'hourly', design_qty: 6, revisions_incl: 2, quantity: 12,
+        material_id: ctx.materials[0]!.id, printer_id: ctx.printers[0]!.id,
+        units_per_part: 62, print_hrs_part: 1.75, finishing_hrs: 2,
+        rush: false, flat_each: 0, discount_pct: 0,
+      },
+    })
+    const [client] = await local.listClients(shopId)
+    expect(client!.projects).toBe(1)
+
+    await expect(local.deleteClient(shopId, client!.id)).rejects.toThrow(/1 project/)
+    // And nothing was taken: the refusal is a refusal, not a partial delete.
+    expect(await local.listClients(shopId)).toHaveLength(1)
+    expect(await local.listJobs(shopId)).toHaveLength(1)
+  })
+
+  it('stores the cost-of-doing-business figures, and keeps null as null', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+
+    let ctx = await local.loadShopContext()
+    // Nothing supplied at setup, and null must not become zero: zero would
+    // claim the shop pays no rent and never fails a plate.
+    expect(ctx.shop.overhead_monthly).toBeNull()
+    expect(ctx.shop.failure_pct).toBeNull()
+    expect(local.toRateSet(ctx.rateCard, ctx.shop).overheadMonthly).toBeNull()
+
+    await local.saveShopCosts(shopId, {
+      electricity_rate_kwh: 0.32,
+      overhead_monthly: 2400,
+      productive_hours_month: 300,
+      failure_pct: 8,
+    })
+    ctx = await local.loadShopContext()
+    expect(ctx.shop.overhead_monthly).toBe(2400)
+    expect(ctx.shop.productive_hours_month).toBe(300)
+    expect(ctx.shop.failure_pct).toBe(8)
+
+    // And they can be cleared back to "not supplied" again.
+    await local.saveShopCosts(shopId, {
+      electricity_rate_kwh: 0.32,
+      overhead_monthly: null,
+      productive_hours_month: null,
+      failure_pct: null,
+    })
+    ctx = await local.loadShopContext()
+    expect(ctx.shop.overhead_monthly).toBeNull()
+  })
+
   it('assigns sequential job refs per year', async () => {
     const local = await import('./data.local')
     const shopId = await local.setupShop(SETUP_PAYLOAD)
