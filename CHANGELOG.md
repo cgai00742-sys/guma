@@ -246,6 +246,46 @@ been a regression against that — and against the multi-timezone test sweep
 that exists specifically to catch it (`npm run test:tz`, six zones from
 UTC-10 to UTC+14).
 
+### A setup that walks you through it, and can be come back to
+
+Setup asked three thin steps and then handed over the whole application:
+six screens, a rate card, a pipeline board, a quote engine, with most of
+what decides a margin still blank. The program then looked like it was
+working — quotes came out, totals added up — while quietly reporting
+break-even machine time and free material, because nobody had been walked
+through the fields those depend on.
+
+There is now a setup guide. It is not a first-run gate: it knows what is
+already answered, starts on the first thing that is not, saves each section
+as you leave it, and can be reopened at any point from the banner on
+Projects. A setup that only exists before the shop does is a setup that
+punishes you for not knowing the answers on day one.
+
+One decision per screen. The way a setup screen overwhelms somebody is not
+by having too many steps, it is by putting nine unrelated fields on one of
+them — so each section asks about one thing, says in a line what that thing
+decides downstream, and shows what it just changed.
+
+And a missing cost input is never described as neutral. "Electricity rate —
+optional" is a field people skip; "Guma refuses to guess, so it prices
+machine time at break-even and every margin you see is a floor rather than a
+figure" is a decision they get to make on purpose. `setupPlan.ts` holds
+those consequences, marks which gaps actively distort a number rather than
+merely being unset, and is pure so the guide, the banner and the tests all
+read the same answer.
+
+### In-house work, where the decision actually gets made
+
+The previous release added in-house jobs and put them behind their own
+button. Wrong place: the question "is this for a client or for us?" belongs
+in New project, which is where somebody is standing when they need to answer
+it. The client picker now offers in-house directly; choosing it drops the
+client requirement, hides the quote machinery, and collapses three save
+buttons to one, because a quote, a PDF and a deposit are all meaningless for
+work nobody is paying for. Before this, the only way to record a test print
+was to invent a client called "In-house", who then sat in the client list
+being counted as a customer with a receivable.
+
 ### Work nobody is paying for
 
 Guma could only ever see a job with a client on the other end of it. Test

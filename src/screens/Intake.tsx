@@ -37,6 +37,7 @@ import {
   type QuoteInputs,
 } from '../lib/pricing'
 import {
+  createInHouseJob,
   listClients,
   nextJobRef,
   saveQuote,
@@ -57,6 +58,11 @@ const ASSET_NOTES: Record<AssetOrigin, string> = {
 }
 
 const SOURCES = ['Word of mouth', 'Repeat client', 'Referral', 'Walk-in', 'Website enquiry']
+
+/** The sentinel the client picker uses for work with no client. Not a
+ *  client name: picking it switches this screen into in-house mode, where
+ *  there is nothing to price and nobody to bill. */
+const IN_HOUSE = '\u0000in-house'
 
 export default function Intake({ ctx }: { ctx: ShopContext }) {
   const navigate = useNavigate()
@@ -111,7 +117,18 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   const [materialId, setMaterialId] = useState(ctx.materials[0]?.id ?? '')
   const [printerId, setPrinterId] = useState(ctx.printers[0]?.id ?? '')
 
-  const [saving, setSaving] = useState<'idle' | 'draft' | 'intake' | 'send'>('idle')
+  /**
+   * Who this job is for, asked before anything else.
+   *
+   * In-house work used to be unreachable from here: the client field was
+   * required, so the only way to record a test print was to invent a client
+   * called "In-house" — which then sat in the client list forever, counted
+   * as a customer, and had a receivable. Making it an option in the client
+   * picker rather than a second button elsewhere puts the choice where the
+   * decision actually gets made, and keeps one way in rather than two.
+   */
+  const inHouse = client === IN_HOUSE
+  const [saving, setSaving] = useState<'idle' | 'draft' | 'intake' | 'send' | 'inhouse'>('idle')
   const [error, setError] = useState<string | null>(null)
 
   const material = ctx.materials.find((m) => m.id === materialId) ?? null
@@ -130,7 +147,11 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   )
 
   const unitWord = material?.unit === 'ml' ? 'Millilitres' : 'Grams'
-  const canSave = client.trim().length > 0 && title.trim().length > 0
+  // In-house work needs a title and nothing else. There is no client to
+  // name and no quote to price, and every extra requirement here is a
+  // reason not to log the ten-minute experiment that, forty times over, is
+  // where the month actually went.
+  const canSave = title.trim().length > 0 && (inHouse || client.trim().length > 0)
 
   /**
    * Three ways out, because there are three different intentions.
@@ -143,13 +164,33 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
    *   send    Take it in and open the printable, because handing a client
    *           a quote is itself the act of committing to it.
    */
-  async function persist(mode: 'draft' | 'intake' | 'send') {
+  async function persist(mode: 'draft' | 'intake' | 'send' | 'inhouse') {
     if (!canSave) {
-      setError('A client name and a project title are needed before this can be saved.')
+      setError(
+        inHouse
+          ? 'Give it a title — what are you working on?'
+          : 'A client name and a project title are needed before this can be saved.',
+      )
       return
     }
     setSaving(mode)
     setError(null)
+
+    // In-house work takes the short path: there is no quote to price, no
+    // client to create and no rates to freeze, so none of the machinery
+    // below applies. It lands straight on the board at design.
+    if (mode === 'inhouse') {
+      try {
+        const jobId = await createInHouseJob(ctx.shop.id, { title: title.trim(), brief })
+        navigate(`/project/${jobId}`)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setSaving('idle')
+      }
+      return
+    }
+
     try {
 
 
@@ -239,50 +280,72 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                   : { borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)', color: 'var(--warn)' }
               }
             >
-              {canSave ? 'Ready to save' : 'Pending — needs a client and project title'}
+              {canSave
+                ? 'Ready to save'
+                : inHouse
+                  ? 'Pending — needs a title'
+                  : 'Pending — needs a client and project title'}
             </span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => persist('draft')}
-            disabled={saving !== 'idle' || !canSave}
-            title={
-              canSave
-                ? 'Saves the price and the details, and leaves it off the board. Nothing is committed to.'
-                : 'Add a client name and a project title first.'
-            }
-          >
-            {saving === 'draft' ? 'Saving…' : 'Save draft'}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => persist('send')}
-            disabled={saving !== 'idle' || !canSave}
-            title={
-              canSave
-                ? "Takes it in and opens the printable. Freezes today's rates onto the quote, so a later rate change can never move a number the client is holding. Guma doesn't email anything — the PDF is yours to send however you like."
-                : 'Add a client name and a project title first.'
-            }
-          >
-            {saving === 'send' ? 'Preparing…' : 'Save as PDF'}
-          </button>
-          <button
-            type="button"
-            className="btn primary"
-            onClick={() => persist('intake')}
-            disabled={saving !== 'idle' || !canSave}
-            title={
-              canSave
-                ? 'Takes it in as a real project. It lands on the board at Intake and starts working through the gates.'
-                : 'Add a client name and a project title first.'
-            }
-          >
-            {saving === 'intake' ? 'Taking in…' : 'Intake →'}
-          </button>
+          {inHouse ? (
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => persist('inhouse')}
+              disabled={saving !== 'idle' || !canSave}
+              title={
+                canSave
+                  ? 'Starts it as in-house work. No quote, no client, no invoice — record what it takes as you go.'
+                  : 'Give it a title first.'
+              }
+            >
+              {saving === 'inhouse' ? 'Starting…' : 'Start it'}
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => persist('draft')}
+                disabled={saving !== 'idle' || !canSave}
+                title={
+                  canSave
+                    ? 'Saves the price and the details, and leaves it off the board. Nothing is committed to.'
+                    : 'Add a client name and a project title first.'
+                }
+              >
+                {saving === 'draft' ? 'Saving…' : 'Save draft'}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => persist('send')}
+                disabled={saving !== 'idle' || !canSave}
+                title={
+                  canSave
+                    ? "Takes it in and opens the printable. Freezes today's rates onto the quote, so a later rate change can never move a number the client is holding. Guma doesn't email anything — the PDF is yours to send however you like."
+                    : 'Add a client name and a project title first.'
+                }
+              >
+                {saving === 'send' ? 'Preparing…' : 'Save as PDF'}
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => persist('intake')}
+                disabled={saving !== 'idle' || !canSave}
+                title={
+                  canSave
+                    ? 'Takes it in as a real project. It lands on the board at Intake and starts working through the gates.'
+                    : 'Add a client name and a project title first.'
+                }
+              >
+                {saving === 'intake' ? 'Taking in…' : 'Intake →'}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -307,12 +370,14 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             <div className="grid2">
               <div className="fld">
                 <label className="lbl" htmlFor="q-client">
-                  Client *
+                  {inHouse ? 'Who it is for' : 'Client *'}
                 </label>
                 {clients.length > 0 && (
                   <select
                     aria-label="Pick an existing client"
-                    value={clients.some((c) => c.name === client) ? client : ''}
+                    value={
+                      client === IN_HOUSE || clients.some((c) => c.name === client) ? client : ''
+                    }
                     style={{ marginBottom: 6 }}
                     onChange={(e) => {
                       const hit = clients.find((c) => c.name === e.target.value)
@@ -328,6 +393,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                     }}
                   >
                     <option value="">— someone new —</option>
+                    <option value={IN_HOUSE}>— in-house / R&D · no client, no quote —</option>
                     {clients.map((c) => (
                       <option key={c.id} value={c.name}>
                         {c.name}
@@ -336,14 +402,27 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                     ))}
                   </select>
                 )}
-                <input
-                  id="q-client"
-                  value={client}
-                  onChange={(e) => setClient(e.target.value)}
-                  placeholder="Who is paying"
-                />
+                {inHouse ? (
+                  <div className="guide" style={{ marginTop: 0 }}>
+                    <div className="guide-g">
+                      <div className="guide-h"><span className="guide-tag">In-house</span></div>
+                      <div className="guide-note">
+                        Nobody is paying for this one. There is no quote and no invoice — log the
+                        runs and hours against it as you go, and Guma counts what your own work
+                        costs you and what share of your week is actually billable.
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <input
+                    id="q-client"
+                    value={client}
+                    onChange={(e) => setClient(e.target.value)}
+                    placeholder="Who is paying"
+                  />
+                )}
                 <ClientFieldHint
-                  typed={client}
+                  typed={inHouse ? '' : client}
                   clients={clients}
                   onPick={(c) => {
                     setClient(c.name)

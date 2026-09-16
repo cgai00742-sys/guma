@@ -56,11 +56,10 @@ let seen: string[] = []
 const listJobs = vi.fn(async () => jobs)
 const listGuideSeen = vi.fn(async () => seen)
 const markGuideSeen = vi.fn(async (_s: string, _c: string) => {})
-const createInHouseJob = vi.fn(async (_s: string, _i: any) => 'job-new')
 
 vi.mock('../lib/data', async () => {
   const types = await import('../lib/data.types')
-  return { ...types, listJobs, listGuideSeen, markGuideSeen, createInHouseJob }
+  return { ...types, listJobs, listGuideSeen, markGuideSeen }
 })
 
 async function renderJobs() {
@@ -131,46 +130,5 @@ describe('dismissing means dismissed', () => {
 
     await user.click(screen.getByRole('button', { name: /start an in-house job/i }))
     await waitFor(() => expect(markGuideSeen).toHaveBeenCalledWith('shop-1', 'in-house'))
-    // and it opened the thing it offered
-    expect(await screen.findByLabelText(/what are you working on/i)).toBeDefined()
-  })
-})
-
-describe('starting an in-house job', () => {
-  it('needs only a title, and sends what was typed', async () => {
-    const user = userEvent.setup()
-    await renderJobs()
-
-    await user.click(screen.getByRole('button', { name: /^in-house job$/i }))
-    const title = await screen.findByLabelText(/what are you working on/i)
-
-    // Nothing to submit until it is named -- and nothing else is required.
-    expect((screen.getByRole('button', { name: /start it/i }) as HTMLButtonElement).disabled).toBe(
-      true,
-    )
-    await user.type(title, 'Calibrating the new PETG')
-    expect((screen.getByRole('button', { name: /start it/i }) as HTMLButtonElement).disabled).toBe(
-      false,
-    )
-
-    await user.click(screen.getByRole('button', { name: /start it/i }))
-    await waitFor(() =>
-      expect(createInHouseJob).toHaveBeenCalledWith('shop-1', {
-        title: 'Calibrating the new PETG',
-        brief: '',
-      }),
-    )
-  })
-
-  it('shows a refusal instead of failing silently', async () => {
-    createInHouseJob.mockRejectedValueOnce(new Error('Database is not open'))
-    const user = userEvent.setup()
-    await renderJobs()
-
-    await user.click(screen.getByRole('button', { name: /^in-house job$/i }))
-    await user.type(await screen.findByLabelText(/what are you working on/i), 'A test')
-    await user.click(screen.getByRole('button', { name: /start it/i }))
-
-    expect(await screen.findByText('Database is not open')).toBeDefined()
   })
 })

@@ -29,8 +29,8 @@ import SearchField from '../components/SearchField'
 import { filterBy } from '../lib/search'
 import { asSearchItem } from '../lib/searchItems'
 import GuideModal from '../components/GuideModal'
-import InHouseDialog from '../components/InHouseDialog'
 import { useGuide } from '../lib/useGuide'
+import { planFor } from '../lib/setupPlan'
 
 type SortKey = 'saved' | 'stage' | 'due' | 'value' | 'owed' | 'flags'
 type Show = 'live' | 'drafts' | 'all'
@@ -63,7 +63,6 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
 
   const [jobs, setJobs] = useState<JobListRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [newInHouse, setNewInHouse] = useState(false)
 
   /**
    * What Guma knows about this shop, for deciding whether it has anything
@@ -89,6 +88,23 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
     [jobs, ctx.printerRows, ctx.shop.electricity_rate_kwh],
   )
   const { chapter, dismiss } = useGuide(ctx.shop.id, guideState)
+
+  /**
+   * How far through setting up this shop is. Shown here rather than buried
+   * in settings because this is the screen somebody opens the program on,
+   * and a half-configured shop reports margins that cannot be true without
+   * saying so anywhere.
+   */
+  const plan = useMemo(
+    () =>
+      planFor({
+        shop: ctx.shop,
+        rateCard: ctx.rateCard,
+        printerRows: ctx.printerRows,
+        materials: ctx.materials as never,
+      }),
+    [ctx],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -191,9 +207,6 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
           </div>
         </div>
         {viewSwitch}
-        <button type="button" className="btn" onClick={() => setNewInHouse(true)}>
-          In-house job
-        </button>
         <Link to="/intake" className="btn primary" style={{ textDecoration: 'none' }}>
           New project
         </Link>
@@ -204,20 +217,30 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
         onClose={dismiss}
         onAction={(id) => {
           dismiss(id)
-          if (id === 'in-house') setNewInHouse(true)
+          if (id === 'in-house') navigate('/intake')
           if (id === 'machine-cost') navigate('/settings?tab=machines')
         }}
       />
 
-      <InHouseDialog
-        open={newInHouse}
-        shopId={ctx.shop.id}
-        onCancel={() => setNewInHouse(false)}
-        onCreated={(jobId) => {
-          setNewInHouse(false)
-          navigate(`/project/${jobId}`)
-        }}
-      />
+
+
+      {!plan.done && (
+        <div className={plan.distorting.length > 0 ? 'attn crit' : 'notice'}>
+          <span>
+            <b>
+              {plan.distorting.length > 0
+                ? 'Your numbers are not right yet.'
+                : `${Math.round(plan.completeness * 100)}% set up.`}
+            </b>{' '}
+            {plan.distorting.length > 0
+              ? plan.distorting[0].cost
+              : `Still to do: ${plan.remaining.map((s) => s.title.toLowerCase()).join(', ')}.`}{' '}
+            <button type="button" className="addnote" onClick={() => navigate('/setup-guide')}>
+              {plan.distorting.length > 0 ? 'fix it now' : 'carry on setting up'}
+            </button>
+          </span>
+        </div>
+      )}
 
       {error && (
         <div className="alert">

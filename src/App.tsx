@@ -12,6 +12,7 @@ import Clients from './screens/Clients'
 import QuoteDoc from './screens/QuoteDoc'
 import Closeout from './screens/Closeout'
 import WelcomeModal from './components/WelcomeModal'
+import SetupGuide from './screens/SetupGuide'
 import GlobalSearch from './components/GlobalSearch'
 
 // SignIn is the ONE screen that still statically imports supabase.ts (it
@@ -188,6 +189,9 @@ export default function App() {
             <Route path="/project/:jobId" element={<Project ctx={ctx} />} />
             <Route path="/clients" element={<Clients ctx={ctx} />} />
             <Route path="/settings" element={<Settings ctx={ctx} onSaved={refresh} />} />
+            {/* Not a first-run gate: reachable any time, resumes where the
+                shop left off. See src/lib/setupPlan.ts. */}
+            <Route path="/setup-guide" element={<SetupGuide ctx={ctx} onSaved={refresh} />} />
             <Route path="*" element={<Navigate to="/projects" replace />} />
           </Routes>
         )}

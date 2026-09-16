@@ -21,11 +21,15 @@ const nextJobRef = vi.fn(async () => 'GUMA-2026-0007')
 const saveQuote = vi.fn(async (_args: any): Promise<any> => ({ jobId: 'job-7', quoteId: 'q-7' }))
 const takeProjectIn = vi.fn(async () => {})
 const listClients = vi.fn(async (): Promise<any[]> => [])
+const createInHouseJob = vi.fn(async (_s: string, _i: any) => 'job-ih')
 const navigate = vi.fn()
 
 vi.mock('../lib/data', async () => {
   const types = await import('../lib/data.types')
-  return { nextJobRef, saveQuote, takeProjectIn, listClients, toRateSet: types.toRateSet }
+  return {
+    nextJobRef, saveQuote, takeProjectIn, listClients, createInHouseJob,
+    toRateSet: types.toRateSet,
+  }
 })
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
@@ -228,5 +232,64 @@ describe('the money on the form is the shop’s money', () => {
     const body = document.body.textContent ?? ''
     expect(body).toContain('€')
     expect(body).not.toContain('$')
+  })
+})
+
+/**
+ * Work with no client, started from the place a job actually gets started.
+ *
+ * Before this, the client field was required and the only way to record a
+ * test print was to invent a client called "In-house" — which then sat in
+ * the client list being counted as a customer with a receivable. The fix is
+ * an option in the picker rather than a second button elsewhere: one way
+ * in, at the moment the decision is made.
+ */
+describe('a job nobody is paying for', () => {
+  it('offers in-house in the client picker, once there is a picker at all', async () => {
+    // The picker only renders when the shop has clients on file.
+    listClients.mockResolvedValueOnce([
+      { id: 'c1', name: 'Hafen GmbH', kind: 'business', contact: null, email: null, phone: null,
+        projects: 1, active: 1, value: 0, owed: 0, lastActivity: null },
+    ])
+    await renderIntake()
+    const picker = (await screen.findByLabelText(/pick an existing client/i)) as HTMLSelectElement
+    const labels = Array.from(picker.options).map((o) => o.textContent ?? '')
+    expect(labels.some((l) => /in-house/i.test(l))).toBe(true)
+  })
+
+  it('needs only a title once in-house is chosen, and never asks for a client', async () => {
+    listClients.mockResolvedValueOnce([
+      { id: 'c1', name: 'Hafen GmbH', kind: 'business', contact: null, email: null, phone: null,
+        projects: 1, active: 1, value: 0, owed: 0, lastActivity: null },
+    ])
+    const user = userEvent.setup()
+    await renderIntake()
+
+    const picker = (await screen.findByLabelText(/pick an existing client/i)) as HTMLSelectElement
+    const inHouse = Array.from(picker.options).find((o) => /in-house/i.test(o.textContent ?? ''))!
+    await user.selectOptions(picker, inHouse.value)
+
+    // The three client-quote buttons collapse to one: a quote, a PDF and a
+    // deposit are all meaningless for work nobody is paying for.
+    expect(screen.queryByRole('button', { name: /save as pdf/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /intake →/i })).toBeNull()
+    const start = screen.getByRole('button', { name: /start it/i }) as HTMLButtonElement
+    expect(start.disabled).toBe(true)
+
+    await user.type(screen.getByLabelText(/project title/i), 'Calibrating the new PETG')
+    expect((screen.getByRole('button', { name: /start it/i }) as HTMLButtonElement).disabled).toBe(
+      false,
+    )
+
+    await user.click(screen.getByRole('button', { name: /start it/i }))
+    await waitFor(() =>
+      expect(createInHouseJob).toHaveBeenCalledWith('shop-1', {
+        title: 'Calibrating the new PETG',
+        brief: '',
+      }),
+    )
+    // It never went near the quote machinery.
+    expect(saveQuote).not.toHaveBeenCalled()
+    expect(navigate).toHaveBeenCalledWith('/project/job-ih')
   })
 })
