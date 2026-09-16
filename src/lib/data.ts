@@ -30,6 +30,7 @@ import type {
   Shop,
   RateCardRow,
   PrinterRow,
+  PrinterInput,
   Profile,
   ShopContext,
   SetupPayload,
@@ -91,6 +92,7 @@ export type {
   Shop,
   RateCardRow,
   PrinterRow,
+  PrinterInput,
   Profile,
   ShopContext,
   SetupPayload,
@@ -173,11 +175,20 @@ export async function dismissWelcome(shopId: string): Promise<void> {
   return (await backend()).dismissWelcome(shopId)
 }
 
-export async function savePrinter(
-  shopId: string,
-  next: Omit<PrinterRow, 'id'> & { id?: string },
-): Promise<PrinterRow> {
+export async function savePrinter(shopId: string, next: PrinterInput): Promise<PrinterRow> {
   return (await backend()).savePrinter(shopId, next)
+}
+
+export async function setPrinterRetired(
+  shopId: string,
+  printerId: string,
+  retired: boolean,
+): Promise<void> {
+  return (await backend()).setPrinterRetired(shopId, printerId, retired)
+}
+
+export async function deletePrinter(shopId: string, printerId: string): Promise<void> {
+  return (await backend()).deletePrinter(shopId, printerId)
 }
 
 export async function nextJobRef(shopId: string): Promise<string> {

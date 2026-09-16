@@ -25,6 +25,9 @@ import {
   type ShopContext,
 } from '../lib/data'
 import { PHASE_LABEL, flagsFor, gateStatus, worstTone, type Flag } from '../lib/gates'
+import SearchField from '../components/SearchField'
+import { filterBy } from '../lib/search'
+import { asSearchItem } from '../lib/searchItems'
 
 type SortKey = 'saved' | 'stage' | 'due' | 'value' | 'owed' | 'flags'
 type Show = 'live' | 'drafts' | 'all'
@@ -85,6 +88,7 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
     : 'live'
   const [confirming, setConfirming] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [query, setQuery] = useState('')
 
   function setShow(next: Show) {
     const p = new URLSearchParams(params)
@@ -136,11 +140,15 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
         return (at ? rank[at] : 9) - (bt ? rank[bt] : 9) || b.flags.length - a.flags.length
       },
     }
-    const visible = rows.filter((r) =>
-      show === 'all' ? true : show === 'drafts' ? !r.facts.takenInAt : !!r.facts.takenInAt,
+    const visible = filterBy(
+      rows.filter((r) =>
+        show === 'all' ? true : show === 'drafts' ? !r.facts.takenInAt : !!r.facts.takenInAt,
+      ),
+      query,
+      asSearchItem.project,
     )
     return [...visible].sort(by[sort])
-  }, [rows, sort, show])
+  }, [rows, sort, show, query])
 
   return (
     <div className="wrap" style={{ paddingTop: 20, paddingBottom: 40 }}>
@@ -168,15 +176,26 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
       {/* Keyed off the FILTERED rows, not the raw count: filtering to
           Drafts when there are none used to render an empty table with no
           explanation at all. */}
+      {!error && jobs && jobs.length > 0 && (
+        <SearchField
+          value={query}
+          onChange={setQuery}
+          placeholder="Find a project by name, client or reference"
+          noun="project"
+        />
+      )}
+
       {!error && jobs && sorted.length === 0 && (
         <div className="pane" style={{ textAlign: 'center', color: 'var(--txt-3)', padding: '32px 16px' }}>
           {jobs.length === 0
             ? 'Nothing saved yet. Every project you save from New project shows up here, drafts included.'
-            : show === 'drafts'
-              ? 'No drafts. A draft is a project saved without being taken in — priced and findable, but kept off the board.'
-              : show === 'live'
-                ? 'Nothing on the board. Everything saved so far is still a draft — switch to Drafts to take one in.'
-                : 'Nothing matches.'}
+            : query
+              ? `No project matches “${query}”. It may be under a different filter — try Everything.`
+              : show === 'drafts'
+                ? 'No drafts. A draft is a project saved without being taken in — priced and findable, but kept off the board.'
+                : show === 'live'
+                  ? 'Nothing on the board. Everything saved so far is still a draft — switch to Drafts to take one in.'
+                  : 'Nothing matches.'}
         </div>
       )}
 

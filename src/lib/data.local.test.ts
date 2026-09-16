@@ -1988,4 +1988,78 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(kept.payments).toHaveLength(1)
     expect(kept.payments[0].amount).toBe(250)
   })
+
+  /* ------------------------------------------------------------------ */
+  /* Machines: adding one, retiring one, and the delete that is refused  */
+  /* ------------------------------------------------------------------ */
+
+  it('adds a machine and offers it for pricing straight away', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+
+    await local.savePrinter(shopId, {
+      name: 'Bay 2', model: 'P1S', tech: 'fdm', rate_hourly: 7, wear_hourly: 2, watts: 320,
+    })
+
+    const ctx = await local.loadShopContext()
+    expect(ctx.printerRows.map((p) => p.name)).toContain('Bay 2')
+    // In the pricing list too, not merely in the settings table -- a
+    // machine you cannot pick on a quote is not a machine you own.
+    expect(ctx.printers.map((p) => p.name)).toContain('Bay 2')
+    expect(ctx.printers.find((p) => p.name === 'Bay 2')?.watts).toBe(320)
+  })
+
+  it('retires a machine out of the quote form without touching what it built', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const before = await local.loadShopContext()
+    const printer = before.printerRows[0]
+
+    await local.setPrinterRetired(shopId, printer.id, true)
+
+    const after = await local.loadShopContext()
+    // Gone from pricing.
+    expect(after.printers.find((p) => p.id === printer.id)).toBeUndefined()
+    // Still on the settings list, still itself, flagged as retired -- which
+    // is what makes putting it back possible.
+    const kept = after.printerRows.find((p) => p.id === printer.id)
+    expect(kept?.name).toBe(printer.name)
+    expect(Number(kept?.archived)).toBe(1)
+
+    await local.setPrinterRetired(shopId, printer.id, false)
+    const back = await local.loadShopContext()
+    expect(back.printers.find((p) => p.id === printer.id)).toBeDefined()
+  })
+
+  it('deletes a machine nothing points at', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const added = await local.savePrinter(shopId, {
+      name: 'Byy 3', model: 'typo', tech: 'fdm', rate_hourly: 0, wear_hourly: 0, watts: null,
+    })
+
+    await local.deletePrinter(shopId, added.id)
+
+    const ctx = await local.loadShopContext()
+    expect(ctx.printerRows.find((p) => p.id === added.id)).toBeUndefined()
+    await expect(local.deletePrinter(shopId, added.id)).rejects.toThrow(/no longer exists/)
+  })
+
+  it('refuses to delete a machine a quote was priced on, and says to retire it', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const printer = ctx.printerRows[0]
+    await seedProject(local, shopId)
+
+    // The refusal has to carry its own reasoning: this is the only place a
+    // person finds out that retiring exists and what it protects.
+    await expect(local.deletePrinter(shopId, printer.id)).rejects.toThrow(/1 quote/)
+    await expect(local.deletePrinter(shopId, printer.id)).rejects.toThrow(/retire it instead/i)
+
+    // And nothing partially happened.
+    const after = await local.loadShopContext()
+    expect(after.printerRows.find((p) => p.id === printer.id)).toBeDefined()
+    expect(Number(after.printerRows.find((p) => p.id === printer.id)?.archived)).toBe(0)
+  })
 })

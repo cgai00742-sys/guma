@@ -13,7 +13,7 @@ import { supabase } from './supabase'
 import type { MaterialRef, PrinterRef } from './pricing'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
-import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type Profile } from './data.types'
+import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
   toRateSet,
@@ -144,7 +144,15 @@ export async function loadShopContext(): Promise<ShopContext> {
       .eq('shop_id', profile.shop_id)
       .eq('archived', false)
       .order('name'),
-    supabase.from('printers').select('*').eq('shop_id', profile.shop_id).order('name'),
+    // Retired machines come back too -- Settings has to be able to show
+    // you what you retired. They are filtered out of `printers` below, the
+    // list that prices work. See 0014_retire_machines.sql.
+    supabase
+      .from('printers')
+      .select('*')
+      .eq('shop_id', profile.shop_id)
+      .order('archived')
+      .order('name'),
   ])
   if (shopRes.error) throw shopRes.error
   if (rateRes.error) throw rateRes.error
@@ -166,7 +174,7 @@ export async function loadShopContext(): Promise<ShopContext> {
         swatch: m.swatch,
       }),
     ),
-    printers: (prnRes.data ?? []).map(
+    printers: (prnRes.data ?? []).filter((p) => !p.archived).map(
       (p): PrinterRef => ({
         id: p.id,
         name: p.name,
@@ -360,7 +368,7 @@ export async function dismissWelcome(shopId: string): Promise<void> {
 
 export async function savePrinter(
   shopId: string,
-  next: Omit<PrinterRow, 'id'> & { id?: string },
+  next: PrinterInput,
 ): Promise<PrinterRow> {
   const row = {
     shop_id: shopId,
@@ -377,6 +385,63 @@ export async function savePrinter(
   const { data, error } = await query.select().single()
   if (error) throw error
   return data as PrinterRow
+}
+
+/** Retire a machine, or bring it back. See data.local.ts for why this
+ *  exists and why it is not a checkbox on the edit form. */
+export async function setPrinterRetired(
+  shopId: string,
+  printerId: string,
+  retired: boolean,
+): Promise<void> {
+  const { error } = await supabase
+    .from('printers')
+    .update({ archived: retired })
+    .eq('id', printerId)
+    .eq('shop_id', shopId)
+  if (error) throw error
+}
+
+/** Delete a machine nothing points at. Refuses, with the counts, for one
+ *  that carries build runs or sits on a quote -- same rule and same wording
+ *  as the local backend, so the two cannot drift into different answers. */
+export async function deletePrinter(shopId: string, printerId: string): Promise<void> {
+  const { data: meta, error: metaErr } = await supabase
+    .from('printers')
+    .select('name')
+    .eq('id', printerId)
+    .eq('shop_id', shopId)
+    .maybeSingle()
+  if (metaErr) throw metaErr
+  if (!meta) throw new Error('That machine no longer exists.')
+
+  const [runsRes, quotesRes] = await Promise.all([
+    supabase.from('print_runs').select('id', { count: 'exact', head: true }).eq('printer_id', printerId),
+    supabase.from('quotes').select('id', { count: 'exact', head: true }).eq('printer_id', printerId),
+  ])
+  if (runsRes.error) throw runsRes.error
+  if (quotesRes.error) throw quotesRes.error
+  const runs = runsRes.count ?? 0
+  const quotes = quotesRes.count ?? 0
+  if (runs > 0 || quotes > 0) {
+    const held = [
+      runs > 0 ? `${runs} build run${runs === 1 ? '' : 's'}` : null,
+      quotes > 0 ? `${quotes} quote${quotes === 1 ? '' : 's'}` : null,
+    ]
+      .filter(Boolean)
+      .join(' and ')
+    throw new Error(
+      `${meta.name} has ${held} behind it. Deleting it would change what those ` +
+        'projects cost after the fact. Retire it instead: it keeps the history and ' +
+        'stops appearing when you price new work.',
+    )
+  }
+  const { error } = await supabase
+    .from('printers')
+    .delete()
+    .eq('id', printerId)
+    .eq('shop_id', shopId)
+  if (error) throw error
 }
 
 /** GUMA-2026-0184 — sequential within the year, per shop. */

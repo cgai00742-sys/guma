@@ -89,6 +89,7 @@ export const PRINTER_ROW: PrinterRow = {
   rate_hourly: 9,
   wear_hourly: 3,
   watts: 350,
+  archived: 0,
 }
 
 export const PROFILE: Profile = {

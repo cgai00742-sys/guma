@@ -35,7 +35,7 @@
  * payments with it.
  */
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   CLIENT_KINDS,
   CLIENT_KIND_LABEL,
@@ -53,6 +53,10 @@ import {
 } from '../lib/data'
 import { PHASE_LABEL, flagsFor } from '../lib/gates'
 import { makeMoney } from '../lib/pricing'
+import { Flash, SaveButton, useFlash, useSaver } from '../components/Saving'
+import SearchField from '../components/SearchField'
+import { filterBy } from '../lib/search'
+import { asSearchItem } from '../lib/searchItems'
 
 type SortKey = 'name' | 'value' | 'owed' | 'active' | 'last'
 
@@ -63,9 +67,16 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
   const [error, setError] = useState<string | null>(null)
   const [sort, setSort] = useState<SortKey>('value')
   const [kindFilter, setKindFilter] = useState<ClientKind | 'all'>('all')
+  const [query, setQuery] = useState('')
+  const [flash, setFlash] = useFlash()
   /** Which client's projects are open. One at a time: this is a table, and
-   *  three expanded rows stops being one. */
-  const [openId, setOpenId] = useState<string | null>(null)
+   *  three expanded rows stops being one.
+   *
+   *  Seeded from the URL, so the global search in the top bar can land on a
+   *  client with their row already open rather than dropping you on the
+   *  list and leaving you to find them again. */
+  const [params] = useSearchParams()
+  const [openId, setOpenId] = useState<string | null>(params.get('open'))
   const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -93,7 +104,11 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
   }, [ctx.shop.id])
 
   const shown = useMemo(() => {
-    const list = (rows ?? []).filter((r) => kindFilter === 'all' || r.kind === kindFilter)
+    const list = filterBy(
+      (rows ?? []).filter((r) => kindFilter === 'all' || r.kind === kindFilter),
+      query,
+      asSearchItem.client,
+    )
     const by: Record<SortKey, (a: ClientRow, b: ClientRow) => number> = {
       name: (a, b) => a.name.localeCompare(b.name),
       value: (a, b) => b.value - a.value || a.name.localeCompare(b.name),
@@ -102,7 +117,7 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
       last: (a, b) => (b.lastActivity ?? '').localeCompare(a.lastActivity ?? ''),
     }
     return [...list].sort(by[sort])
-  }, [rows, sort, kindFilter])
+  }, [rows, sort, kindFilter, query])
 
   const totals = useMemo(() => {
     const list = rows ?? []
@@ -138,11 +153,20 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
       const id = await createClient(ctx.shop.id, input)
       await reload()
       setAdding(false)
-      // Open the new one straight away: the next thing anyone wants after
-      // adding a client is to look at them.
+      // Three things at once, and all three are the point. Clear whatever
+      // is being searched for, or the client you just added may not match
+      // it and will appear not to have been added at all. Open their row,
+      // because looking at them is what anyone does next. And say their
+      // name back, because "did that work?" should not be a question you
+      // have to answer by scrolling.
+      setQuery('')
       setOpenId(id)
+      setFlash(`${(input.name ?? '').trim()} added.`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      // Rethrown so the button that was pressed knows it failed and says
+      // so, instead of flashing "Added" over the top of an error message.
+      throw e
     } finally {
       setBusy(false)
     }
@@ -156,6 +180,7 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
       await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      throw e
     } finally {
       setBusy(false)
     }
@@ -165,9 +190,11 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
     setBusy(true)
     setError(null)
     try {
+      const gone = (rows ?? []).find((r) => r.id === id)
       await deleteClient(ctx.shop.id, id)
       setOpenId(null)
       await reload()
+      setFlash(`${gone?.name ?? 'That client'} deleted.`)
     } catch (e) {
       // The refusal from deleteClient is the message worth reading — it
       // names how many projects are in the way and what to do instead.
@@ -201,10 +228,22 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
 
       {adding && <NewClient busy={busy} onAdd={addClient} onCancel={() => setAdding(false)} />}
 
+      <Flash message={flash} />
+
       {error && (
         <div className="alert" style={{ marginBottom: 8 }}>
           <span>{error}</span>
         </div>
+      )}
+
+      {(rows?.length ?? 0) > 0 && (
+        <SearchField
+          value={query}
+          onChange={setQuery}
+          placeholder="Find a client by name, contact, email or phone"
+          hidden={(rows?.length ?? 0) - shown.length}
+          noun="client"
+        />
       )}
 
       <div className="filters" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -239,7 +278,19 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
         </label>
       </div>
 
-      {rows && rows.length === 0 && !adding ? (
+      {rows && rows.length > 0 && shown.length === 0 ? (
+        <div className="pane">
+          <h3>Nobody matches “{query}”</h3>
+          <p style={{ fontSize: 13, color: 'var(--txt-2)', margin: '0 0 12px' }}>
+            {kindFilter === 'all'
+              ? 'You have ' + rows.length + ' client' + (rows.length === 1 ? '' : 's') + ' on file, none of them matching that.'
+              : 'No ' + CLIENT_KIND_LABEL[kindFilter].toLowerCase() + ' matches that. Try Type: All.'}
+          </p>
+          <button type="button" className="btn" onClick={() => setQuery('')}>
+            Show everyone
+          </button>
+        </div>
+      ) : rows && rows.length === 0 && !adding ? (
         <div className="pane">
           <h3>No clients yet</h3>
           <p style={{ fontSize: 13, color: 'var(--txt-2)', maxWidth: '62ch', margin: '0 0 10px' }}>
@@ -328,7 +379,7 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
                         key={r.id}
                         client={r}
                         busy={busy}
-                        onSave={(input) => void saveDetails(r.id, input)}
+                        onSave={(input) => saveDetails(r.id, input)}
                         onDelete={() => void removeClient(r.id)}
                       />
                       <ClientProjects
@@ -451,9 +502,10 @@ function NewClient({
   onCancel,
 }: {
   busy: boolean
-  onAdd: (input: ClientEditInput) => void
+  onAdd: (input: ClientEditInput) => Promise<void>
   onCancel: () => void
 }) {
+  const saver = useSaver()
   const [draft, setDraft] = useState<ClientEditInput>({
     name: '',
     kind: 'individual',
@@ -473,7 +525,10 @@ function NewClient({
       style={{ marginBottom: 12 }}
       onSubmit={(e) => {
         e.preventDefault()
-        if (ready) onAdd(draft)
+        // useSaver catches for us: a rejection becomes a visible failed
+        // state on the button, and the screen's alert already carries the
+        // message. Nothing escapes for this to have to handle.
+        if (ready) void saver.save(() => onAdd(draft))
       }}
     >
       <h3>New client</h3>
@@ -515,9 +570,14 @@ function NewClient({
         </div>
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-        <button type="submit" className="btn primary" disabled={!ready || busy}>
-          {busy ? 'Adding…' : 'Add client'}
-        </button>
+        <SaveButton
+          saver={saver}
+          savedLabel="Added"
+          disabled={!ready || busy}
+          onClick={() => void saver.save(() => onAdd(draft))}
+        >
+          Add client
+        </SaveButton>
         <button type="button" className="btn" onClick={onCancel} disabled={busy}>
           Cancel
         </button>
@@ -546,9 +606,10 @@ function ClientDetails({
 }: {
   client: ClientRow
   busy: boolean
-  onSave: (input: ClientEditInput) => void
+  onSave: (input: ClientEditInput) => Promise<void>
   onDelete: () => void
 }) {
+  const saver = useSaver()
   const [draft, setDraft] = useState<ClientEditInput>({
     name: client.name,
     contact: client.contact ?? '',
@@ -605,14 +666,13 @@ function ClientDetails({
         </div>
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button
-          type="button"
-          className="btn primary"
+        <SaveButton
+          saver={saver}
           disabled={!dirty || busy || !(draft.name ?? '').trim()}
-          onClick={() => onSave(draft)}
+          onClick={() => void saver.save(() => onSave(draft))}
         >
-          {busy ? 'Saving…' : 'Save details'}
-        </button>
+          Save details
+        </SaveButton>
         <span style={{ marginLeft: 'auto' }} />
         {!armed ? (
           <button

@@ -46,6 +46,8 @@ import {
   type ShopContext,
 } from '../lib/data'
 import { addDaysISO } from '../lib/dates'
+import { normalise, search } from '../lib/search'
+import { clientItem } from '../lib/searchItems'
 
 const ASSET_NOTES: Record<AssetOrigin, string> = {
   model:
@@ -340,15 +342,16 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                   onChange={(e) => setClient(e.target.value)}
                   placeholder="Who is paying"
                 />
-                <div className="hint">
-                  {clients.some((c) => c.name === client)
-                    ? 'This project joins their existing ledger.'
-                    : client.trim()
-                      ? 'A new client — they will appear on the Clients screen once this is saved.'
-                      : clients.length > 0
-                        ? 'Pick a client above, or type a new name.'
-                        : 'Your first client. Typing a name here creates them.'}
-                </div>
+                <ClientFieldHint
+                  typed={client}
+                  clients={clients}
+                  onPick={(c) => {
+                    setClient(c.name)
+                    setContact(c.contact ?? '')
+                    setEmail(c.email ?? '')
+                    setPhone(c.phone ?? '')
+                  }}
+                />
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="q-need">
@@ -1132,6 +1135,101 @@ function CostPanel({
           the figures you set. This is the real number.
         </div>
       )}
+    </div>
+  )
+}
+
+
+/**
+ * What this field is about to do.
+ *
+ * Typing a client name here either joins an existing ledger or opens a new
+ * one, and which of the two it is decides where every number about that
+ * client lands for the rest of their life with the shop. The field used to
+ * decide by exact string equality and then say so confidently, which made
+ * it wrong in the exact case that matters: type "hafen gmbh" for a client
+ * saved as "Hafen GmbH" and it announced a new client. (It was not one —
+ * the save matches case-insensitively — so the label was a lie in the
+ * reassuring direction.)
+ *
+ * Worse is the near miss. "Hafen Gmbh", "Hafen GmbH." and "Hafen" are three
+ * clients as far as the database is concerned, each holding a third of the
+ * money, and nothing anywhere would ever have said so. So a name that looks
+ * like one already on file stops and asks, with a button that takes the
+ * existing spelling, before the second ledger exists rather than after.
+ */
+function ClientFieldHint({
+  typed,
+  clients,
+  onPick,
+}: {
+  typed: string
+  clients: ClientRow[]
+  onPick: (client: ClientRow) => void
+}) {
+  const name = typed.trim()
+  // The same rule the save uses (`name like ?`, which is case-insensitive
+  // in SQLite), plus accent folding, so the hint cannot promise something
+  // different from what happens.
+  const exact = clients.find((c) => normalise(c.name) === normalise(name))
+  const near = exact || name.length < 2 ? [] : search(clients.map((c) => clientItem(c)), name, { limit: 3 })
+
+  if (exact) {
+    return (
+      <div className="hint">
+        Joins {exact.name}&rsquo;s existing ledger
+        {exact.name !== name ? ' — saved under that spelling' : ''}.
+        {exact.active > 0 ? ` They have ${exact.active} active project${exact.active === 1 ? '' : 's'}.` : ''}
+      </div>
+    )
+  }
+
+  if (near.length > 0) {
+    return (
+      <div
+        style={{
+          marginTop: 6,
+          fontSize: 12,
+          padding: '8px 10px',
+          borderRadius: 'var(--radius)',
+          border: '1px solid color-mix(in srgb, var(--warn) 45%, transparent)',
+          background: 'color-mix(in srgb, var(--warn) 10%, transparent)',
+          color: 'var(--txt-2)',
+        }}
+      >
+        <div style={{ color: 'var(--warn)', marginBottom: 6 }}>
+          This will create a second client. Did you mean one you already have?
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {near.map((hit) => {
+            const match = clients.find((c) => c.id === hit.id)
+            if (!match) return null
+            return (
+              <button
+                key={hit.id}
+                type="button"
+                className="btn sm"
+                onClick={() => onPick(match)}
+              >
+                Use {match.name}
+              </button>
+            )
+          })}
+        </div>
+        <div style={{ marginTop: 6, color: 'var(--txt-3)' }}>
+          Or carry on — “{name}” will be added as a new client when you save.
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="hint">
+      {name
+        ? 'A new client — they will appear on the Clients screen once this is saved.'
+        : clients.length > 0
+          ? 'Pick a client above, or type a new name.'
+          : 'Your first client. Typing a name here creates them.'}
     </div>
   )
 }

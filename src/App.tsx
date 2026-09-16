@@ -12,6 +12,7 @@ import Clients from './screens/Clients'
 import QuoteDoc from './screens/QuoteDoc'
 import Closeout from './screens/Closeout'
 import WelcomeModal from './components/WelcomeModal'
+import GlobalSearch from './components/GlobalSearch'
 
 // SignIn is the ONE screen that still statically imports supabase.ts (it
 // calls signInWithPassword/signInWithOtp directly). A desktop build never
@@ -250,6 +251,10 @@ function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean })
             {tab('/clients', 'Clients')}
             {tab('/settings', 'Shop settings')}
           </div>
+          {/* Search sits between the tabs and the action, because it is
+              neither: the tabs are where you go when you do not know what
+              you are looking for, and this is where you go when you do. */}
+          {ctx && <GlobalSearch ctx={ctx} />}
           <Link
             to="/intake"
             className="btn primary sm"

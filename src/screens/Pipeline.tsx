@@ -48,6 +48,8 @@ import {
   type ShopContext,
 } from '../lib/data'
 import { PHASE_LABEL, flagsFor, gateStatus, worstTone, type Flag } from '../lib/gates'
+import { filterBy } from '../lib/search'
+import { asSearchItem } from '../lib/searchItems'
 
 const COLUMN_HUE: Record<JobPhase, string> = {
   intake: 'var(--gray)',
@@ -129,18 +131,26 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
     }
   }, [decorated])
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return decorated.filter((j) => {
-      if (flaggedOnly && j.flags.length === 0) return false
-      if (!q) return true
-      return (
-        j.title.toLowerCase().includes(q) ||
-        j.clientName.toLowerCase().includes(q) ||
-        j.ref.toLowerCase().includes(q)
-      )
-    })
-  }, [decorated, query, flaggedOnly])
+  /**
+   * The board's own search, run through the shared matcher.
+   *
+   * It used to be three lowercase includes() over title, client and ref,
+   * OR'd together. That is fine until somebody types two words -- "hafen
+   * bracket" matched nothing, because no single field contains both -- or
+   * types an accent one way when the client was entered the other, or
+   * searches a stage by name. Running search.ts here means the board, the
+   * list and the top bar agree about what exists, which is the whole point
+   * of there being one matcher.
+   */
+  const filtered = useMemo(
+    () =>
+      filterBy(
+        decorated.filter((j) => !(flaggedOnly && j.flags.length === 0)),
+        query,
+        asSearchItem.project,
+      ),
+    [decorated, query, flaggedOnly],
+  )
 
   const columns = useMemo(
     () =>
@@ -231,7 +241,9 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
       <div className="filters" style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
         <input
           value={query}
-          placeholder="Search project, client or reference"
+          type="search"
+          aria-label="Find a project by name, client, reference or stage"
+          placeholder="Find a project by name, client, reference or stage"
           style={{ maxWidth: 300 }}
           onChange={(e) => setQuery(e.target.value)}
         />

@@ -175,7 +175,10 @@ describe('picking a client who already exists', () => {
     // The whole point: a repeat job joins the ledger it belongs to rather
     // than creating a second client from a different spelling.
     expect((screen.getByLabelText(/^client/i) as HTMLInputElement).value).toBe('Hafen GmbH')
-    expect(screen.getByText(/joins their existing ledger/i)).toBeDefined()
+    // The hint names them, and says what is already live for them, rather
+    // than the old anonymous "their existing ledger".
+    expect(screen.getByText(/joins Hafen GmbH.s existing ledger/i)).toBeDefined()
+    expect(screen.getByText(/1 active project/i)).toBeDefined()
 
     await user.type(screen.getByLabelText(/project title|title/i), 'Deck cleats')
     await user.click(screen.getByRole('button', { name: /^save draft$/i }))
@@ -185,6 +188,36 @@ describe('picking a client who already exists', () => {
       contact: 'Ilse Braun',
       email: 'ilse@hafen.de',
     })
+  })
+
+  it('recognises a client typed in the wrong case as the same client', async () => {
+    listClients.mockResolvedValueOnce([
+      { id: 'c1', name: 'Hafen GmbH', kind: 'business', contact: 'Ilse Braun', email: null, phone: null, projects: 3, active: 0, value: 4200, owed: 0, lastActivity: null },
+    ])
+    await renderIntake()
+    await screen.findByLabelText(/pick an existing client/i)
+    const user = userEvent.setup()
+    // Exactly how somebody types it in a hurry. The save matches
+    // case-insensitively, so the form must not claim this is someone new.
+    await user.type(screen.getByLabelText(/^client/i), 'hafen gmbh')
+    expect(screen.getByText(/joins Hafen GmbH.s existing ledger/i)).toBeDefined()
+    expect(screen.queryByText(/a new client/i)).toBeNull()
+  })
+
+  it('stops a near-miss spelling before it becomes a second ledger', async () => {
+    listClients.mockResolvedValueOnce([
+      { id: 'c1', name: 'Hafen GmbH', kind: 'business', contact: 'Ilse Braun', email: null, phone: null, projects: 3, active: 0, value: 4200, owed: 0, lastActivity: null },
+    ])
+    await renderIntake()
+    await screen.findByLabelText(/pick an existing client/i)
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText(/^client/i), 'Hafen')
+
+    expect(screen.getByText(/this will create a second client/i)).toBeDefined()
+    // And it is one click to take the spelling already on file.
+    await user.click(screen.getByRole('button', { name: /use Hafen GmbH/i }))
+    expect((screen.getByLabelText(/^client/i) as HTMLInputElement).value).toBe('Hafen GmbH')
+    expect(screen.getByText(/joins Hafen GmbH.s existing ledger/i)).toBeDefined()
   })
 })
 

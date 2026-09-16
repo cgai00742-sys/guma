@@ -10,6 +10,7 @@
  * Nothing here is a constant in the code — that is the whole point.
  */
 import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   priceQuote,
   makeMoney,
@@ -23,6 +24,8 @@ import {
   saveShopCosts,
   saveShopQuoteTerms,
   savePrinter,
+  setPrinterRetired,
+  deletePrinter,
   listMaterials,
   saveMaterial,
   recordMaterialPurchase,
@@ -34,6 +37,7 @@ import {
   type ShopCostsInput,
   type ShopQuoteTermsInput,
   type PrinterRow,
+  type PrinterInput,
   type MaterialRow,
   type MaterialPurchaseRow,
 } from '../lib/data'
@@ -48,6 +52,10 @@ import {
   regionOf,
 } from '../lib/locale'
 import TaxNameHint from '../components/TaxNameHint'
+import { Flash, SaveButton, useFlash, useSaver } from '../components/Saving'
+import SearchField from '../components/SearchField'
+import { asSearchItem } from '../lib/searchItems'
+import { filterBy } from '../lib/search'
 
 /**
  * The sample job from the design: four brackets, six hours modelling, PA-CF,
@@ -89,10 +97,28 @@ const DEPOSIT_HINTS: Record<Draft['deposit_when'], string> = {
   none: "Only if every client is someone you'd lend a truck to.",
 }
 
-type Tab = 'rates' | 'costs' | 'identity' | 'terms' | 'machines' | 'materials'
+const TABS = ['rates', 'costs', 'identity', 'terms', 'machines', 'materials'] as const
+type Tab = (typeof TABS)[number]
 
 export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
-  const [tab, setTab] = useState<Tab>('rates')
+  /**
+   * The open tab lives in the URL.
+   *
+   * Not for the browser's back button -- this is a desktop app -- but so
+   * that something else can send you here. Search a machine in the top bar
+   * and the result has to land on the machines tab with the machine on
+   * screen, not on the rate card with a note saying "it is in settings
+   * somewhere". A tab held only in useState cannot be linked to.
+   */
+  const [params, setParams] = useSearchParams()
+  const fromUrl = params.get('tab')
+  const tab: Tab = (TABS as readonly string[]).includes(fromUrl ?? '') ? (fromUrl as Tab) : 'rates'
+  const setTab = (next: Tab) => {
+    const p = new URLSearchParams(params)
+    if (next === 'rates') p.delete('tab')
+    else p.set('tab', next)
+    setParams(p, { replace: true })
+  }
   const card = ctx.rateCard
   // Currency comes from the shop record, not from the code.
   const { money } = useMemo(
@@ -882,17 +908,64 @@ function QuoteTermsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => voi
   )
 }
 
-/** Editing what setup created, plus adding another machine. Wattage is the
- *  field that matters most here — see IdentityPane for the rate it pairs with. */
+/**
+ * Machines — what you have, what each one costs to run, and how to stop
+ * having one.
+ *
+ * Three things were wrong with this screen and the third is the one people
+ * actually hit.
+ *
+ * It could not forget a machine. You could add printers forever and never
+ * remove one, so a typo was permanent and a printer you sold stayed in
+ * every quote dropdown for the life of the shop. Deleting is right for a
+ * machine nothing points at, and wrong for one with build runs behind it —
+ * that history is what made old projects cost what they cost. So: delete
+ * when it is safe, retire when it is not, and say which is which before
+ * anyone presses anything.
+ *
+ * It had no way to find anything. Fine at three machines. A farm with
+ * twenty scrolls.
+ *
+ * And it silently threw saves away. `rows` was seeded from ctx.printerRows
+ * with useState and never looked at ctx again, so after adding a machine
+ * the list re-rendered from the stale copy and the new machine was not in
+ * it. It was in the database the whole time — the only way to see it was to
+ * leave the screen and come back, which is indistinguishable from the save
+ * having failed. That is fixed below, and the fix is the boring one: this
+ * list is a view of ctx, so it follows ctx.
+ */
 function MachinesPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
   const [rows, setRows] = useState<PrinterRow[]>(ctx.printerRows)
-  const [savingId, setSavingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
-  const [draftNew, setDraftNew] = useState<Omit<PrinterRow, 'id'>>({
+  const [query, setQuery] = useState('')
+  const [flash, setFlash] = useFlash()
+  const [draftNew, setDraftNew] = useState<PrinterInput>({
     name: '', model: '', tech: 'fdm', rate_hourly: 0, wear_hourly: 0, watts: null,
   })
+  const adder = useSaver()
   const owner = ctx.profile.role === 'owner'
+
+  /**
+   * Follow the shop context.
+   *
+   * This is the whole bug. onSaved() reloads the context, the context comes
+   * back with the new machine in it, and without this line the list goes on
+   * rendering the array it was handed the first time — so a machine you
+   * just added does not appear, and a name you just changed snaps back to
+   * what it was. Any edit in progress on another row is deliberately
+   * dropped when this fires: what the database holds is the truth, and a
+   * half-typed field is not.
+   */
+  useEffect(() => {
+    setRows(ctx.printerRows)
+  }, [ctx.printerRows])
+
+  const live = rows.filter((r) => !Number(r.archived))
+  const retired = rows.filter((r) => Number(r.archived))
+  const shownLive = filterBy(live, query, asSearchItem.machine)
+  const shownRetired = filterBy(retired, query, asSearchItem.machine)
+  const hidden = live.length - shownLive.length + (retired.length - shownRetired.length)
 
   function patch(id: string, field: keyof PrinterRow, value: string) {
     setRows((rs) =>
@@ -912,32 +985,46 @@ function MachinesPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
     )
   }
 
-  async function saveRow(row: PrinterRow) {
-    setSavingId(row.id)
+  async function addPrinter() {
+    if (!draftNew.name.trim()) return
+    const name = draftNew.name.trim()
+    setError(null)
+    const { ok, error: failed } = await adder.save(() => savePrinter(ctx.shop.id, draftNew))
+    if (!ok) {
+      setError(failed)
+      return
+    }
+    setDraftNew({ name: '', model: '', tech: 'fdm', rate_hourly: 0, wear_hourly: 0, watts: null })
+    setAdding(false)
+    setFlash(`${name} added. It can be picked on a quote now.`)
+    onSaved()
+  }
+
+  async function retire(row: PrinterRow, retired: boolean) {
     setError(null)
     try {
-      await savePrinter(ctx.shop.id, row)
+      await setPrinterRetired(ctx.shop.id, row.id, retired)
+      setFlash(
+        retired
+          ? `${row.name} retired. Its build history is intact; it will not appear when you price new work.`
+          : `${row.name} is back in service.`,
+      )
       onSaved()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setSavingId(null)
     }
   }
 
-  async function addPrinter() {
-    if (!draftNew.name.trim()) return
-    setSavingId('new')
+  async function remove(row: PrinterRow) {
     setError(null)
     try {
-      await savePrinter(ctx.shop.id, draftNew)
-      setDraftNew({ name: '', model: '', tech: 'fdm', rate_hourly: 0, wear_hourly: 0, watts: null })
-      setAdding(false)
+      await deletePrinter(ctx.shop.id, row.id)
+      setFlash(`${row.name} deleted.`)
       onSaved()
     } catch (e) {
+      // deletePrinter's refusal names the runs and quotes in the way and
+      // tells you to retire instead. It is the message worth showing.
       setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setSavingId(null)
     }
   }
 
@@ -948,62 +1035,58 @@ function MachinesPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
           <span>{error}</span>
         </div>
       )}
+      <Flash message={flash} />
 
-      {rows.map((r) => (
-        <div key={r.id} className="pane" style={{ margin: '0 0 10px' }}>
-          <div className="grid3">
-            <div className="fld">
-              <label className="lbl" htmlFor={`m-name-${r.id}`}>Name</label>
-              <input id={`m-name-${r.id}`} value={r.name} onChange={(e) => patch(r.id, 'name', e.target.value)} />
-            </div>
-            <div className="fld">
-              <label className="lbl" htmlFor={`m-model-${r.id}`}>Model</label>
-              <input id={`m-model-${r.id}`} value={r.model} onChange={(e) => patch(r.id, 'model', e.target.value)} />
-            </div>
-            <div className="fld">
-              <label className="lbl" htmlFor={`m-tech-${r.id}`}>Technology</label>
-              <select id={`m-tech-${r.id}`} value={r.tech} onChange={(e) => patch(r.id, 'tech', e.target.value)}>
-                <option value="fdm">FDM — filament</option>
-                <option value="resin">Resin — MSLA / SLA</option>
-                <option value="composite">Composite — continuous fibre</option>
-                <option value="sls">SLS — powder</option>
-              </select>
-            </div>
-          </div>
-          <div className="grid3" style={{ marginTop: 10 }}>
-            <div className="fld">
-              <label className="lbl" htmlFor={`m-rate-${r.id}`}>Rate per hour</label>
-              <input id={`m-rate-${r.id}`} type="number" min="0" value={r.rate_hourly} onChange={(e) => patch(r.id, 'rate_hourly', e.target.value)} />
-            </div>
-            <div className="fld">
-              <label className="lbl" htmlFor={`m-wear-${r.id}`}>Wear per hour</label>
-              <input id={`m-wear-${r.id}`} type="number" min="0" value={r.wear_hourly} onChange={(e) => patch(r.id, 'wear_hourly', e.target.value)} />
-            </div>
-            <div className="fld">
-              <label className="lbl" htmlFor={`m-watts-${r.id}`}>Power draw, watts</label>
-              <input
-                id={`m-watts-${r.id}`}
-                type="number"
-                min="0"
-                value={r.watts ?? ''}
-                onChange={(e) => patch(r.id, 'watts', e.target.value)}
-                placeholder="optional"
-              />
-              <div className="hint">With your electricity rate (Identity tab), prices real machine-time cost.</div>
-            </div>
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <button
-              type="button"
-              className="btn primary sm"
-              onClick={() => saveRow(r)}
-              disabled={savingId === r.id || !owner}
-            >
-              {savingId === r.id ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        </div>
+      {(live.length + retired.length) > 3 && (
+        <SearchField
+          value={query}
+          onChange={setQuery}
+          placeholder="Find a machine by name, model or technology"
+          hidden={hidden}
+          noun="machine"
+        />
+      )}
+
+      {shownLive.map((r) => (
+        <MachineRow
+          key={r.id}
+          row={r}
+          shopId={ctx.shop.id}
+          owner={owner}
+          onPatch={patch}
+          onSaved={onSaved}
+          onRetire={() => void retire(r, true)}
+          onDelete={() => void remove(r)}
+          onError={setError}
+        />
       ))}
+
+      {query && shownLive.length === 0 && shownRetired.length === 0 && (
+        <div className="pane" style={{ margin: '0 0 10px', color: 'var(--txt-3)', fontSize: 13 }}>
+          No machine matches “{query}”.
+        </div>
+      )}
+
+      {shownRetired.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <h3 style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--txt-3)', marginBottom: 8 }}>
+            Retired
+          </h3>
+          <div className="hint" style={{ marginBottom: 8 }}>
+            Out of the quote form, still on every project they built.
+          </div>
+          {shownRetired.map((r) => (
+            <div key={r.id} className="pane" style={{ margin: '0 0 8px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', opacity: 0.75 }}>
+              <b style={{ color: 'var(--txt-2)' }}>{r.name}</b>
+              <span style={{ fontSize: 12, color: 'var(--txt-3)' }}>{r.model}</span>
+              <span style={{ marginLeft: 'auto' }} />
+              <button type="button" className="btn sm" disabled={!owner} onClick={() => void retire(r, false)}>
+                Put back in service
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {adding ? (
         <div className="pane" style={{ margin: 0 }}>
@@ -1049,10 +1132,15 @@ function MachinesPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <SaveButton
+              saver={adder}
+              savedLabel="Added"
+              disabled={!draftNew.name.trim() || !owner}
+              onClick={() => void addPrinter()}
+            >
+              Add machine
+            </SaveButton>
             <button type="button" className="btn" onClick={() => setAdding(false)}>Cancel</button>
-            <button type="button" className="btn primary" onClick={addPrinter} disabled={!draftNew.name.trim() || savingId === 'new' || !owner}>
-              {savingId === 'new' ? 'Adding…' : 'Add machine'}
-            </button>
           </div>
         </div>
       ) : (
@@ -1060,6 +1148,119 @@ function MachinesPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
           + Add a machine
         </button>
       )}
+    </div>
+  )
+}
+
+/**
+ * One machine, editable in place.
+ *
+ * Its own component so its save state is its own: saving Bay 2 should not
+ * make Bay 3's button say "Saving…", which is what a single savingId on the
+ * parent did.
+ *
+ * Delete arms in two steps and states the case before it is pressed, the
+ * same as a client does. The button is never disabled on the grounds that
+ * deletion will be refused — the refusal from the data layer explains
+ * itself and offers retiring; a greyed-out button explains nothing.
+ */
+function MachineRow({
+  row,
+  owner,
+  onPatch,
+  onSaved,
+  onRetire,
+  onDelete,
+  onError,
+  shopId,
+}: {
+  row: PrinterRow
+  shopId: string
+  owner: boolean
+  onPatch: (id: string, field: keyof PrinterRow, value: string) => void
+  onSaved: () => void
+  onRetire: () => void
+  onDelete: () => void
+  onError: (message: string | null) => void
+}) {
+  const saver = useSaver()
+  const [armed, setArmed] = useState(false)
+
+  async function save() {
+    onError(null)
+    const { ok, error: failed } = await saver.save(() => savePrinter(shopId, row))
+    if (ok) onSaved()
+    else onError(failed)
+  }
+
+  return (
+    <div className="pane" style={{ margin: '0 0 10px' }}>
+      <div className="grid3">
+        <div className="fld">
+          <label className="lbl" htmlFor={`m-name-${row.id}`}>Name</label>
+          <input id={`m-name-${row.id}`} value={row.name} onChange={(e) => onPatch(row.id, 'name', e.target.value)} />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor={`m-model-${row.id}`}>Model</label>
+          <input id={`m-model-${row.id}`} value={row.model} onChange={(e) => onPatch(row.id, 'model', e.target.value)} />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor={`m-tech-${row.id}`}>Technology</label>
+          <select id={`m-tech-${row.id}`} value={row.tech} onChange={(e) => onPatch(row.id, 'tech', e.target.value)}>
+            <option value="fdm">FDM — filament</option>
+            <option value="resin">Resin — MSLA / SLA</option>
+            <option value="composite">Composite — continuous fibre</option>
+            <option value="sls">SLS — powder</option>
+          </select>
+        </div>
+      </div>
+      <div className="grid3" style={{ marginTop: 10 }}>
+        <div className="fld">
+          <label className="lbl" htmlFor={`m-rate-${row.id}`}>Rate per hour</label>
+          <input id={`m-rate-${row.id}`} type="number" min="0" value={row.rate_hourly} onChange={(e) => onPatch(row.id, 'rate_hourly', e.target.value)} />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor={`m-wear-${row.id}`}>Wear per hour</label>
+          <input id={`m-wear-${row.id}`} type="number" min="0" value={row.wear_hourly} onChange={(e) => onPatch(row.id, 'wear_hourly', e.target.value)} />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor={`m-watts-${row.id}`}>Power draw, watts</label>
+          <input
+            id={`m-watts-${row.id}`}
+            type="number"
+            min="0"
+            value={row.watts ?? ''}
+            onChange={(e) => onPatch(row.id, 'watts', e.target.value)}
+            placeholder="optional"
+          />
+          <div className="hint">With your electricity rate (What it costs you), prices real machine-time cost.</div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <SaveButton saver={saver} className="btn primary sm" disabled={!owner} onClick={() => void save()} />
+        <span style={{ marginLeft: 'auto' }} />
+        {!armed ? (
+          <button type="button" className="btn sm ghost" disabled={!owner} onClick={() => setArmed(true)}>
+            Remove…
+          </button>
+        ) : (
+          <>
+            <span style={{ fontSize: 11, color: 'var(--txt-3)', maxWidth: '46ch' }}>
+              Retiring keeps every project {row.name} built. Deleting is only possible if it has
+              never been quoted on or run.
+            </span>
+            <button type="button" className="btn sm ghost" onClick={() => setArmed(false)}>
+              Keep it
+            </button>
+            <button type="button" className="btn sm" onClick={onRetire}>
+              Retire
+            </button>
+            <button type="button" className="btn sm danger" onClick={onDelete}>
+              Delete
+            </button>
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -1088,6 +1289,7 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
   const { money } = useMemo(() => makeMoney(rates.currency, rates.locale), [rates])
   const [rows, setRows] = useState<MaterialRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
   const [openId, setOpenId] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
@@ -1152,6 +1354,7 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
   }
 
   const measured = rows.filter((r) => r.costBasis === 'purchases').length
+  const shown = filterBy(rows, query, asSearchItem.material)
 
   return (
     <>
@@ -1175,6 +1378,16 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
         </div>
       </div>
 
+      {rows.length > 3 && (
+        <SearchField
+          value={query}
+          onChange={setQuery}
+          placeholder="Find a material by name or kind"
+          hidden={rows.length - shown.length}
+          noun="material"
+        />
+      )}
+
       <div className="pane" style={{ padding: 0, overflowX: 'auto' }}>
         <table>
           <thead>
@@ -1190,7 +1403,7 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
             </tr>
           </thead>
           <tbody>
-            {rows.map((m) => (
+            {shown.map((m) => (
               <Fragment key={m.id}>
                 <tr style={m.archived ? { opacity: 0.5 } : undefined}>
                   <td>

@@ -7,6 +7,88 @@ Notable changes, newest first. Dates are the day the work landed.
 The first round of changes driven by someone actually using the app rather
 than reading its tests.
 
+### One box that finds anything
+
+A shop's things live on four screens, two of which are tabs inside a third.
+Knowing that a spool of grey PETG is under Shop settings → Materials is
+knowledge about Guma, not about running a print shop. So there is now a
+search box in the top bar — ⌘K, or Ctrl-K — that finds projects, clients,
+machines and materials, and goes to them. A client result opens their row.
+A machine result opens the machines tab. Arrows move, Enter goes.
+
+Every list has its own filter field too, and all of them run the same
+matcher, so a client who can be found by phone number in the top bar can be
+found by phone number on the Clients screen. Three rules it follows:
+
+- **Every word must match.** "hafen bracket" means both, because the second
+  word is supposed to narrow. The board's old filter OR'd its three fields
+  together and so matched nothing at all for that query.
+- **Accents do not count,** both directions. A client entered as *Muñoz*
+  is found by typing `munoz`, and one entered as *Munoz* by typing `Muñoz`.
+  They are the same person; a tool that disagrees is wrong.
+- **Nothing is fuzzy.** An empty result means "you do not have one of
+  those" — which is only useful if it is reliably true.
+
+Searchable text is not limited to what a row displays: a client's phone
+number and email address, a project's reference number, a machine's
+technology. A shop looking at a missed call types the number.
+
+And a filtered list never looks like an empty one. "Nobody matches
+'zzz' — you have 4 clients on file" is a different sentence from "no
+clients yet", because the failure being prevented is somebody searching a
+name, seeing nothing, and entering that client a second time.
+
+### Fixed: a machine you added did not appear
+
+The machines tab read its list from the shop context once, on first render,
+and then never looked at it again. Adding a machine saved it correctly and
+re-rendered from the stale copy — so the machine was in the database and not
+on the screen, and the only way to see it was to leave the tab and come
+back. From the outside that is indistinguishable from the save having
+failed. It is the largest part of what "the save feature is not smooth"
+meant, and there is now a test that renders the screen, adds a machine, and
+fails if the machine is not visible.
+
+### Saving is something you can see happen
+
+Every save button did the same three things: disable itself, say "Saving…"
+for about eighty milliseconds, and go back to saying "Save". On a local
+SQLite file that is far too fast to see, so the button appeared to do
+nothing at all and the only way to check was to navigate away and back.
+
+Buttons now say **Saved ✓** and hold it long enough to read, adding a client
+or a machine says their name back, and a refusal shows the refusal rather
+than a tick. (The first version of this read the error off the hook right
+after awaiting, which is reading the render *before* the failed one — it
+caught the failure and displayed nothing. The save now hands back what
+happened rather than requiring a re-render to find out.)
+
+### You can get rid of a machine
+
+Machines could be added and never removed, so a printer you sold stayed in
+every quote dropdown forever and a typo was permanent.
+
+Deleting is right for a machine nothing points at, and wrong for one with
+build runs behind it — those hours are what made old projects cost what they
+cost, and removing the machine would rewrite finished money. So Guma deletes
+when it is safe and **retires** when it is not: a retired machine keeps every
+run it ever did and disappears from everywhere work is priced, including
+from what a connected AI can see. Both options are offered together, with
+the difference stated, before either is pressed.
+
+### Intake stops you creating the same client twice
+
+The client field decided whether a name was new by exact string equality,
+then said so confidently — so typing `hafen gmbh` for a client saved as
+*Hafen GmbH* announced a new client. It was not one (the save matches
+case-insensitively), so the label was a lie in the reassuring direction.
+
+It now uses the rule the save actually uses, and a near miss stops and asks:
+*"Hafen" — this will create a second client. Did you mean Hafen GmbH?* with
+a button that takes the spelling already on file. Three ledgers called
+*Hafen*, *Hafen GmbH* and *Hafen Gmbh*, each holding a third of the money,
+is the kind of mess nothing in the app would ever have pointed out.
+
 ### You can add and remove clients
 
 A client used to come into existence only as a side effect of saving a quote.

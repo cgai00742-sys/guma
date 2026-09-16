@@ -84,7 +84,18 @@ export interface PrinterRow {
   rate_hourly: number
   wear_hourly: number
   watts: number | null
+  /** 1 once the machine has been retired. Retired machines keep every run
+   *  they ever did and stop appearing anywhere work is priced -- see
+   *  0011_retire_machines.sql. SQLite has no booleans, so this is 0 or 1
+   *  and every read of it goes through Number(). */
+  archived: number
 }
+
+/** What a caller supplies when adding or editing a machine. Retiring is its
+ *  own operation (setPrinterRetired), not a field on the edit form -- a
+ *  checkbox that can silently take a printer out of every quote is not a
+ *  thing to put next to "model". */
+export type PrinterInput = Omit<PrinterRow, 'id' | 'archived'> & { id?: string }
 
 export interface Profile {
   id: string

@@ -61,6 +61,30 @@ Guma is that layer. It reads your machines; it does not drive them.
   directly; a repeat job attaches to the client it belongs to instead of
   creating a second one from a different spelling.
 
+**Finding things**
+
+- **One box for everything.** ⌘K (Ctrl-K) from anywhere finds projects, clients,
+  machines and materials and goes to them — a client result opens their row, a
+  machine result opens the right settings tab. Every list has its own filter
+  field, running the same matcher, so a client findable by phone number in one
+  place is findable by phone number in the other.
+- **It searches what the screen does not show.** Phone numbers, email addresses,
+  job reference numbers, a machine's technology. A shop looking at a missed call
+  types the number.
+- **Every word narrows.** "hafen bracket" means both words, accents fold both
+  ways (`munoz` finds Muñoz and the reverse), and nothing is fuzzy — so an empty
+  result reliably means you do not have one of those. A filtered list always says
+  what it is hiding, because "nothing matches" and "you own nothing" must never
+  look the same.
+
+**Machines and materials**
+
+- **Retire a machine, or delete one.** Deleting is offered only where it is safe.
+  A machine with build runs behind it cannot be deleted — those hours are what
+  made old projects cost what they cost — so it is retired instead: gone from
+  every quote and from what a connected AI can see, still on every project it
+  built.
+
 **Knowing whether it was worth it**
 
 - **Quoted against actual.** Log build runs and your hours, and the project page
@@ -259,6 +283,8 @@ src/lib/dates.ts           calendar dates in the shop's timezone, never UTC.
 src/lib/data.ts            picks a backend at runtime: local SQLite in the
                            desktop app, hosted Supabase in the browser.
                            Screens only ever import from here.
+src/lib/search.ts          the one matcher every search box in the app runs
+src/lib/searchItems.ts     how each kind of row reads as something findable
 src/lib/data.local.ts      every database call, against the SQLite file the desktop app owns
 src/lib/data.supabase.ts   every database call, against your hosted Supabase project
 src/screens/               Setup · Intake · Projects (board + list) · Project ·
@@ -278,7 +304,8 @@ scripts/repair-migrations.mjs   `npm run db:repair`, for a database whose
 Useful scripts:
 
 ```bash
-npm test                   # 117 tests, including a full intake-to-delivered walk
+npm test                   # 295 tests, including a full intake-to-delivered walk
+npm run test:tz            # the same suite swept across six timezones
 npm run tauri dev          # the desktop app against live source
 npm run db:repair          # fix a database that will not open after a schema change
 npm run migrations:lock    # record a NEW migration's checksum

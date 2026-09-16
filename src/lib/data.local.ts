@@ -30,6 +30,7 @@ import type {
   Shop,
   RateCardRow,
   PrinterRow,
+  PrinterInput,
   Profile,
   ShopContext,
   SetupPayload,
@@ -270,7 +271,12 @@ export async function loadShopContext(): Promise<ShopContext> {
         order by m.name`,
       [shop.id],
     ),
-    d.select<PrinterRow[]>('select * from printers where shop_id = ? order by name', [shop.id]),
+    // Every machine, retired ones included -- the settings list has to be
+    // able to show you what you retired in order to let you un-retire it.
+    // The pickers get the live ones only, filtered just below.
+    d.select<PrinterRow[]>('select * from printers where shop_id = ? order by archived, name', [
+      shop.id,
+    ]),
   ])
 
   const rateCard = rateCards[0]
@@ -291,7 +297,12 @@ export async function loadShopContext(): Promise<ShopContext> {
         swatch: m.swatch as string,
       }),
     ),
-    printers: printers.map(
+    // A retired machine must not be offerable on a new quote. It stays in
+    // printerRows (below) so Settings can list and restore it, but it is
+    // gone from everything that prices work.
+    printers: printers
+      .filter((p) => !Number(p.archived))
+      .map(
       (p): PrinterRef => ({
         id: p.id,
         name: p.name,
@@ -300,7 +311,7 @@ export async function loadShopContext(): Promise<ShopContext> {
         wearPerHour: Number(p.wear_hourly),
         watts: p.watts == null ? null : Number(p.watts),
       }),
-    ),
+      ),
     printerRows: printers,
   }
 }
@@ -421,7 +432,7 @@ export async function dismissWelcome(shopId: string): Promise<void> {
 
 export async function savePrinter(
   shopId: string,
-  next: Omit<PrinterRow, 'id'> & { id?: string },
+  next: PrinterInput,
 ): Promise<PrinterRow> {
   const d = await db()
   const row = {
@@ -448,6 +459,75 @@ export async function savePrinter(
   }
   const rows = await d.select<PrinterRow[]>('select * from printers where id = ?', [id])
   return rows[0]
+}
+
+/**
+ * Retire a machine, or bring it back.
+ *
+ * The honest middle ground between keeping a sold printer in every dropdown
+ * forever and deleting the history of everything it ever built. A retired
+ * machine is gone from the quote form and from pricing; its runs, and the
+ * costs those runs put on old projects, are untouched.
+ */
+export async function setPrinterRetired(
+  shopId: string,
+  printerId: string,
+  retired: boolean,
+): Promise<void> {
+  const d = await db()
+  const res = await d.execute('update printers set archived = ? where id = ? and shop_id = ?', [
+    retired ? 1 : 0,
+    printerId,
+    shopId,
+  ])
+  if (res.rowsAffected === 0) throw new Error('That machine no longer exists.')
+}
+
+/**
+ * Delete a machine outright -- only ever for one nothing points at.
+ *
+ * Same rule as deleteClient, for the same reason. A printer with build runs
+ * behind it is load-bearing: its hours are what made those projects cost
+ * what they cost, and removing it would rewrite finished money. A printer
+ * named on a quote is the machine that quote was priced for. In both cases
+ * Guma refuses and says what is in the way, rather than cascading.
+ *
+ * A machine added five minutes ago with a typo in its name has neither, and
+ * deletes cleanly, which is the case this mostly exists for.
+ */
+export async function deletePrinter(shopId: string, printerId: string): Promise<void> {
+  const d = await db()
+  const [meta] = await d.select<{ name: string }[]>(
+    'select name from printers where id = ? and shop_id = ?',
+    [printerId, shopId],
+  )
+  if (!meta) throw new Error('That machine no longer exists.')
+  const [counts] = await d.select<{ runs: number; quotes: number }[]>(
+    `select
+       (select count(*) from print_runs where printer_id = ?) as runs,
+       (select count(*) from quotes     where printer_id = ?) as quotes`,
+    [printerId, printerId],
+  )
+  const runs = Number(counts?.runs ?? 0)
+  const quotes = Number(counts?.quotes ?? 0)
+  if (runs > 0 || quotes > 0) {
+    const held = [
+      runs > 0 ? `${runs} build run${runs === 1 ? '' : 's'}` : null,
+      quotes > 0 ? `${quotes} quote${quotes === 1 ? '' : 's'}` : null,
+    ]
+      .filter(Boolean)
+      .join(' and ')
+    throw new Error(
+      `${meta.name} has ${held} behind it. Deleting it would change what those ` +
+        'projects cost after the fact. Retire it instead: it keeps the history and ' +
+        'stops appearing when you price new work.',
+    )
+  }
+  const res = await d.execute('delete from printers where id = ? and shop_id = ?', [
+    printerId,
+    shopId,
+  ])
+  if (res.rowsAffected === 0) throw new Error('That machine no longer exists.')
 }
 
 /** GUMA-2026-0184 — sequential within the year, per shop. Same scheme as

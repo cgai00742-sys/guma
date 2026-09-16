@@ -52,6 +52,21 @@ export default defineConfig({
      * Run `npm run test:tz` to sweep six zones from UTC-10 to UTC+14.
      */
     env: { TZ: 'Pacific/Chatham' },
+    /**
+     * Five seconds is not enough for these.
+     *
+     * Most of the suite is pure functions and finishes in microseconds, but
+     * the render tests drive a real jsdom through userEvent, which types
+     * one character at a time through the full React event machinery. Half
+     * a second on an idle machine becomes several when eighteen test files
+     * are running in parallel on a shared CI box, and the result is a
+     * failure that says "timed out" about code that is perfectly correct.
+     *
+     * A generous ceiling costs nothing when tests pass -- it is a ceiling,
+     * not a delay -- and buys the suite the right to be believed when it
+     * goes red.
+     */
+    testTimeout: 15000,
   },
   define: {
     __BUILD_STAMP__: JSON.stringify(stamp()),

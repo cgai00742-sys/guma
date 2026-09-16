@@ -172,3 +172,112 @@ describe('editing and deleting', () => {
     expect(await screen.findByText(/would take those projects/i)).toBeDefined()
   })
 })
+
+describe('finding a client', () => {
+  const shop = () => [
+    row({ id: 'c1', name: 'Hafen GmbH', contact: 'Ilse Braun', email: 'ilse@hafen.de', phone: '040 555 118' }),
+    row({ id: 'c2', name: 'Hafenstadt Schule', kind: 'nonprofit', contact: null, email: null }),
+    row({ id: 'c3', name: 'Muñoz Studio', contact: 'Rafa', email: null }),
+    row({ id: 'c4', name: 'Tomas Reyes', kind: 'individual', contact: null, email: null }),
+  ]
+
+  it('narrows the table as you type, and says how many it is hiding', async () => {
+    clients = shop()
+    await renderClients()
+    const user = userEvent.setup()
+    await user.type(screen.getByRole('searchbox', { name: /find a client/i }), 'hafen')
+
+    expect(screen.getByText('Hafen GmbH')).toBeDefined()
+    expect(screen.getByText('Hafenstadt Schule')).toBeDefined()
+    expect(screen.queryByText('Tomas Reyes')).toBeNull()
+    expect(screen.getByText(/2 clients hidden/i)).toBeDefined()
+  })
+
+  it('finds a client by something the table never shows — their phone number', async () => {
+    clients = shop()
+    await renderClients()
+    const user = userEvent.setup()
+    await user.type(screen.getByRole('searchbox', { name: /find a client/i }), '555 118')
+    expect(screen.getByText('Hafen GmbH')).toBeDefined()
+    expect(screen.queryByText('Tomas Reyes')).toBeNull()
+  })
+
+  it('does not care which way round the accent was typed', async () => {
+    clients = shop()
+    await renderClients()
+    const user = userEvent.setup()
+    await user.type(screen.getByRole('searchbox', { name: /find a client/i }), 'munoz')
+    expect(screen.getByText('Muñoz Studio')).toBeDefined()
+  })
+
+  it('never lets a search look like an empty client list', async () => {
+    // The failure this prevents: someone searches a name, sees nothing,
+    // concludes the client is not on file, and enters them a second time.
+    clients = shop()
+    await renderClients()
+    const user = userEvent.setup()
+    await user.type(screen.getByRole('searchbox', { name: /find a client/i }), 'zzzz')
+
+    expect(screen.getByText(/nobody matches/i)).toBeDefined()
+    expect(screen.getByText(/you have 4 clients on file/i)).toBeDefined()
+    expect(screen.queryByText(/no clients yet/i)).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: /show everyone/i }))
+    expect(screen.getByText('Tomas Reyes')).toBeDefined()
+  })
+
+  it('stays out of the way when there is nobody to search', async () => {
+    clients = []
+    await renderClients()
+    expect(screen.queryByRole('searchbox', { name: /find a client/i })).toBeNull()
+  })
+})
+
+describe('adding a client is something you can see happen', () => {
+  it('names the client it just added, and shows them even mid-search', async () => {
+    clients = [row({ id: 'c1', name: 'Hafen GmbH' })]
+    await renderClients()
+    const user = userEvent.setup()
+
+    // Searching for somebody who is not there yet is exactly when people
+    // press Add — so the search must not then hide the result.
+    await user.type(screen.getByRole('searchbox', { name: /find a client/i }), 'reyes')
+    await user.click(screen.getByRole('button', { name: /add a client/i }))
+    await user.type(screen.getByLabelText(/^name/i), 'Tomas Reyes')
+
+    createClient.mockImplementationOnce(async () => {
+      clients = [row({ id: 'c1', name: 'Hafen GmbH' }), row({ id: 'c9', name: 'Tomas Reyes' })]
+      return 'c9'
+    })
+    await user.click(screen.getByRole('button', { name: /add client/i }))
+
+    expect(await screen.findByText(/Tomas Reyes added/i)).toBeDefined()
+    await waitFor(() => expect(screen.getByText('Tomas Reyes')).toBeDefined())
+    expect((screen.getByRole('searchbox', { name: /find a client/i }) as HTMLInputElement).value).toBe('')
+  })
+
+  it('shows the button failing rather than a tick, when the name is taken', async () => {
+    clients = [row({ id: 'c1', name: 'Hafen GmbH' })]
+    await renderClients()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /add a client/i }))
+    await user.type(screen.getByLabelText(/^name/i), 'hafen gmbh')
+    createClient.mockRejectedValueOnce(new Error('You already have a client called Hafen GmbH.'))
+    await user.click(screen.getByRole('button', { name: /add client/i }))
+
+    expect(await screen.findByText(/already have a client called/i)).toBeDefined()
+    expect(screen.queryByText(/added\.$/i)).toBeNull()
+  })
+
+  it('confirms an edit instead of leaving the button looking untouched', async () => {
+    clients = [row({ id: 'c1', name: 'Hafen GmbH' })]
+    await renderClients()
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Hafen GmbH'))
+    await user.type(screen.getByLabelText(/person to deal with/i), 'Ilse')
+    await user.click(screen.getByRole('button', { name: /save details/i }))
+
+    await waitFor(() => expect(updateClientRecord).toHaveBeenCalled())
+    expect(await screen.findByRole('button', { name: /saved/i })).toBeDefined()
+  })
+})
