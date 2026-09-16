@@ -175,6 +175,21 @@ export async function dismissWelcome(shopId: string): Promise<void> {
   return (await backend()).dismissWelcome(shopId)
 }
 
+export async function listGuideSeen(shopId: string): Promise<string[]> {
+  return (await backend()).listGuideSeen(shopId)
+}
+
+export async function createInHouseJob(
+  shopId: string,
+  input: { title: string; brief?: string | null },
+): Promise<string> {
+  return (await backend()).createInHouseJob(shopId, input)
+}
+
+export async function markGuideSeen(shopId: string, chapter: string): Promise<void> {
+  return (await backend()).markGuideSeen(shopId, chapter)
+}
+
 export async function savePrinter(shopId: string, next: PrinterInput): Promise<PrinterRow> {
   return (await backend()).savePrinter(shopId, next)
 }

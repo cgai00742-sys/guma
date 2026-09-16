@@ -77,6 +77,12 @@ pub fn run() {
       sql: include_str!("../migrations/0012_in_house.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 13,
+      description: "guide chapters, shown once at the moment they are needed",
+      sql: include_str!("../migrations/0013_guide.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

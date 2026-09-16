@@ -296,6 +296,13 @@ src/lib/benchmarks.ts      what other shops charge, every figure cited and
 src/lib/derive.ts          the cost arithmetic Setup used to describe and
                            leave to you: wear, power, per-gram, what a rate
                            comes to in a year
+src/lib/guide.ts           what the program explains and when -- chapters
+                           fired at the moment of need, shown once, never
+                           a tour
+src/lib/unbilled.ts        in-house work: what your own jobs cost you, and
+                           the measured share of your week that is billable
+src/lib/power.ts           published electricity by US state, so machine
+                           time stops pricing at break-even
 src/lib/history.ts         your own finished jobs folded into what they say
                            about your pricing; unmeasured jobs excluded so
                            they cannot report a perfect margin
@@ -318,7 +325,7 @@ scripts/repair-migrations.mjs   `npm run db:repair`, for a database whose
 Useful scripts:
 
 ```bash
-npm test                   # 358 tests, including a full intake-to-delivered walk
+npm test                   # 385 tests, including a full intake-to-delivered walk
 npm run test:tz            # the same suite swept across six timezones
 npm run tauri dev          # the desktop app against live source
 npm run db:repair          # fix a database that will not open after a schema change

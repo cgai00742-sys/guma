@@ -28,6 +28,9 @@ import { PHASE_LABEL, flagsFor, gateStatus, worstTone, type Flag } from '../lib/
 import SearchField from '../components/SearchField'
 import { filterBy } from '../lib/search'
 import { asSearchItem } from '../lib/searchItems'
+import GuideModal from '../components/GuideModal'
+import InHouseDialog from '../components/InHouseDialog'
+import { useGuide } from '../lib/useGuide'
 
 type SortKey = 'saved' | 'stage' | 'due' | 'value' | 'owed' | 'flags'
 type Show = 'live' | 'drafts' | 'all'
@@ -60,6 +63,32 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
 
   const [jobs, setJobs] = useState<JobListRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [newInHouse, setNewInHouse] = useState(false)
+
+  /**
+   * What Guma knows about this shop, for deciding whether it has anything
+   * worth saying. Null until the jobs load — a chapter fired against
+   * half-loaded state would be deciding on numbers that are about to
+   * change. See src/lib/guide.ts.
+   */
+  const guideState = useMemo(
+    () =>
+      jobs
+        ? {
+            screen: 'projects' as const,
+            clientJobs: jobs.filter((j) => j.facts.kind === 'client').length,
+            inHouseJobs: jobs.filter((j) => j.facts.kind === 'inhouse').length,
+            quotesSent: jobs.filter((j) => j.facts.quoteStatus && j.facts.quoteStatus !== 'draft')
+              .length,
+            loggedHours: jobs.reduce((n, j) => n + j.facts.actualHours, 0),
+            machineCostComplete: ctx.printerRows.some(
+              (p) => Number(p.wear_hourly) > 0 && p.watts != null,
+            ) && ctx.shop.electricity_rate_kwh != null,
+          }
+        : null,
+    [jobs, ctx.printerRows, ctx.shop.electricity_rate_kwh],
+  )
+  const { chapter, dismiss } = useGuide(ctx.shop.id, guideState)
 
   useEffect(() => {
     let cancelled = false
@@ -162,10 +191,33 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
           </div>
         </div>
         {viewSwitch}
+        <button type="button" className="btn" onClick={() => setNewInHouse(true)}>
+          In-house job
+        </button>
         <Link to="/intake" className="btn primary" style={{ textDecoration: 'none' }}>
           New project
         </Link>
       </div>
+
+      <GuideModal
+        chapter={chapter}
+        onClose={dismiss}
+        onAction={(id) => {
+          dismiss(id)
+          if (id === 'in-house') setNewInHouse(true)
+          if (id === 'machine-cost') navigate('/settings?tab=machines')
+        }}
+      />
+
+      <InHouseDialog
+        open={newInHouse}
+        shopId={ctx.shop.id}
+        onCancel={() => setNewInHouse(false)}
+        onCreated={(jobId) => {
+          setNewInHouse(false)
+          navigate(`/project/${jobId}`)
+        }}
+      />
 
       {error && (
         <div className="alert">

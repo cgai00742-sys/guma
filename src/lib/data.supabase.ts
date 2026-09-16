@@ -366,6 +366,78 @@ export async function dismissWelcome(shopId: string): Promise<void> {
   if (error) throw error
 }
 
+/** Guide chapters this shop has been shown. Mirrors data.local's pair; the
+ *  hosted table follows the same shape as 0013_guide.sql. A rejection is
+ *  treated by callers as "show nothing" rather than surfaced -- guidance is
+ *  the first thing to give up when something is wrong. */
+export async function listGuideSeen(shopId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('guide_seen')
+    .select('chapter')
+    .eq('shop_id', shopId)
+  if (error) throw error
+  return (data ?? []).map((r: { chapter: string }) => r.chapter)
+}
+
+export async function markGuideSeen(shopId: string, chapter: string): Promise<void> {
+  const { error } = await supabase
+    .from('guide_seen')
+    .upsert({ shop_id: shopId, chapter }, { onConflict: 'shop_id,chapter' })
+  if (error) throw error
+}
+
+/** The hidden client an in-house job hangs off. Mirrors data.local's; see
+ *  0012_in_house.sql for why in-house work is a job kind rather than a
+ *  client, and why the storage still needs a row. */
+async function systemClientId(shopId: string): Promise<string> {
+  const found = await supabase
+    .from('clients')
+    .select('id')
+    .eq('shop_id', shopId)
+    .eq('system', true)
+    .limit(1)
+  if (found.error) throw found.error
+  if (found.data?.[0]) return found.data[0].id
+
+  const made = await supabase
+    .from('clients')
+    .insert({ shop_id: shopId, name: 'In-house', system: true })
+    .select('id')
+    .single()
+  if (made.error) throw made.error
+  return made.data.id
+}
+
+/** Work with no client: R&D, test prints, calibration, samples, and the
+ *  shop's own product designs. Lands in 'design' rather than 'intake' --
+ *  intake is where a client brief becomes a quote, and neither applies. */
+export async function createInHouseJob(
+  shopId: string,
+  input: { title: string; brief?: string | null },
+): Promise<string> {
+  const title = input.title.trim()
+  if (!title) throw new Error('An in-house job needs a title — what are you working on?')
+
+  const clientId = await systemClientId(shopId)
+  const ref = await nextJobRef(shopId)
+  const { data, error } = await supabase
+    .from('jobs')
+    .insert({
+      shop_id: shopId,
+      ref,
+      client_id: clientId,
+      title,
+      brief: input.brief?.trim() || null,
+      kind: 'inhouse',
+      phase: 'design',
+      asset_origin: 'model',
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  return data.id
+}
+
 export async function savePrinter(
   shopId: string,
   next: PrinterInput,

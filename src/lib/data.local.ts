@@ -430,6 +430,33 @@ export async function dismissWelcome(shopId: string): Promise<void> {
   await d.execute('update shops set show_welcome = 0 where id = ?', [shopId])
 }
 
+/**
+ * Guide chapters this shop has already been shown.
+ *
+ * A failure here must never stop a screen loading -- guidance is the first
+ * thing to give up when something is wrong, not the last. Callers treat a
+ * rejection as "show nothing", which is the same shape as having seen
+ * everything.
+ */
+export async function listGuideSeen(shopId: string): Promise<string[]> {
+  const d = await db()
+  const rows = await d.select<{ chapter: string }[]>(
+    'select chapter from guide_seen where shop_id = ?',
+    [shopId],
+  )
+  return rows.map((r) => r.chapter)
+}
+
+/** Idempotent by primary key, so a double-click cannot double-insert and
+ *  nothing has to check first. */
+export async function markGuideSeen(shopId: string, chapter: string): Promise<void> {
+  const d = await db()
+  await d.execute(
+    'insert into guide_seen (shop_id, chapter) values (?, ?) on conflict do nothing',
+    [shopId, chapter],
+  )
+}
+
 export async function savePrinter(
   shopId: string,
   next: PrinterInput,
@@ -533,6 +560,68 @@ export async function deletePrinter(shopId: string, printerId: string): Promise<
 /** GUMA-2026-0184 — sequential within the year, per shop. Same scheme as
  *  the hosted version; SQLite's text ordering handles the zero-padded
  *  suffix the same way Postgres's does. */
+/**
+ * The one hidden client row an in-house job hangs off.
+ *
+ * See 0012_in_house.sql for why this exists rather than a nullable
+ * client_id. It is created on demand rather than at setup, so a shop that
+ * never logs in-house work never grows a row it did not ask for, and every
+ * client-facing query filters `system = 0` so it is invisible either way.
+ *
+ * The unique index on (shop_id) where system = 1 means two racing calls
+ * cannot produce two system clients; the second insert is ignored and both
+ * callers read back the same id.
+ */
+async function systemClientId(shopId: string): Promise<string> {
+  const d = await db()
+  const found = await d.select<{ id: string }[]>(
+    'select id from clients where shop_id = ? and system = 1 limit 1',
+    [shopId],
+  )
+  if (found[0]) return found[0].id
+
+  const id = crypto.randomUUID()
+  await d.execute(
+    `insert into clients (id, shop_id, name, system) values (?, ?, ?, 1)
+     on conflict do nothing`,
+    [id, shopId, 'In-house'],
+  )
+  const after = await d.select<{ id: string }[]>(
+    'select id from clients where shop_id = ? and system = 1 limit 1',
+    [shopId],
+  )
+  return after[0]!.id
+}
+
+/**
+ * Start a job with no client: R&D, a test print, calibration, a sample, or
+ * designing something the shop means to sell itself.
+ *
+ * Lands in 'design' rather than 'intake'. Intake is the stage where a
+ * client's brief is turned into a quote, and there is no client and never
+ * will be a quote -- parking in-house work there would leave every one of
+ * them sitting in a queue waiting for a step that does not apply.
+ */
+export async function createInHouseJob(
+  shopId: string,
+  input: { title: string; brief?: string | null },
+): Promise<string> {
+  const title = input.title.trim()
+  if (!title) throw new Error('An in-house job needs a title — what are you working on?')
+
+  const d = await db()
+  const jobId = crypto.randomUUID()
+  const clientId = await systemClientId(shopId)
+  const ref = await nextJobRef(shopId)
+
+  await d.execute(
+    `insert into jobs (id, shop_id, ref, client_id, title, brief, kind, phase, asset_origin)
+     values (?, ?, ?, ?, ?, ?, 'inhouse', 'design', 'model')`,
+    [jobId, shopId, ref, clientId, title, input.brief?.trim() || null],
+  )
+  return jobId
+}
+
 export async function nextJobRef(shopId: string): Promise<string> {
   const d = await db()
   const year = new Date().getFullYear()
@@ -806,7 +895,7 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
   const d = await db()
 
   const existing = await d.select<{ id: string }[]>(
-    'select id from clients where shop_id = ? and name like ? limit 1',
+    'select id from clients where shop_id = ? and system = 0 and name like ? limit 1',
     [args.shopId, args.client.name],
   )
 
@@ -1310,7 +1399,9 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
      left join jobs j on j.client_id = c.id
      left join quotes q on q.job_id = j.id
      left join job_money m on m.job_id = j.id
-     where c.shop_id = ?
+     -- The in-house row is a storage detail, not a client. It never appears
+     -- in the list, the counts or the money. See 0012_in_house.sql.
+     where c.shop_id = ? and c.system = 0
      group by c.id, c.name, c.kind, c.contact, c.email, c.phone
      order by c.name collate nocase`,
     [shopId],
@@ -1349,7 +1440,7 @@ export async function createClient(shopId: string, input: ClientEditInput): Prom
   if (!name) throw new Error('A client needs a name.')
   const d = await db()
   const dupes = await d.select<{ id: string }[]>(
-    'select id from clients where shop_id = ? and name = ? collate nocase',
+    'select id from clients where shop_id = ? and system = 0 and name = ? collate nocase',
     [shopId, name],
   )
   if (dupes[0]) {

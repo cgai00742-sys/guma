@@ -246,6 +246,67 @@ been a regression against that — and against the multi-timezone test sweep
 that exists specifically to catch it (`npm run test:tz`, six zones from
 UTC-10 to UTC+14).
 
+### Work nobody is paying for
+
+Guma could only ever see a job with a client on the other end of it. Test
+prints, failed experiments, calibration, samples, designing something to
+sell yourself — none of it existed. That is worse than a gap, because a
+shop reading margins on client jobs alone sees healthy numbers on every one
+of them while losing money on the share of its capacity nobody paid for.
+The report says fine, the bank says otherwise, and both are reading real
+numbers.
+
+In-house jobs are now a real kind of job: no client, no quote, no invoice,
+but the full machinery of runs, hours, material draw and failures. Start one
+from Projects. `client_id` stays NOT NULL on purpose — nine tables cascade
+off `jobs` and SQLite cannot relax a NOT NULL in place, so each shop gets one
+hidden client flagged `system = 1` that every client-facing query filters
+out. The flag is what matters; the storage can be swapped later without
+touching a screen.
+
+The payoff is the billable ratio. `derive.ts` assumes twenty billable hours
+in a forty-hour week — an assumption worth the difference between $104k and
+$48k a year on the same rate, and a guess, because nothing could know. Log
+in-house work and it becomes measured. A shop that finds it bills nine hours
+in forty has not found a bug.
+
+### The program explains itself, at the moment it has something to say
+
+Guma opened on six screens and explained none of them. Everything was
+discoverable and nothing was pointed at, which is fine for software you have
+decided to learn and wrong for a tool whose whole promise is making your own
+numbers legible — somebody who has to work out the program first has been
+handed a second problem, not helped with the first.
+
+There is now guidance, and deliberately not a tour. A tour fires when
+somebody knows least about what they need, covers features they have no use
+for yet, and trains the reflex of dismissing whatever the program pops up;
+the published numbers are unkind to it, with core features averaging about a
+quarter adoption across B2B products despite them, while short prompts shown
+at the moment of need complete far better.
+
+So guidance is a set of small chapters, each fired the first time a shop
+actually reaches the thing it explains, shown once, ever. In-house work is
+explained the first time you are looking at a board with work on it and have
+never logged any. The missing wattage is raised once a quote has been sent
+and the margin has had a chance to mislead you — not before. Rate versioning
+is explained in Settings, once there is a quote that versioning protects.
+
+Three rules are in the test suite rather than in anyone's good intentions:
+one chapter at a time (the second modal in a session is the one that teaches
+people to stop reading them), never one whose condition is not currently
+true, and nothing longer than three points — every previous version of
+guidance in this app had to be cut down after somebody looked at it.
+
+### Also
+
+- `power.ts`: published commercial electricity by US state, from EIA table
+  5.6.A. Hawaii is 43c/kWh and North Dakota is 7c — there is no sensible
+  default serving both, which is why that field has sat blank and why margins
+  have been reading low. US only; null everywhere else, on the same terms as
+  the rate benchmarks.
+- 385 tests, up from 358.
+
 ### Setup tells you what things cost
 
 Setup carried a notice reading "Guma ships no default rates on purpose — a
