@@ -13,6 +13,7 @@ import QuoteDoc from './screens/QuoteDoc'
 import Closeout from './screens/Closeout'
 import WelcomeModal from './components/WelcomeModal'
 import SetupGuide from './screens/SetupGuide'
+import { planFor } from './lib/setupPlan'
 import GlobalSearch from './components/GlobalSearch'
 
 // SignIn is the ONE screen that still statically imports supabase.ts (it
@@ -43,6 +44,10 @@ export default function App() {
   const [ctx, setCtx] = useState<ShopContext | null>(null)
   const [ctxError, setCtxError] = useState<string | null>(null)
   const [needsSetup, setNeedsSetup] = useState(false)
+  /** "Finish later" on the setup guide. Session-only on purpose: the guide
+   *  comes back next launch, because an unfinished shop is still reporting
+   *  numbers it cannot support. */
+  const [setupDeferred, setSetupDeferred] = useState(false)
   const location = useLocation()
 
   useEffect(() => {
@@ -132,9 +137,44 @@ export default function App() {
     )
   }
 
+  /**
+   * A shop that is not set up opens on setting itself up.
+   *
+   * Having a shop row is not the same as being ready to price anything.
+   * The old first run created the row from three thin steps and then
+   * dropped somebody onto an empty board with no electricity rate, no
+   * material cost and no machine wattage -- a program that looks like it
+   * works while reporting break-even machine time on every quote.
+   *
+   * So the guide is the front door until the numbers behind it are real.
+   * It is not modal and not a gate: "Finish later" goes straight through
+   * for this session, and the banner on Projects carries the rest. But it
+   * opens on launch, every launch, until the shop is actually configured,
+   * because the alternative is a setup screen nobody ever goes looking for.
+   */
+  const plan = ctx
+    ? planFor({
+        shop: ctx.shop,
+        rateCard: ctx.rateCard,
+        printerRows: ctx.printerRows,
+        materials: ctx.materials as never,
+      })
+    : null
+
+  if (ctx && plan && !plan.done && !setupDeferred) {
+    return (
+      <>
+        <TopBar ctx={ctx} desktop={desktop} />
+        <main className="app-main">
+          <SetupGuide ctx={ctx} onSaved={refresh} onDefer={() => setSetupDeferred(true)} />
+        </main>
+      </>
+    )
+  }
+
   return (
     <>
-      {ctx && <WelcomeModal shop={ctx.shop} onDismissedForever={refresh} />}
+      {ctx && plan?.done && <WelcomeModal shop={ctx.shop} onDismissedForever={refresh} />}
       <TopBar ctx={ctx} desktop={desktop} />
       <main className="app-main">
         {ctxError ? (

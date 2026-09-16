@@ -47,8 +47,19 @@ import { benchmarksFor } from '../lib/benchmarks'
 const num = (v: string) => (v.trim() === '' ? 0 : Number(v))
 const orNull = (v: string) => (v.trim() === '' ? null : Number(v))
 
-export default function SetupGuide({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
+export default function SetupGuide({
+  ctx,
+  onSaved,
+  onDefer,
+}: {
+  ctx: ShopContext
+  onSaved: () => void
+  /** Provided when the guide is the front door on launch: leaving means
+   *  falling through to the rest of the app, not navigating. */
+  onDefer?: () => void
+}) {
   const navigate = useNavigate()
+  const leave = () => (onDefer ? onDefer() : navigate('/projects'))
   const plan = useMemo(
     () =>
       planFor({
@@ -189,7 +200,7 @@ export default function SetupGuide({ ctx, onSaved }: { ctx: ShopContext; onSaved
       return
     }
     if (idx < order.length - 1) setAt(order[idx + 1])
-    else navigate('/projects')
+    else leave()
   }
 
   const pct = Math.round(plan.completeness * 100)
@@ -204,7 +215,7 @@ export default function SetupGuide({ ctx, onSaved }: { ctx: ShopContext; onSaved
             {plan.remaining.length === 1 ? '' : 's'} left · everything saves as you go
           </div>
         </div>
-        <button type="button" className="btn ghost" onClick={() => navigate('/projects')}>
+        <button type="button" className="btn ghost" onClick={leave}>
           Finish later
         </button>
       </div>

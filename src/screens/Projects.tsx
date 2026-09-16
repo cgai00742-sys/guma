@@ -19,10 +19,11 @@
  * comes back from a project, and a preference that outlives the session is
  * a preference that needs a settings screen to undo.
  */
-import { useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import Jobs from './Jobs'
 import Pipeline from './Pipeline'
+import { planFor } from '../lib/setupPlan'
 import type { ShopContext } from '../lib/data'
 
 type View = 'board' | 'list'
@@ -30,6 +31,7 @@ type View = 'board' | 'list'
 export default function Projects({ ctx }: { ctx: ShopContext }) {
   // Kept in the URL as well as in state, so a view can be linked to and
   // survives a reload — the same reason the project page is a page.
+  const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const fromUrl = params.get('view')
   const [view, setView] = useState<View>(fromUrl === 'list' ? 'list' : 'board')
@@ -53,9 +55,53 @@ export default function Projects({ ctx }: { ctx: ShopContext }) {
     </div>
   )
 
-  return view === 'board' ? (
-    <Pipeline ctx={ctx} viewSwitch={viewSwitch} />
-  ) : (
-    <Jobs ctx={ctx} viewSwitch={viewSwitch} />
+  /**
+   * How far through setting up this shop is.
+   *
+   * It lives HERE rather than in either view, because it belongs to both.
+   * It was originally written into the list view, where the default board
+   * view meant nobody ever saw it -- a banner about an unconfigured shop is
+   * worthless on the one screen most people never open.
+   */
+  const plan = useMemo(
+    () =>
+      planFor({
+        shop: ctx.shop,
+        rateCard: ctx.rateCard,
+        printerRows: ctx.printerRows,
+        materials: ctx.materials as never,
+      }),
+    [ctx],
+  )
+
+  const banner = plan.done ? null : (
+    <div className="wrap" style={{ paddingTop: 16, paddingBottom: 0 }}>
+      <div className={plan.distorting.length > 0 ? 'attn crit' : 'notice'} style={{ margin: 0 }}>
+        <span>
+          <b>
+            {plan.distorting.length > 0
+              ? 'Your numbers are not right yet.'
+              : `${Math.round(plan.completeness * 100)}% configured.`}
+          </b>{' '}
+          {plan.distorting.length > 0
+            ? plan.distorting[0].cost
+            : `Still to do: ${plan.remaining.map((s) => s.title.toLowerCase()).join(', ')}.`}{' '}
+          <button type="button" className="addnote" onClick={() => navigate('/setup-guide')}>
+            {plan.distorting.length > 0 ? 'finish setting up' : 'carry on setting up'}
+          </button>
+        </span>
+      </div>
+    </div>
+  )
+
+  return (
+    <>
+      {banner}
+      {view === 'board' ? (
+        <Pipeline ctx={ctx} viewSwitch={viewSwitch} />
+      ) : (
+        <Jobs ctx={ctx} viewSwitch={viewSwitch} />
+      )}
+    </>
   )
 }

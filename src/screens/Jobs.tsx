@@ -30,7 +30,6 @@ import { filterBy } from '../lib/search'
 import { asSearchItem } from '../lib/searchItems'
 import GuideModal from '../components/GuideModal'
 import { useGuide } from '../lib/useGuide'
-import { planFor } from '../lib/setupPlan'
 
 type SortKey = 'saved' | 'stage' | 'due' | 'value' | 'owed' | 'flags'
 type Show = 'live' | 'drafts' | 'all'
@@ -88,23 +87,6 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
     [jobs, ctx.printerRows, ctx.shop.electricity_rate_kwh],
   )
   const { chapter, dismiss } = useGuide(ctx.shop.id, guideState)
-
-  /**
-   * How far through setting up this shop is. Shown here rather than buried
-   * in settings because this is the screen somebody opens the program on,
-   * and a half-configured shop reports margins that cannot be true without
-   * saying so anywhere.
-   */
-  const plan = useMemo(
-    () =>
-      planFor({
-        shop: ctx.shop,
-        rateCard: ctx.rateCard,
-        printerRows: ctx.printerRows,
-        materials: ctx.materials as never,
-      }),
-    [ctx],
-  )
 
   useEffect(() => {
     let cancelled = false
@@ -223,24 +205,6 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
       />
 
 
-
-      {!plan.done && (
-        <div className={plan.distorting.length > 0 ? 'attn crit' : 'notice'}>
-          <span>
-            <b>
-              {plan.distorting.length > 0
-                ? 'Your numbers are not right yet.'
-                : `${Math.round(plan.completeness * 100)}% set up.`}
-            </b>{' '}
-            {plan.distorting.length > 0
-              ? plan.distorting[0].cost
-              : `Still to do: ${plan.remaining.map((s) => s.title.toLowerCase()).join(', ')}.`}{' '}
-            <button type="button" className="addnote" onClick={() => navigate('/setup-guide')}>
-              {plan.distorting.length > 0 ? 'fix it now' : 'carry on setting up'}
-            </button>
-          </span>
-        </div>
-      )}
 
       {error && (
         <div className="alert">
