@@ -21,7 +21,7 @@ import type { SearchItem } from './search'
 const TECH_LABEL: Record<PrinterRow['tech'], string> = {
   fdm: 'FDM filament',
   resin: 'Resin MSLA SLA',
-  composite: 'Composite continuous fibre',
+  composite: 'Composite continuous fiber',
   sls: 'SLS powder',
 }
 

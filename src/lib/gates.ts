@@ -208,7 +208,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
     {
       key: 'photos',
       label: 'Photographed for the record',
-      why: 'The cheapest possible defence against "it arrived broken".',
+      why: 'The cheapest possible defense against "it arrived broken".',
     },
   ],
   delivered: [],

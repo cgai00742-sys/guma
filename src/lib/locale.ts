@@ -4,9 +4,11 @@
  * Guma is downloaded and run by whoever wants it, anywhere. So nothing in
  * this file is a preselection. Every value is either read from the operating
  * system through the JavaScript runtime's own CLDR data, or left blank for
- * the shop to fill in. There is deliberately no "fall back to the United
- * States" anywhere: a blank field is honest, a wrong field that looks filled
- * in is not.
+ * the shop to fill in. There is one deliberate, narrow exception: the
+ * currency field defaults to USD when the OS gives no usable region signal
+ * at all (see osCurrency below). A detected non-US region still gets its own
+ * currency guess -- this only fires when Guma genuinely has nothing to go
+ * on, so it never overrides a real signal with a wrong-looking one.
  *
  * TIMEZONE IS NOT HERE, ON PURPOSE. Guma never stores or asks for one. Dates
  * are built from the OS clock's local calendar fields (see dates.ts), so
@@ -96,9 +98,11 @@ export function currencyForRegion(region: string): string {
   return REGION_CURRENCY[region.toUpperCase()] ?? ''
 }
 
-/** A first-guess currency for wherever this machine is set up. May be ''. */
+/** A first-guess currency for wherever this machine is set up. Falls back to
+ *  USD only when the OS gives no usable region signal at all -- a detected
+ *  region always keeps its own currency guess, even when it isn't the US. */
 export function osCurrency(): string {
-  return currencyForRegion(regionOf(osLocale()))
+  return currencyForRegion(regionOf(osLocale())) || 'USD'
 }
 
 /** Letter or A4 for a region. Unknown regions get A4: it is the ISO standard

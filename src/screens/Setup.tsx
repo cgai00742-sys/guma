@@ -223,7 +223,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <input id="w-legal" value={legalName} onChange={(e) => setLegalName(e.target.value)} placeholder="Kōlea 3D LLC" />
                 </div>
                 <div className="fld">
-                  <label className="lbl" htmlFor="w-lic">Tax / business licence no.</label>
+                  <label className="lbl" htmlFor="w-lic">Tax / business license no.</label>
                   <input id="w-lic" value={licenseNo} onChange={(e) => setLicenseNo(e.target.value)} />
                 </div>
               </div>
@@ -341,7 +341,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
 
               <div className="grid2" style={{ marginTop: 12 }}>
                 <div className="fld">
-                  <label className="lbl" htmlFor="w-design">Design / modelling per hour</label>
+                  <label className="lbl" htmlFor="w-design">Design / modeling per hour</label>
                   <input id="w-design" autoFocus type="number" min="0" value={designHourly} onChange={(e) => setDesignHourly(e.target.value)} />
                   <div className="hint">Usually the biggest line on a quote.</div>
                 </div>
@@ -427,7 +427,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <select id="w-ptech" value={pTech} onChange={(e) => setPTech(e.target.value)}>
                     <option value="fdm">FDM — filament</option>
                     <option value="resin">Resin — MSLA / SLA</option>
-                    <option value="composite">Composite — continuous fibre</option>
+                    <option value="composite">Composite — continuous fiber</option>
                     <option value="sls">SLS — powder</option>
                   </select>
                 </div>

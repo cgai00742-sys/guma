@@ -59,7 +59,7 @@ import { filterBy } from '../lib/search'
 import { useRowAnchor } from '../lib/rowAnchor'
 
 /**
- * The sample job from the design: four brackets, six hours modelling, PA-CF,
+ * The sample job from the design: four brackets, six hours modeling, PA-CF,
  * five print hours each, two hours finishing. It re-prices on every keystroke
  * and is what turns an abstract rate into a decision.
  */
@@ -94,7 +94,7 @@ const DEPOSIT_HINTS: Record<Draft['deposit_when'], string> = {
   design:
     'You model before anything prints — that is your time at risk with nothing to repossess. This is the right setting for a shop that designs.',
   print:
-    'Safer for the client, riskier for you: a project cancelled after modelling leaves you unpaid for the largest line on the quote.',
+    'Safer for the client, riskier for you: a project canceled after modeling leaves you unpaid for the largest line on the quote.',
   none: "Only if every client is someone you'd lend a truck to.",
 }
 
@@ -266,7 +266,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="pane" style={{ margin: 0 }}>
             <h3>
-              Labour
+              Labor
               <span
                 style={{
                   fontFamily: 'var(--mono)',
@@ -282,17 +282,17 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
             <div className="grid2">
               <div className="fld">
                 <label className="lbl" htmlFor="s-design">
-                  Design and modelling, per hour
+                  Design and modeling, per hour
                 </label>
                 <input id="s-design" type="number" min="0" value={draft.design_hourly} onChange={num('design_hourly')} />
                 <div className="hint">
-                  The biggest line on most of your quotes. Set it where an eight-hour modelling day pays what a day of
+                  The biggest line on most of your quotes. Set it where an eight-hour modeling day pays what a day of
                   your time is worth.
                 </div>
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="s-post">
-                  Finishing labour, per hour
+                  Finishing labor, per hour
                 </label>
                 <input
                   id="s-post"
@@ -499,7 +499,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
               What this does to a typical project
             </div>
             <div style={{ fontSize: 12, lineHeight: '17px', color: 'var(--txt-2)', marginTop: 6 }}>
-              Four brackets. Six hours modelling, {material ? material.name : 'material'}, five print hours each, two
+              Four brackets. Six hours modeling, {material ? material.name : 'material'}, five print hours each, two
               hours finishing.
             </div>
             <div
@@ -692,7 +692,7 @@ function IdentityPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
             <input id="id-phone" value={draft.phone} onChange={str('phone')} placeholder="optional" />
           </div>
           <div className="fld">
-            <label className="lbl" htmlFor="id-lic">Tax / business licence no.</label>
+            <label className="lbl" htmlFor="id-lic">Tax / business license no.</label>
             <input id="id-lic" value={draft.license_no} onChange={str('license_no')} placeholder="optional" />
           </div>
         </div>
@@ -1106,7 +1106,7 @@ function MachinesPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
               <select id="mn-tech" value={draftNew.tech} onChange={(e) => setDraftNew((d) => ({ ...d, tech: e.target.value as PrinterRow['tech'] }))}>
                 <option value="fdm">FDM — filament</option>
                 <option value="resin">Resin — MSLA / SLA</option>
-                <option value="composite">Composite — continuous fibre</option>
+                <option value="composite">Composite — continuous fiber</option>
                 <option value="sls">SLS — powder</option>
               </select>
             </div>
@@ -1210,7 +1210,7 @@ function MachineRow({
           <select id={`m-tech-${row.id}`} value={row.tech} onChange={(e) => onPatch(row.id, 'tech', e.target.value)}>
             <option value="fdm">FDM — filament</option>
             <option value="resin">Resin — MSLA / SLA</option>
-            <option value="composite">Composite — continuous fibre</option>
+            <option value="composite">Composite — continuous fiber</option>
             <option value="sls">SLS — powder</option>
           </select>
         </div>
@@ -1703,7 +1703,7 @@ function PurchaseLog({
           <input
             id={`mp-note-${material.id}`}
             value={note}
-            placeholder="Batch, colour, sale price…"
+            placeholder="Batch, color, sale price…"
             onChange={(e) => setNote(e.target.value)}
           />
         </div>
@@ -1854,7 +1854,7 @@ function NewMaterial({
         </div>
         <div className="fld">
           <label className="lbl" htmlFor="nm-swatch">
-            Colour
+            Color
           </label>
           <input
             id="nm-swatch"

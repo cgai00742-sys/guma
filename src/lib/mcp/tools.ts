@@ -111,7 +111,7 @@ const QUOTE_PROPS = {
       "'model' = you build it from nothing (most jobs, biggest design line). 'fix' = the client sent a file that will not print as-is. 'ready' = print-ready, no design line.",
   },
   design_billing: { type: 'string', enum: ['hourly', 'flat', 'none'] },
-  design_hours: num('Design and modelling hours. Ignored when asset_origin is "ready".'),
+  design_hours: num('Design and modeling hours. Ignored when asset_origin is "ready".'),
   revisions: num('Revision rounds included.'),
   quantity: num('How many pieces.'),
   material_id: str('Material id from guma_shop. Omit to leave the material line unpriced.'),

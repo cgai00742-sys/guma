@@ -506,7 +506,7 @@ export function QuoteDocument({ row }: { row: any }) {
             <div style={{ fontSize: 9.5, lineHeight: 1.6, color: '#3C4C5C', marginTop: 6, textWrap: 'pretty' }}>
               {trimPct(rates.depositPct, rates.locale)}% of the total.{' '}
               {q.needsDesign
-                ? `Modelling begins once it clears; the ${shop.lead_days}-day turnaround is counted from that day, not from today.`
+                ? `Modeling begins once it clears; the ${shop.lead_days}-day turnaround is counted from that day, not from today.`
                 : 'The project is scheduled onto a machine once it clears.'}{' '}
               Balance of {money(q.balance)} is due on delivery.
             </div>

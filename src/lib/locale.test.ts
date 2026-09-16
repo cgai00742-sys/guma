@@ -4,11 +4,12 @@
  * written from a different angle: nothing regional is decided for the user,
  * and where Guma genuinely cannot know, it says so instead of guessing.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   currencyForRegion,
   currencyOptions,
   currencySymbol,
+  osCurrency,
   osLocale,
   paperFor,
   paperForRegion,
@@ -144,6 +145,39 @@ describe('osLocale', () => {
     const tag = osLocale()
     expect(typeof tag).toBe('string')
     if (tag) expect(() => new Intl.Locale(tag)).not.toThrow()
+  })
+})
+
+describe('osCurrency', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('still guesses the real currency for a known, non-US region', () => {
+    // A detected region is a real signal -- USD must never override it.
+    vi.stubGlobal('navigator', { language: 'de-DE', languages: ['de-DE'] })
+    expect(osCurrency()).toBe('EUR')
+
+    vi.stubGlobal('navigator', { language: 'en-GB', languages: ['en-GB'] })
+    expect(osCurrency()).toBe('GBP')
+  })
+
+  it('falls back to USD only when there is no region signal at all', () => {
+    // No navigator (tests, SSR) -- osLocale() is '', so there is nothing
+    // to guess from. This is the one deliberate exception in this file.
+    vi.stubGlobal('navigator', undefined)
+    expect(osCurrency()).toBe('USD')
+
+    // A tag Intl can't resolve to a region also leaves nothing to guess
+    // from -- same honest fallback, not a wrong-looking guess.
+    vi.stubGlobal('navigator', { language: 'not a language tag at all', languages: [] })
+    expect(osCurrency()).toBe('USD')
+  })
+
+  it('does not touch currencyForRegion\'s own "never guess" behaviour', () => {
+    // osCurrency's fallback lives in osCurrency alone. currencyForRegion
+    // stays honest about unknown regions -- see the test above.
+    expect(currencyForRegion('ZZ')).toBe('')
   })
 })
 

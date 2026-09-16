@@ -22,7 +22,7 @@ import type { Shop } from '../lib/data.types'
 const POINTS: { title: string; body: string }[] = [
   {
     title: 'Price a project honestly',
-    body: 'Material, machine time and wear, your own labour, real electricity cost if you’ve set a rate — one total, not a guess.',
+    body: 'Material, machine time and wear, your own labor, real electricity cost if you’ve set a rate — one total, not a guess.',
   },
   {
     title: 'Quotes that hold still',

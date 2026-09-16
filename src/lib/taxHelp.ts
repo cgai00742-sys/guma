@@ -45,7 +45,7 @@ const SPECIAL: Record<string, TaxHint> = {
   HI: {
     label: 'General Excise Tax (GET)',
     note:
-      'Hawaii doesn’t have a sales tax. GET is charged on your gross receipts, not the client’s purchase, and it applies to services — your design/labour line — as well as physical parts. Most shops pass it through as a line item, but that’s a choice, not a requirement.',
+      'Hawaii doesn’t have a sales tax. GET is charged on your gross receipts, not the client’s purchase, and it applies to services — your design/labor line — as well as physical parts. Most shops pass it through as a line item, but that’s a choice, not a requirement.',
     link: 'https://tax.hawaii.gov/geninfo/get/',
   },
   NM: {

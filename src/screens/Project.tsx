@@ -1381,7 +1381,7 @@ function BuildSheet({
                             id={`why-${p.id}`}
                             value={why}
                             autoFocus
-                            placeholder="Layer shift at 40mm, warped corner, wrong colour…"
+                            placeholder="Layer shift at 40mm, warped corner, wrong color…"
                             onChange={(e) => setWhy(e.target.value)}
                           />
                         </div>
@@ -1679,7 +1679,7 @@ function RunLog({
               >
                 <option value="success">Came off clean</option>
                 <option value="failed">Failed</option>
-                <option value="cancelled">Cancelled part way</option>
+                <option value="cancelled">Canceled part way</option>
               </select>
             </div>
           </div>
@@ -1769,7 +1769,7 @@ function RunLog({
             <input
               id="w-note"
               value={work.note}
-              placeholder="Modelled the mount, third revision, wash and cure…"
+              placeholder="Modeled the mount, third revision, wash and cure…"
               onChange={(e) => setWork((w) => ({ ...w, note: e.target.value }))}
             />
           </div>

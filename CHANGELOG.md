@@ -209,6 +209,43 @@ one buried under Identity and three never asked at all.
   client, since every one of them tested what the code did rather than what a
   person could do with it.
 
+### American English, throughout
+
+The app was a mix of British and American spelling — "Labour", "modelling",
+"colour", "licence", "fibre", "defence" — left over from copy written
+without a fixed house style. All of it is now American English: labels,
+placeholders, hint text, the composite-filament option, the Hawaii GET tax
+note, and the "Design and modelling" line on the priced quote itself, which
+is the one that goes out to a client. Nothing that touches the database
+changed — `RunOutcome`'s stored `'cancelled'` value and the `print_runs`
+check constraint it mirrors are untouched; only the "Cancelled part way"
+label a shop actually reads was renamed to "Canceled part way".
+
+### Currency defaults to $ only when there is nothing else to go on
+
+`osCurrency()` still reads the region off the OS locale and guesses that
+region's real currency — a machine set to German or British English keeps
+getting EUR or GBP, not dollars. The one change: where it used to hand back
+`''` and leave the field blank, it now falls back to USD, but only when the
+OS gives no usable region signal at all. A blank field forced everyone
+through a dropdown on first run for no reason; a wrong-looking guess for a
+detected non-US shop would have been worse. This is a narrower exception
+than "always default to $", by design — `currencyForRegion()` itself, and
+its test asserting an unknown region gets `''` rather than a guess, are
+unchanged.
+
+### No timezone setting, and there still isn't one
+
+Guma was asked to "base the app to HST" — it already does the equivalent
+for wherever it's running, on purpose. Every date in the app is built from
+the OS clock's local calendar fields (`dates.ts`), never from a stored zone
+or a UTC instant reinterpreted later, so "today" always matches the clock in
+the corner of the screen, in Honolulu or anywhere else, with nothing to
+configure and nothing that can drift out of sync. Hardcoding HST would have
+been a regression against that — and against the multi-timezone test sweep
+that exists specifically to catch it (`npm run test:tz`, six zones from
+UTC-10 to UTC+14).
+
 ## 1.0.0 — 2026-09-03
 
 The first release meant to be installed by someone who is not the author.

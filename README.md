@@ -309,7 +309,7 @@ scripts/repair-migrations.mjs   `npm run db:repair`, for a database whose
 Useful scripts:
 
 ```bash
-npm test                   # 307 tests, including a full intake-to-delivered walk
+npm test                   # 310 tests, including a full intake-to-delivered walk
 npm run test:tz            # the same suite swept across six timezones
 npm run tauri dev          # the desktop app against live source
 npm run db:repair          # fix a database that will not open after a schema change

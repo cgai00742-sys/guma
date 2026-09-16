@@ -889,7 +889,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
               </div>
               <div style={{ fontSize: 11, lineHeight: '17px', color: 'var(--txt-3)', marginTop: 5 }}>
                 {q.needsDesign
-                  ? 'Modelling begins once it clears. The turnaround estimate counts from that day, not from today.'
+                  ? 'Modeling begins once it clears. The turnaround estimate counts from that day, not from today.'
                   : 'Collected before the project is scheduled onto a machine.'}{' '}
                 Balance of {money(q.balance)} on delivery.
               </div>
@@ -918,8 +918,8 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             <h3>Rates used</h3>
             <div className="kv" style={{ gridTemplateColumns: '1fr auto', gap: '5px 12px' }}>
               {[
-                ['Design and modelling', `${money0(rates.designHourly)} / h`],
-                ['Finishing labour', `${money0(rates.finishingHourly)} / h`],
+                ['Design and modeling', `${money0(rates.designHourly)} / h`],
+                ['Finishing labor', `${money0(rates.finishingHourly)} / h`],
                 ...(printer
                   ? ([
                       [`Machine time · ${printer.name}`, `${money0(printer.ratePerHour)} / h`],

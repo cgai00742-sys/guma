@@ -321,7 +321,7 @@ export function priceQuote(
   if (needsDesign) {
     lines.push({
       key: 'design',
-      label: input.designBilling === 'flat' ? 'Design — flat fee' : 'Design and modelling',
+      label: input.designBilling === 'flat' ? 'Design — flat fee' : 'Design and modeling',
       basis:
         input.designBilling === 'flat'
           ? `agreed up front · ${input.revisions} revision rounds`
