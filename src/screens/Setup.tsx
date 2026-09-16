@@ -48,7 +48,7 @@ import {
   regionOf,
 } from '../lib/locale'
 import TaxNameHint from '../components/TaxNameHint'
-import FieldGuide, { makeBenchmarkFormatter, noLocalRatesNote } from '../components/FieldGuide'
+import FieldGuide, { benchmarkGroup, makeBenchmarkFormatter } from '../components/FieldGuide'
 import { benchmarksFor, hasLocalRates, ratedCurrencies } from '../lib/benchmarks'
 import { powerPerHour, rateImplies, wearPerHour } from '../lib/derive'
 
@@ -119,9 +119,17 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
   // figure away from a shop invoicing in zloty; everything currency-free
   // comes back regardless of what they picked.
   const fmtBench = useMemo(() => makeBenchmarkFormatter(money), [money])
-  const localRates = hasLocalRates(currency)
-  const noRatesNote = localRates ? null : noLocalRatesNote(currency, ratedCurrencies())
-  const bench = (field: Parameters<typeof benchmarksFor>[0]) => benchmarksFor(field, currency)
+  /** One line, not a paragraph: a shop in a currency Guma holds no figures
+   *  for still needs to know the silence is deliberate rather than a bug. */
+  const noRates = hasLocalRates(currency)
+    ? null
+    : {
+        tag: 'Published',
+        rows: [],
+        note: `No published rates for ${currency || 'your currency'}. Guma holds ${ratedCurrencies().join(', ')} only, and will not convert them.`,
+      }
+  const bench = (field: Parameters<typeof benchmarksFor>[0]) =>
+    benchmarkGroup(benchmarksFor(field, currency), fmtBench)
 
   // What the design rate they just typed actually comes to. The question
   // "is $35/hr right?" is one almost nobody can answer; "is $33,600 a year
@@ -395,24 +403,21 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <input id="w-design" autoFocus type="number" min="0" value={designHourly} onChange={(e) => setDesignHourly(e.target.value)} />
                   <div className="hint">Usually the biggest line on a quote.</div>
                   <FieldGuide
-                    derived={
-                      implied
-                        ? {
-                            label: 'At this rate',
-                            display: `${money(implied.perDay)} a day`,
-                            workings:
-                              `An ${implied.dayHours}-hour day at what you typed, and about ` +
-                              `${money(implied.perYear)} a year if ${implied.billableHoursPerWeek} hours of a ` +
-                              `week are actually billable across ${implied.weeksPerYear} weeks. ` +
-                              `Most of a print shop's week is quoting, cleaning, failed plates and email, ` +
-                              `so setting a rate against 40 billable hours is how a full year pays for half of one.`,
-                            value: 0,
-                          }
-                        : null
-                    }
-                    benchmarks={bench('designHourly')}
-                    formatBenchmark={fmtBench}
-                    noLocalRates={noRatesNote}
+                    groups={[
+                      implied && {
+                        tag: 'Yours',
+                        own: true,
+                        rows: [
+                          { label: `A day (${implied.dayHours} h)`, value: money(implied.perDay) },
+                          {
+                            label: `A year (${implied.billableHoursPerWeek} billable h/wk)`,
+                            value: money(implied.perYear),
+                          },
+                        ],
+                      },
+                      bench('designHourly'),
+                      noRates,
+                    ]}
                   />
                 </div>
                 <div className="fld">
@@ -420,20 +425,26 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <input id="w-finish" type="number" min="0" value={finishingHourly} onChange={(e) => setFinishingHourly(e.target.value)} />
                   <div className="hint">Support removal, sanding, wash and cure.</div>
                   <FieldGuide
-                    derived={
+                    groups={[
                       num(designHourly) > 0 && num(finishingHourly) === 0
                         ? {
-                            label: 'A common starting point',
-                            display: money(num(designHourly) * 0.7),
-                            workings:
-                              'Shops usually bill finishing below design, because it is hands-on but not ' +
-                              'skilled CAD time. This is 70% of the design rate you just set — a place to ' +
-                              'start arguing from, not a figure anyone published.',
-                            value: Math.round(num(designHourly) * 0.7 * 100) / 100,
-                            onAccept: (v) => setFinishingHourly(String(v)),
+                            tag: 'Yours',
+                            own: true,
+                            rows: [
+                              { label: '70% of your design rate', value: money(num(designHourly) * 0.7) },
+                            ],
+                            note: 'Where most shops start. Hands-on, but not skilled CAD time.',
+                            action: {
+                              label: 'Use it',
+                              onClick: () =>
+                                setFinishingHourly(
+                                  String(Math.round(num(designHourly) * 0.7 * 100) / 100),
+                                ),
+                            },
                           }
-                        : null
-                    }
+                        : null,
+                      bench('finishingHourly'),
+                    ]}
                   />
                 </div>
               </div>
@@ -442,7 +453,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                 <div className="fld">
                   <label className="lbl" htmlFor="w-min">Shop minimum</label>
                   <input id="w-min" type="number" min="0" value={minimumOrder} onChange={(e) => setMinimumOrder(e.target.value)} />
-                  <FieldGuide benchmarks={bench('minimumOrder')} formatBenchmark={fmtBench} />
+                  <FieldGuide groups={[bench('minimumOrder')]} />
                 </div>
                 <div className="fld">
                   <label className="lbl" htmlFor="w-rush">Rush surcharge %</label>
@@ -452,7 +463,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <label className="lbl" htmlFor="w-markup">Material markup ×</label>
                   <input id="w-markup" type="number" step="0.1" min="1" value={markup} onChange={(e) => setMarkup(e.target.value)} />
                   <div className="hint">Sell = cost × this.</div>
-                  <FieldGuide benchmarks={bench('markup')} formatBenchmark={fmtBench} />
+                  <FieldGuide groups={[bench('markup')]} />
                 </div>
               </div>
 
@@ -460,7 +471,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                 <div className="fld">
                   <label className="lbl" htmlFor="w-dep">Deposit %</label>
                   <input id="w-dep" type="number" min="0" max="100" value={depositPct} onChange={(e) => setDepositPct(e.target.value)} />
-                  <FieldGuide benchmarks={bench('depositPct')} formatBenchmark={fmtBench} />
+                  <FieldGuide groups={[bench('depositPct')]} />
                 </div>
                 <div className="fld">
                   <label className="lbl" htmlFor="w-depw">Waive deposit below</label>
@@ -471,7 +482,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
 
               <div className="pane" style={{ marginTop: 14, marginBottom: 0 }}>
                 <h3>What you pay for filament<span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt-3)', textTransform: 'none', letterSpacing: 0 }}>per kg · leave blank to skip</span></h3>
-                <FieldGuide benchmarks={bench('materialPerKg')} formatBenchmark={fmtBench} />
+                <FieldGuide groups={[bench('materialPerKg')]} />
                 {materials.map((m, i) => (
                   <div key={m.name} className="grid2" style={{ marginTop: i ? 8 : 0, alignItems: 'end' }}>
                     <div className="fld">
@@ -525,11 +536,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <label className="lbl" htmlFor="w-prate">Rate per hour{pName.trim() && <span style={{ color: 'var(--warn)' }}> *</span>}</label>
                   <input id="w-prate" type="number" min="0" value={pRate} onChange={(e) => setPRate(e.target.value)} />
                   <div className="hint">Power, space, your attention.</div>
-                  <FieldGuide
-                    benchmarks={bench('printerRate')}
-                    formatBenchmark={fmtBench}
-                    noLocalRates={noRatesNote}
-                  />
+                  <FieldGuide groups={[bench('printerRate'), noRates]} />
                 </div>
                 <div className="fld">
                   <label className="lbl" htmlFor="w-pwear">Wear per hour{pName.trim() && <span style={{ color: 'var(--warn)' }}> *</span>}</label>
@@ -541,7 +548,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                     </button>
                   </div>
                   {!showCalc && (
-                    <FieldGuide benchmarks={bench('wearHourly')} formatBenchmark={fmtBench} />
+                    <FieldGuide groups={[bench('wearHourly')]} />
                   )}
                 </div>
               </div>
@@ -577,28 +584,30 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                     </div>
                   </div>
                   <FieldGuide
-                    derived={
-                      wear
-                        ? {
-                            label: 'Wear per hour',
-                            display: money(wear.perHour),
-                            workings: wear.includesMaintenance
-                              ? `${money(wear.fromPrice)} of machine plus ${money(wear.fromMaintenance)} of ` +
-                                'consumables, per print hour. Folding consumables in is the part most shops skip, ' +
-                                'and it is why their machine time looks cheaper than it is.'
-                              : `${money(wear.fromPrice)} of machine per print hour, purchase price only. ` +
-                                'Add what you spend a year on parts and the hours it runs, and this will include ' +
-                                'them — without that it is knowingly light.',
-                            value: Math.round(wear.perHour * 10000) / 10000,
-                            onAccept: (v) => {
-                              setPWear(String(v))
-                              setShowCalc(false)
-                            },
-                          }
-                        : null
-                    }
-                    benchmarks={bench('wearHourly')}
-                    formatBenchmark={fmtBench}
+                    groups={[
+                      wear && {
+                        tag: 'Yours',
+                        own: true,
+                        rows: [
+                          { label: 'Machine', value: money(wear.fromPrice) + ' /h' },
+                          ...(wear.includesMaintenance
+                            ? [{ label: 'Consumables', value: money(wear.fromMaintenance) + ' /h' }]
+                            : []),
+                          { label: 'Wear per hour', value: money(wear.perHour) + ' /h' },
+                        ],
+                        note: wear.includesMaintenance
+                          ? 'Consumables are the part most shops leave out.'
+                          : 'Purchase price only. Add yearly parts and running hours to include them.',
+                        action: {
+                          label: 'Use it',
+                          onClick: () => {
+                            setPWear(String(Math.round(wear.perHour * 10000) / 10000))
+                            setShowCalc(false)
+                          },
+                        },
+                      },
+                      bench('wearHourly'),
+                    ]}
                   />
                 </div>
               )}
@@ -612,19 +621,14 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   the real margin on it.
                 </div>
                 <FieldGuide
-                  derived={
-                    power !== null
-                      ? {
-                          label: 'Electricity per print hour',
-                          display: money(power),
-                          workings:
-                            `${pWatts}W at ${electricityRate} per kWh. This is a cost, not a rate — ` +
-                            `add it to wear to see what an hour on this machine has to clear before ` +
-                            `any of the rate above is margin.`,
-                          value: power,
-                        }
-                      : null
-                  }
+                  groups={[
+                    power !== null && {
+                      tag: 'Yours',
+                      own: true,
+                      rows: [{ label: 'Electricity per print hour', value: money(power) }],
+                      note: 'A cost, not a rate. Add it to wear for what an hour has to clear.',
+                    },
+                  ]}
                 />
               </div>
 

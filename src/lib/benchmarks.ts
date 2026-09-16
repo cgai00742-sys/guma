@@ -88,20 +88,33 @@ export interface Benchmark {
    */
   currency: string
   source: string
+  /** Two or three words for the citation line under a compact row. */
+  sourceShort: string
   url: string
   /** Publication or last-observed date of the source itself. */
   asOf: string
-  /** Said to the shop, in the shop's language, including the caveats. */
+  /** At most one short clause, and only when it changes how the number
+   *  should be read. The guidance strip is rows, not paragraphs -- see
+   *  components/FieldGuide.tsx for why prose was taken back out. */
   note: string
+  /** A few words on why the figure is softer than it looks, shown once per
+   *  source rather than repeated on every row it covers. */
+  caveat?: string
 }
 
 const LAYERMATH = {
   source: 'LayerMath, 3D printing hourly rate guide',
+  sourceShort: 'LayerMath',
   url: 'https://layermath.com/blog/3d-printing-hourly-rate',
   asOf: '2026',
+  // Their ranges are published without naming a currency and their worked
+  // examples use both pounds and dollars. Saying so once is cheaper than
+  // being quietly wrong.
+  caveat: 'LayerMath states no currency; read as order of magnitude.',
 }
 
 const THREE_DPI = {
+  sourceShort: '3D Printing Industry',
   source: '3D Printing Industry, "You’re Pricing Wrong: How to Accurately Price for FFF/FDM"',
   url: 'https://3dprintingindustry.com/news/youre-pricing-wrong-how-to-accurately-price-for-fff-fdm-169164/',
   asOf: '2026',
@@ -109,66 +122,59 @@ const THREE_DPI = {
 
 const PEA3D = {
   source: 'PEA3D, printer longevity and maintenance guide',
+  sourceShort: 'PEA3D',
   url: 'https://pea3d.com/en/how-long-does-a-3d-printer-last-2026-guide/',
   asOf: '2026',
 }
 
 const WHATTOCHARGE = {
   source: 'GetWhatToCharge, 3D printing pricing survey',
+  sourceShort: 'GetWhatToCharge',
   url: 'https://getwhattocharge.com/how-much-to-charge-for/3d-printing',
   asOf: '2026',
 }
 
 const WOODWEB = {
   source: 'WoodWeb knowledge base, deposits and payment schedules for custom work',
+  sourceShort: 'WoodWeb',
   url: 'https://woodweb.com/knowledge_base/Deposits_and_Payment.html',
   asOf: '2026',
 }
-
-/**
- * The currency caveat that rides along with every LayerMath tier. Their
- * ranges are published without an explicit currency and their worked
- * examples use both pounds and dollars, so at this magnitude the tiers are
- * an order-of-magnitude guide rather than a precise figure. Saying so is
- * cheaper than being quietly wrong.
- */
-const LM_CURRENCY_CAVEAT =
-  'The source publishes this range without naming a currency and uses both £ and $ in its examples, so read it as the right order of magnitude rather than an exact figure.'
 
 export const BENCHMARKS: Benchmark[] = [
   /* ---- machine time ------------------------------------------------- */
   {
     id: 'printer-fdm-hobby',
     field: 'printerRate',
-    label: 'FDM, printing on the side',
+    label: 'FDM, side hustle',
     low: 0.75,
     high: 1.5,
     unit: 'per-hour',
     currency: 'USD',
     ...LAYERMATH,
-    note: `What people charge when the machine is a hobby that pays for itself. ${LM_CURRENCY_CAVEAT}`,
+    note: '',
   },
   {
     id: 'printer-fdm-shop',
     field: 'printerRate',
-    label: 'FDM, selling properly',
+    label: 'FDM, small shop',
     low: 2,
     high: 4,
     unit: 'per-hour',
     currency: 'USD',
     ...LAYERMATH,
-    note: `The band most small shops taking outside work sit in. ${LM_CURRENCY_CAVEAT}`,
+    note: '',
   },
   {
     id: 'printer-fdm-pro',
     field: 'printerRate',
-    label: 'FDM, professional / engineering work',
+    label: 'FDM, professional',
     low: 5,
     high: 8,
     unit: 'per-hour',
     currency: 'USD',
     ...LAYERMATH,
-    note: `Tighter tolerances, engineering materials, business clients. ${LM_CURRENCY_CAVEAT}`,
+    note: '',
   },
   {
     id: 'printer-resin',
@@ -179,20 +185,20 @@ export const BENCHMARKS: Benchmark[] = [
     unit: 'per-hour',
     currency: 'USD',
     ...LAYERMATH,
-    note: `Higher than FDM across the board: consumables, wash and cure, and a shorter life on the FEP. ${LM_CURRENCY_CAVEAT}`,
+    note: '',
   },
 
   /* ---- your hours --------------------------------------------------- */
   {
     id: 'design-maker',
     field: 'designHourly',
-    label: 'CAD at maker level',
+    label: 'CAD, maker level',
     low: 25,
     high: 45,
     unit: 'per-hour',
     currency: 'USD',
     ...LAYERMATH,
-    note: `The entry band. The source is explicit that experienced product-design work for business clients justifies more than this, so treat the top of the range as a floor rather than a ceiling once you are good. ${LM_CURRENCY_CAVEAT}`,
+    note: 'Entry band — for experienced product work the top is a floor, not a ceiling.',
   },
   {
     id: 'design-flat-job',
@@ -203,20 +209,20 @@ export const BENCHMARKS: Benchmark[] = [
     unit: 'flat',
     currency: 'USD',
     ...WHATTOCHARGE,
-    note: 'What a custom model is billed at as a single line rather than by the hour. Useful as a sanity check: if your hourly rate times your real modeling hours lands far outside this, one of the two numbers is wrong.',
+    note: 'Rate × your real modeling hours landing far outside this means one of the two is wrong.',
   },
 
   /* ---- material ----------------------------------------------------- */
   {
     id: 'material-pla',
     field: 'materialPerKg',
-    label: 'PLA and common filament, what you pay',
+    label: 'PLA and common filament',
     low: 15,
     high: 45,
     unit: 'per-kg',
     currency: 'USD',
     ...THREE_DPI,
-    note: 'Purchase cost, not sell. Engineering and filled materials sit above this.',
+    note: 'What you pay, not what you charge. Filled and engineering materials sit above it.',
   },
   {
     id: 'markup-material',
@@ -227,77 +233,77 @@ export const BENCHMARKS: Benchmark[] = [
     unit: 'multiple',
     currency: '',
     ...WHATTOCHARGE,
-    note: 'The widely used pricing formula multiplies material cost by three. Two is the common floor. This one is a ratio, so it holds in any currency.',
+    note: 'A ratio, so it holds in any currency.',
   },
 
   /* ---- the machine as an asset -------------------------------------- */
   {
     id: 'life-fdm-consumer',
     field: 'wearHourly',
-    label: 'Consumer FDM, mechanical life',
+    label: 'Consumer FDM life',
     low: 5000,
     high: 10000,
     unit: 'hours',
     currency: '',
     ...PEA3D,
-    note: 'Print hours before a serious overhaul. Divide the machine price plus its lifetime consumables by this to get wear per hour — Guma will do it for you above.',
+    note: '',
   },
   {
     id: 'life-fdm-pro',
     field: 'wearHourly',
-    label: 'Professional FDM, mechanical life',
+    label: 'Professional FDM life',
     low: 15000,
     high: null,
     unit: 'hours',
     currency: '',
     ...PEA3D,
-    note: 'Built to run. Note the same source puts business obsolescence at three to five years regardless, so a machine can age out before it wears out.',
+    note: 'Obsolescence lands at 3–5 years, so a machine can age out before it wears out.',
   },
   {
     id: 'life-prosumer-basis',
     field: 'wearHourly',
-    label: 'Prosumer machine, working basis',
+    label: 'Prosumer working basis',
     low: 6000,
     high: 6000,
     unit: 'hours',
     currency: '',
     ...THREE_DPI,
-    note: 'The figure this source depreciates a $5-10k machine over, across five years. A deliberately conservative basis: guessing long on life is the same mistake as guessing low on wear.',
+    note: 'Conservative on purpose: guessing long on life is the same error as guessing low on wear.',
   },
   {
     id: 'maintenance-annual',
     field: 'wearHourly',
-    label: 'Annual maintenance and consumables',
+    label: 'Consumables a year',
     low: 500,
     high: 1000,
     unit: 'flat',
     currency: 'USD',
     ...THREE_DPI,
-    note: 'Per machine per year, in parts and consumables — nozzles, belts, fans, plates. Fold it into wear rather than pretending the machine only cost its purchase price.',
+    note: 'Per machine. Nozzles, belts, fans, plates — fold it into wear.',
   },
 
   /* ---- terms -------------------------------------------------------- */
   {
     id: 'minimum-small',
     field: 'minimumOrder',
-    label: 'Shop minimum, small sellers',
+    label: 'Minimum, small sellers',
     low: 10,
     high: 15,
     unit: 'flat',
     currency: 'USD',
     ...LAYERMATH,
-    note: `The source recommends a materially higher minimum for custom CAD and commercial work, since the setup conversation costs the same on a small job as a large one. ${LM_CURRENCY_CAVEAT}`,
+    note: 'Go higher for custom CAD — the setup conversation costs the same on a small job.',
   },
   {
     id: 'deposit-custom',
     field: 'depositPct',
-    label: 'Deposit on custom, made-to-order work',
+    label: 'Custom, made-to-order',
     low: 50,
     high: 50,
     unit: 'percent',
     currency: '',
     ...WOODWEB,
-    note: 'Fifty percent up front is the long-standing norm across custom trades that build to order, for the same reason it applies here: the shop buys material and spends labor before it sees anything. Larger jobs commonly step it down into milestones instead. A percentage travels, so this one is shown everywhere.',
+    note: 'The norm across build-to-order trades. Larger jobs step it down into milestones.',
   },
 ]
 

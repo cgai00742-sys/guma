@@ -8,7 +8,7 @@
  * into the most confident liar in the app.
  */
 import { describe, expect, it } from 'vitest'
-import { MIN_SAMPLE, hourlyReality, summarizeHistory } from './history'
+import { MIN_SAMPLE, summarizeHistory } from './history'
 import type { JobListRow, JobPhase } from './data.types'
 
 /** A delivered job with only the fields summarizeHistory reads. */
@@ -86,15 +86,14 @@ describe('silence until there is something to say', () => {
     expect(h.counted).toBe(MIN_SAMPLE - 1)
     expect(h.enough).toBe(false)
     // The statistics still exist -- a screen may show "so far" -- but the
-    // flag that gates guidance is off.
+    // flag that gates guidance is off, and the screens key off it.
     expect(h.jobValue).not.toBeNull()
-    expect(hourlyReality(h)).toBeNull()
   })
 
   it('speaks up once there is enough', () => {
     const h = summarizeHistory(many(MIN_SAMPLE))
     expect(h.enough).toBe(true)
-    expect(hourlyReality(h)).toContain('delivered jobs')
+    expect(h.revenuePerHour?.n).toBe(MIN_SAMPLE)
   })
 })
 

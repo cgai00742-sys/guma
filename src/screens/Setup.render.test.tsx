@@ -146,7 +146,7 @@ describe('nothing on this screen recommends a price', () => {
     await user.type(screen.getByLabelText(/Shop name/), 'A Shop')
     await user.click(screen.getByRole('button', { name: /continue/i }))
 
-    expect(screen.getByText(/CAD at maker level/)).toBeDefined()
+    expect(screen.getByText('CAD, maker level')).toBeDefined()
     expect((screen.getByLabelText(/design/i) as HTMLInputElement).value).toBe('')
   })
 })
@@ -167,18 +167,20 @@ async function toRates(tag: string) {
 describe('published rates never cross a currency', () => {
   it('shows a dollar shop the dollar research, with its source attached', async () => {
     await toRates('en-US')
-    expect(screen.getByText(/CAD at maker level/).textContent).toContain('$25.00/h')
+    // The figure sits in its own row beside the label it belongs to.
+    const row = screen.getByText('CAD, maker level').parentElement
+    expect(row?.textContent).toContain('$25.00')
+    expect(row?.textContent).toContain('$45.00/h')
     // Attribution is not optional: an unattributed range is just an opinion
-    // in a box. Several ranges come from this source, hence getAllBy.
-    expect(screen.getAllByText(/LayerMath/).length).toBeGreaterThan(0)
+    // in a box.
+    expect(screen.getAllByText(/LayerMath 2026/).length).toBeGreaterThan(0)
   })
 
   it('shows a euro shop no dollar figure at all, and explains the silence', async () => {
     await toRates('de-DE')
-    expect(screen.queryByText(/CAD at maker level/)).toBeNull()
+    expect(screen.queryByText('CAD, maker level')).toBeNull()
     expect(document.body.textContent).not.toContain('$25.00')
-    const note = screen.getAllByText(/no published rate data for EUR/i)
-    expect(note.length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/No published rates for EUR/i).length).toBeGreaterThan(0)
   })
 
   it('gives both of them the figures that genuinely travel', async () => {
@@ -189,7 +191,7 @@ describe('published rates never cross a currency', () => {
       cleanup()
       await toRates(tag)
       expect(
-        screen.getByText(/Deposit on custom, made-to-order work/).textContent,
+        screen.getByText('Custom, made-to-order').parentElement?.textContent,
         `${tag} lost the portable deposit figure`,
       ).toContain('50%')
     }
@@ -205,10 +207,10 @@ describe('the wear calculator', () => {
     await user.type(screen.getByLabelText(/What the machine cost/i), '1200')
     await user.type(screen.getByLabelText(/Print hours you expect/i), '6000')
 
-    // 1200 / 6000 = 0.20 an hour. Matched on the guide's own <b>, since
+    // 1200 / 6000 = 0.20 an hour. Matched on the guide's own row, since
     // "Wear per hour" is also the label of the field it fills.
     const computed = screen.getByText(
-      (_t, el) => el?.tagName === 'B' && /Wear per hour/.test(el.textContent ?? ''),
+      (_t, el) => (el?.className ?? '') === 'guide-r' && /Wear per hour/.test(el?.textContent ?? ''),
     )
     expect(computed.textContent).toContain('$0.20')
 
@@ -225,6 +227,6 @@ describe('the wear calculator', () => {
     await user.type(screen.getByLabelText(/What the machine cost/i), '1200')
     await user.type(screen.getByLabelText(/Print hours you expect/i), '6000')
 
-    expect(document.body.textContent).toContain('knowingly light')
+    expect(document.body.textContent).toContain('Purchase price only')
   })
 })

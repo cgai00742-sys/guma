@@ -171,19 +171,8 @@ export function summarizeHistory(rows: JobListRow[]): ShopHistory {
 }
 
 /**
- * The sentence to put under a rate field, or null when history has nothing
- * to add. Deliberately reports rather than advises: it states what the
- * shop's own finished work returned per hour and leaves the comparison to
- * the person, who knows things about their market that Guma does not.
+ * The guidance strip shows rows, not sentences, so this module stops at the
+ * numbers and lets the screen label them. An earlier version returned a
+ * written paragraph; it was accurate and too long for anyone to read it,
+ * which makes accuracy beside the point.
  */
-export function hourlyReality(h: ShopHistory): string | null {
-  if (!h.enough || !h.revenuePerHour) return null
-  const r = h.revenuePerHour
-  return (
-    `Across your last ${r.n} delivered jobs, an hour logged against a job ` +
-    `returned a median of ${r.median.toFixed(2)} in revenue ` +
-    `(middle half: ${r.low.toFixed(2)} to ${r.high.toFixed(2)}). ` +
-    `That is everything the job earned over every hour you put into it, ` +
-    `not what you bill for design alone.`
-  )
-}

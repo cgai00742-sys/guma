@@ -400,29 +400,29 @@ input::-webkit-calendar-picker-indicator:hover{opacity:1}
 .msg{font-size:12px;margin-top:8px}
 
 /* Field guidance (see src/components/FieldGuide.tsx).
-   Three tiers of help under a rate or cost field, ranked by how much
-   authority they deserve: the shop's own arithmetic, the shop's own
-   history, then an outside published figure -- which is always attributed
-   and never fills a field.
-
-   NOTE for maintainers: .guide-row is a flex container, so anything with
-   inline <b>/<span> mid-sentence must be wrapped in a single child or it
-   renders as gapped columns. Same trap as .notice above. */
-.guide{
-  margin-top:6px;border-left:2px solid var(--edge);padding-left:10px;
-  display:flex;flex-direction:column;gap:7px;
-}
-.guide-row{display:flex;gap:8px;align-items:flex-start;font-size:11px;line-height:16px}
+   A label-and-figure strip under a rate field, in the same vocabulary as
+   the "what this does to a typical project" panel: .k on the left, .v mono
+   and tabular on the right, so a column of figures lines up. Prose here was
+   tried first and was too long to read, which made being right beside the
+   point. */
+.guide{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.guide-g{border-left:2px solid var(--edge);padding-left:9px}
+.guide-h{display:flex;align-items:center;gap:7px;margin-bottom:3px}
 .guide-tag{
-  flex:none;font-family:var(--mono);font-size:9px;letter-spacing:.06em;
-  text-transform:uppercase;color:var(--biolum);border:1px solid var(--edge);
-  border-radius:3px;padding:1px 5px;margin-top:1px;white-space:nowrap;
+  font-family:var(--mono);font-size:9px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--biolum);white-space:nowrap;
 }
 .guide-tag.alt{color:var(--txt-3)}
-.guide-row b{color:var(--txt);font-weight:500}
-.guide-why{color:var(--txt-3)}
-.guide-src{display:block;font-family:var(--mono);font-size:10px;color:var(--txt-3);opacity:.8;margin-top:2px}
-.guide .btn.sm{height:20px;padding:0 7px;font-size:10px;vertical-align:baseline}
+.guide-kv{display:flex;flex-direction:column;gap:1px}
+.guide-r{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:11px;line-height:17px}
+.guide-r .k{color:var(--txt-3);text-transform:none;letter-spacing:0;font-size:11px}
+.guide-r .v{
+  font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:11px;
+  line-height:16px;font-weight:500;color:var(--txt);margin-top:0;white-space:nowrap;
+}
+.guide-note{font-size:10px;line-height:15px;color:var(--txt-3);margin-top:4px}
+.guide-src{font-family:var(--mono);font-size:9px;color:var(--txt-3);opacity:.75;margin-top:3px}
+.guide .btn.sm{height:19px;padding:0 7px;font-size:10px}
 .addnote{
   background:none;border:none;color:var(--txt-3);font-size:11px;cursor:pointer;
   padding:2px 0;text-decoration:underline;text-underline-offset:2px;

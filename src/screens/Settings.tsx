@@ -58,10 +58,10 @@ import SearchField from '../components/SearchField'
 import { asSearchItem } from '../lib/searchItems'
 import { filterBy } from '../lib/search'
 import { useRowAnchor } from '../lib/rowAnchor'
-import FieldGuide, { makeBenchmarkFormatter, noLocalRatesNote } from '../components/FieldGuide'
+import FieldGuide, { benchmarkGroup, makeBenchmarkFormatter } from '../components/FieldGuide'
 import { benchmarksFor, hasLocalRates, ratedCurrencies } from '../lib/benchmarks'
 import { rateImplies } from '../lib/derive'
-import { hourlyReality, summarizeHistory, type ShopHistory } from '../lib/history'
+import { summarizeHistory, type ShopHistory } from '../lib/history'
 
 /**
  * The sample job from the design: four brackets, six hours modeling, PA-CF,
@@ -156,8 +156,20 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
 
   const currency = ctx.shop.currency || osCurrency()
   const fmtBench = useMemo(() => makeBenchmarkFormatter(money), [money])
-  const noRatesNote = hasLocalRates(currency) ? null : noLocalRatesNote(currency, ratedCurrencies())
-  const bench = (field: Parameters<typeof benchmarksFor>[0]) => benchmarksFor(field, currency)
+  const noRates = hasLocalRates(currency)
+    ? null
+    : {
+        tag: 'Published',
+        rows: [],
+        note: `No published rates for ${currency}. Guma holds ${ratedCurrencies().join(', ')} only, and will not convert them.`,
+      }
+  const bench = (field: Parameters<typeof benchmarksFor>[0]) =>
+    benchmarkGroup(benchmarksFor(field, currency), fmtBench)
+
+  /** The shop's own finished work, as rows. Only once there is enough of it
+   *  to mean anything -- see MIN_SAMPLE in history.ts. */
+  const past = (rows: (h: ShopHistory) => { label: string; value: string }[]) =>
+    history?.enough ? { tag: 'Your jobs', own: true, rows: rows(history) } : null
 
   const [draft, setDraft] = useState<Draft>({
     design_hourly: Number(card.design_hourly),
@@ -326,24 +338,35 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                   your time is worth.
                 </div>
                 <FieldGuide
-                  derived={
-                    designImplied
-                      ? {
-                          label: 'At this rate',
-                          display: `${money(designImplied.perDay)} a day`,
-                          workings:
-                            `About ${money(designImplied.perYear)} a year, if ` +
-                            `${designImplied.billableHoursPerWeek} hours of a week are genuinely billable ` +
-                            `across ${designImplied.weeksPerYear} weeks. The other half of the week is ` +
-                            `quoting, cleaning, failed plates and email.`,
-                          value: 0,
-                        }
-                      : null
-                  }
-                  history={history ? hourlyReality(history) : null}
-                  benchmarks={bench('designHourly')}
-                  formatBenchmark={fmtBench}
-                  noLocalRates={noRatesNote}
+                  groups={[
+                    designImplied && {
+                      tag: 'Yours',
+                      own: true,
+                      rows: [
+                        { label: `A day (${designImplied.dayHours} h)`, value: money(designImplied.perDay) },
+                        {
+                          label: `A year (${designImplied.billableHoursPerWeek} billable h/wk)`,
+                          value: money(designImplied.perYear),
+                        },
+                      ],
+                    },
+                    past((h) =>
+                      h.revenuePerHour
+                        ? [
+                            {
+                              label: `Earned per hour worked (${h.revenuePerHour.n} jobs)`,
+                              value: money(h.revenuePerHour.median),
+                            },
+                            {
+                              label: 'Middle half',
+                              value: `${money(h.revenuePerHour.low)} \u2013 ${money(h.revenuePerHour.high)}`,
+                            },
+                          ]
+                        : [],
+                    ),
+                    bench('designHourly'),
+                    noRates,
+                  ]}
                 />
               </div>
               <div className="fld">
@@ -361,7 +384,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                   Support removal, sanding, wash and cure, assembly. Lower than design because it is hands, not
                   judgment.
                 </div>
-                <FieldGuide benchmarks={bench('finishingHourly')} formatBenchmark={fmtBench} />
+                <FieldGuide groups={[bench('finishingHourly')]} />
               </div>
             </div>
           </div>
@@ -376,16 +399,23 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                 <input id="s-min" type="number" min="0" value={draft.minimum_order} onChange={num('minimum_order')} />
                 <div className="hint">No project leaves for less. Covers the setup you do regardless of size.</div>
                 <FieldGuide
-                  history={
-                    history?.enough && history.jobValue
-                      ? `Your median delivered job is ${money(history.jobValue.median)}, with the middle half ` +
-                        `running ${money(history.jobValue.low)} to ${money(history.jobValue.high)} across ` +
-                        `${history.jobValue.n} jobs. A minimum set near the bottom of that is doing nothing; ` +
-                        `it earns its keep by turning away the work below it.`
-                      : null
-                  }
-                  benchmarks={bench('minimumOrder')}
-                  formatBenchmark={fmtBench}
+                  groups={[
+                    past((h) =>
+                      h.jobValue
+                        ? [
+                            {
+                              label: `Median delivered job (${h.jobValue.n})`,
+                              value: money(h.jobValue.median),
+                            },
+                            {
+                              label: 'Middle half',
+                              value: `${money(h.jobValue.low)} \u2013 ${money(h.jobValue.high)}`,
+                            },
+                          ]
+                        : [],
+                    ),
+                    bench('minimumOrder'),
+                  ]}
                 />
               </div>
               <div className="fld">
@@ -426,7 +456,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                 </label>
                 <input id="s-dep" type="number" min="0" max="100" value={draft.deposit_pct} onChange={num('deposit_pct')} />
                 <div className="hint">Of the quote total, collected before you start.</div>
-                <FieldGuide benchmarks={bench('depositPct')} formatBenchmark={fmtBench} />
+                <FieldGuide groups={[bench('depositPct')]} />
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="s-depwhen">
@@ -483,7 +513,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                   Every material's sell price is cost × this, unless that material pins its own. The sample below
                   re-prices as you move it.
                 </div>
-                <FieldGuide benchmarks={bench('markup')} formatBenchmark={fmtBench} />
+                <FieldGuide groups={[bench('markup')]} />
               </div>
               <div className="fld">
                 <label className="lbl">What that does to your stock</label>

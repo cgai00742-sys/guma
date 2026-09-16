@@ -278,6 +278,20 @@ Every input still starts empty and stays empty. Nothing is pre-filled, so
 nothing is recommended by default — the guidance sits underneath, and you
 have to reach for it.
 
+### The guidance is rows, not paragraphs
+
+The first version of the above wrote prose under each field. It was accurate
+and far too long to read, which makes being accurate beside the point. It is
+now the same shape as the "what this does to a typical project" panel that
+was already on that screen: a label on the left, a figure on the right, mono
+and tabular so a column of them lines up. Anything that could not survive
+being a row was cut rather than shrunk, and the source is a short "LayerMath
+2026" rather than a full URL in the body text.
+
+(If the chips and rules look unstyled after pulling this, the stylesheet is
+`public/guma.css` — a static asset that Vite never hot-reloads. Hard-reload
+the window.)
+
 ### Published rates do not cross a currency
 
 The hard part of the above. Every published range was collected in one

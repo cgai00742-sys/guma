@@ -29,7 +29,13 @@ describe('every figure is sourced', () => {
       expect(b.source, `${b.id} has no source`).toBeTruthy()
       expect(b.url, `${b.id} has no URL`).toMatch(/^https?:\/\//)
       expect(b.asOf, `${b.id} has no date`).toMatch(/^\d{4}(-\d{2})?(-\d{2})?$/)
-      expect(b.note.length, `${b.id} has no note explaining itself`).toBeGreaterThan(20)
+      // Short enough to sit under a field as one clause. The strip is rows,
+      // not paragraphs -- a note that needs a second sentence is a note that
+      // needs cutting.
+      expect(b.sourceShort, `${b.id} has no short citation`).toBeTruthy()
+      expect(b.sourceShort.length, `${b.id} citation too long for a row`).toBeLessThan(25)
+      expect(b.note.length, `${b.id} note is a paragraph, not a clause`).toBeLessThan(110)
+      expect(b.label.length, `${b.id} label too long for a row`).toBeLessThan(30)
     }
   })
 
