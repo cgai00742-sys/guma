@@ -290,6 +290,15 @@ src/lib/styles.test.ts     the stylesheet contract: a class may not stop a
                            table row being a table row, and every class the
                            app uses has to exist
 src/lib/searchItems.ts     how each kind of row reads as something findable
+src/lib/benchmarks.ts      what other shops charge, every figure cited and
+                           dated -- and withheld from any currency it was
+                           not collected in
+src/lib/derive.ts          the cost arithmetic Setup used to describe and
+                           leave to you: wear, power, per-gram, what a rate
+                           comes to in a year
+src/lib/history.ts         your own finished jobs folded into what they say
+                           about your pricing; unmeasured jobs excluded so
+                           they cannot report a perfect margin
 src/lib/data.local.ts      every database call, against the SQLite file the desktop app owns
 src/lib/data.supabase.ts   every database call, against your hosted Supabase project
 src/screens/               Setup · Intake · Projects (board + list) · Project ·
@@ -309,7 +318,7 @@ scripts/repair-migrations.mjs   `npm run db:repair`, for a database whose
 Useful scripts:
 
 ```bash
-npm test                   # 310 tests, including a full intake-to-delivered walk
+npm test                   # 358 tests, including a full intake-to-delivered walk
 npm run test:tz            # the same suite swept across six timezones
 npm run tauri dev          # the desktop app against live source
 npm run db:repair          # fix a database that will not open after a schema change

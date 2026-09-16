@@ -226,7 +226,19 @@ describe('no region is hard-coded into the app', () => {
   //                     definition and only renders for US shops
   //  - data.supabase.ts the hosted Postgres columns are NOT NULL, and the
   //                     browser build is not the supported 1.0 path
-  const ALLOWED = new Set(['src/lib/locale.ts', 'src/lib/taxHelp.ts', 'src/lib/data.supabase.ts'])
+  //  - benchmarks.ts    'USD' there is not a fallback, it is a LABEL: it
+  //                     records which currency a published figure was
+  //                     collected in, so that figure can be withheld from
+  //                     every shop not invoicing in it. The literal existing
+  //                     is what makes the withholding possible, and
+  //                     benchmarks.test.ts proves no money figure ever
+  //                     reaches a mismatched currency.
+  const ALLOWED = new Set([
+    'src/lib/locale.ts',
+    'src/lib/taxHelp.ts',
+    'src/lib/data.supabase.ts',
+    'src/lib/benchmarks.ts',
+  ])
 
   /** Code only. A comment that mentions 'en-US' as an example of a language
    *  tag is documentation; a fallback that uses one is the bug. */

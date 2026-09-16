@@ -136,4 +136,95 @@ describe('nothing on this screen recommends a price', () => {
       expect(input.value).toBe('')
     }
   })
+
+  it('still leaves them empty now that guidance sits underneath them', async () => {
+    // The distinction the whole feature rests on: published ranges are
+    // BESIDE the field, never IN it. A shop that ignores the guidance ends
+    // up with exactly the blank form it had before.
+    await renderWizard('en-US')
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText(/Shop name/), 'A Shop')
+    await user.click(screen.getByRole('button', { name: /continue/i }))
+
+    expect(screen.getByText(/CAD at maker level/)).toBeDefined()
+    expect((screen.getByLabelText(/design/i) as HTMLInputElement).value).toBe('')
+  })
+})
+
+/**
+ * The rule that cost the most to get right. A published range was collected
+ * in one currency in one market; showing it to anybody else is not helpful
+ * approximation, it is a fabricated claim about a market nobody researched.
+ */
+async function toRates(tag: string) {
+  await renderWizard(tag)
+  const user = userEvent.setup()
+  await user.type(screen.getByLabelText(/Shop name/), 'A Shop')
+  await user.click(screen.getByRole('button', { name: /continue/i }))
+  return user
+}
+
+describe('published rates never cross a currency', () => {
+  it('shows a dollar shop the dollar research, with its source attached', async () => {
+    await toRates('en-US')
+    expect(screen.getByText(/CAD at maker level/).textContent).toContain('$25.00/h')
+    // Attribution is not optional: an unattributed range is just an opinion
+    // in a box. Several ranges come from this source, hence getAllBy.
+    expect(screen.getAllByText(/LayerMath/).length).toBeGreaterThan(0)
+  })
+
+  it('shows a euro shop no dollar figure at all, and explains the silence', async () => {
+    await toRates('de-DE')
+    expect(screen.queryByText(/CAD at maker level/)).toBeNull()
+    expect(document.body.textContent).not.toContain('$25.00')
+    const note = screen.getAllByText(/no published rate data for EUR/i)
+    expect(note.length).toBeGreaterThan(0)
+  })
+
+  it('gives both of them the figures that genuinely travel', async () => {
+    // A percentage means the same thing in Honolulu and Kraków, so
+    // withholding it would be the opposite failure: useless rather than
+    // misleading.
+    for (const tag of ['en-US', 'de-DE']) {
+      cleanup()
+      await toRates(tag)
+      expect(
+        screen.getByText(/Deposit on custom, made-to-order work/).textContent,
+        `${tag} lost the portable deposit figure`,
+      ).toContain('50%')
+    }
+  })
+})
+
+describe('the wear calculator', () => {
+  it('does the division Setup used to describe, and fills the field with it', async () => {
+    const user = await toRates('en-US')
+    await user.click(screen.getByRole('button', { name: /continue/i }))
+
+    await user.click(screen.getByRole('button', { name: /work it out/i }))
+    await user.type(screen.getByLabelText(/What the machine cost/i), '1200')
+    await user.type(screen.getByLabelText(/Print hours you expect/i), '6000')
+
+    // 1200 / 6000 = 0.20 an hour. Matched on the guide's own <b>, since
+    // "Wear per hour" is also the label of the field it fills.
+    const computed = screen.getByText(
+      (_t, el) => el?.tagName === 'B' && /Wear per hour/.test(el.textContent ?? ''),
+    )
+    expect(computed.textContent).toContain('$0.20')
+
+    const wear = screen.getByLabelText(/Wear per hour/i) as HTMLInputElement
+    expect(wear.value).toBe('')
+    await user.click(screen.getByRole('button', { name: /use it/i }))
+    expect((screen.getByLabelText(/Wear per hour/i) as HTMLInputElement).value).toBe('0.2')
+  })
+
+  it('says out loud when it is only counting the purchase price', async () => {
+    const user = await toRates('en-US')
+    await user.click(screen.getByRole('button', { name: /continue/i }))
+    await user.click(screen.getByRole('button', { name: /work it out/i }))
+    await user.type(screen.getByLabelText(/What the machine cost/i), '1200')
+    await user.type(screen.getByLabelText(/Print hours you expect/i), '6000')
+
+    expect(document.body.textContent).toContain('knowingly light')
+  })
 })

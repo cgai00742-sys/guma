@@ -398,6 +398,31 @@ input::-webkit-calendar-picker-indicator:hover{opacity:1}
 .err,.note.err,.msg.err{color:var(--red)}
 .note.ok,.msg.ok{color:var(--ok)}
 .msg{font-size:12px;margin-top:8px}
+
+/* Field guidance (see src/components/FieldGuide.tsx).
+   Three tiers of help under a rate or cost field, ranked by how much
+   authority they deserve: the shop's own arithmetic, the shop's own
+   history, then an outside published figure -- which is always attributed
+   and never fills a field.
+
+   NOTE for maintainers: .guide-row is a flex container, so anything with
+   inline <b>/<span> mid-sentence must be wrapped in a single child or it
+   renders as gapped columns. Same trap as .notice above. */
+.guide{
+  margin-top:6px;border-left:2px solid var(--edge);padding-left:10px;
+  display:flex;flex-direction:column;gap:7px;
+}
+.guide-row{display:flex;gap:8px;align-items:flex-start;font-size:11px;line-height:16px}
+.guide-tag{
+  flex:none;font-family:var(--mono);font-size:9px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--biolum);border:1px solid var(--edge);
+  border-radius:3px;padding:1px 5px;margin-top:1px;white-space:nowrap;
+}
+.guide-tag.alt{color:var(--txt-3)}
+.guide-row b{color:var(--txt);font-weight:500}
+.guide-why{color:var(--txt-3)}
+.guide-src{display:block;font-family:var(--mono);font-size:10px;color:var(--txt-3);opacity:.8;margin-top:2px}
+.guide .btn.sm{height:20px;padding:0 7px;font-size:10px;vertical-align:baseline}
 .addnote{
   background:none;border:none;color:var(--txt-3);font-size:11px;cursor:pointer;
   padding:2px 0;text-decoration:underline;text-underline-offset:2px;

@@ -19,6 +19,7 @@ import {
   type RateSet,
 } from '../lib/pricing'
 import {
+  listJobs,
   saveRateCard,
   saveShopIdentity,
   saveShopCosts,
@@ -57,6 +58,10 @@ import SearchField from '../components/SearchField'
 import { asSearchItem } from '../lib/searchItems'
 import { filterBy } from '../lib/search'
 import { useRowAnchor } from '../lib/rowAnchor'
+import FieldGuide, { makeBenchmarkFormatter, noLocalRatesNote } from '../components/FieldGuide'
+import { benchmarksFor, hasLocalRates, ratedCurrencies } from '../lib/benchmarks'
+import { rateImplies } from '../lib/derive'
+import { hourlyReality, summarizeHistory, type ShopHistory } from '../lib/history'
 
 /**
  * The sample job from the design: four brackets, six hours modeling, PA-CF,
@@ -126,6 +131,34 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
     () => makeMoney(ctx.shop.currency || osCurrency(), ctx.shop.locale || osLocale()),
     [ctx.shop.currency, ctx.shop.locale],
   )
+  /**
+   * The shop's own finished jobs, folded into what they say about the shop.
+   * Loaded once per visit rather than subscribed: these are medians over
+   * delivered work, so they cannot change while somebody is looking at a
+   * rate field, and a failure here must never stop the rate card loading —
+   * guidance is the first thing to go when something is wrong, not the
+   * last.
+   */
+  const [history, setHistory] = useState<ShopHistory | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    listJobs(ctx.shop.id)
+      .then((rows) => {
+        if (!cancelled) setHistory(summarizeHistory(rows))
+      })
+      .catch(() => {
+        if (!cancelled) setHistory(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [ctx.shop.id])
+
+  const currency = ctx.shop.currency || osCurrency()
+  const fmtBench = useMemo(() => makeBenchmarkFormatter(money), [money])
+  const noRatesNote = hasLocalRates(currency) ? null : noLocalRatesNote(currency, ratedCurrencies())
+  const bench = (field: Parameters<typeof benchmarksFor>[0]) => benchmarksFor(field, currency)
+
   const [draft, setDraft] = useState<Draft>({
     design_hourly: Number(card.design_hourly),
     finishing_hourly: Number(card.finishing_hourly),
@@ -141,6 +174,9 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // What the design rate on screen actually comes to in a day and a year.
+  const designImplied = rateImplies(draft.design_hourly)
 
   const num = (k: keyof Draft) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseFloat(e.target.value)
@@ -289,6 +325,26 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                   The biggest line on most of your quotes. Set it where an eight-hour modeling day pays what a day of
                   your time is worth.
                 </div>
+                <FieldGuide
+                  derived={
+                    designImplied
+                      ? {
+                          label: 'At this rate',
+                          display: `${money(designImplied.perDay)} a day`,
+                          workings:
+                            `About ${money(designImplied.perYear)} a year, if ` +
+                            `${designImplied.billableHoursPerWeek} hours of a week are genuinely billable ` +
+                            `across ${designImplied.weeksPerYear} weeks. The other half of the week is ` +
+                            `quoting, cleaning, failed plates and email.`,
+                          value: 0,
+                        }
+                      : null
+                  }
+                  history={history ? hourlyReality(history) : null}
+                  benchmarks={bench('designHourly')}
+                  formatBenchmark={fmtBench}
+                  noLocalRates={noRatesNote}
+                />
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="s-post">
@@ -305,6 +361,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                   Support removal, sanding, wash and cure, assembly. Lower than design because it is hands, not
                   judgment.
                 </div>
+                <FieldGuide benchmarks={bench('finishingHourly')} formatBenchmark={fmtBench} />
               </div>
             </div>
           </div>
@@ -318,6 +375,18 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                 </label>
                 <input id="s-min" type="number" min="0" value={draft.minimum_order} onChange={num('minimum_order')} />
                 <div className="hint">No project leaves for less. Covers the setup you do regardless of size.</div>
+                <FieldGuide
+                  history={
+                    history?.enough && history.jobValue
+                      ? `Your median delivered job is ${money(history.jobValue.median)}, with the middle half ` +
+                        `running ${money(history.jobValue.low)} to ${money(history.jobValue.high)} across ` +
+                        `${history.jobValue.n} jobs. A minimum set near the bottom of that is doing nothing; ` +
+                        `it earns its keep by turning away the work below it.`
+                      : null
+                  }
+                  benchmarks={bench('minimumOrder')}
+                  formatBenchmark={fmtBench}
+                />
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="s-rush">
@@ -357,6 +426,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                 </label>
                 <input id="s-dep" type="number" min="0" max="100" value={draft.deposit_pct} onChange={num('deposit_pct')} />
                 <div className="hint">Of the quote total, collected before you start.</div>
+                <FieldGuide benchmarks={bench('depositPct')} formatBenchmark={fmtBench} />
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="s-depwhen">
@@ -413,6 +483,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
                   Every material's sell price is cost × this, unless that material pins its own. The sample below
                   re-prices as you move it.
                 </div>
+                <FieldGuide benchmarks={bench('markup')} formatBenchmark={fmtBench} />
               </div>
               <div className="fld">
                 <label className="lbl">What that does to your stock</label>

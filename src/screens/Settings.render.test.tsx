@@ -47,6 +47,9 @@ vi.mock('../lib/data', async () => {
     recordMaterialPurchase: vi.fn(),
     listMaterialPurchases: vi.fn(async () => []),
     deleteMaterialPurchase: vi.fn(),
+    // Settings reads the job list to fold the shop's own finished work into
+    // the rate-card guidance. No jobs here: these tests are about machines.
+    listJobs: vi.fn(async () => []),
   }
 })
 

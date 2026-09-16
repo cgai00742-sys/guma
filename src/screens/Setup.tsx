@@ -5,8 +5,17 @@
  * here instead. Nothing has a jurisdiction baked in: the tax is a label and a
  * number the shop supplies, the currency is theirs, and the rates start blank
  * rather than at someone else's numbers — a suggested figure in a placeholder
- * is a hint, a pre-filled input is a recommendation, and this tool has no
- * business recommending what another shop should charge.
+ * is a hint, a pre-filled input is a recommendation.
+ *
+ * That last line used to end "and this tool has no business recommending what
+ * another shop should charge", which was principled and left a beginner
+ * staring at an empty box. Guidance now appears BESIDE the fields, in three
+ * ranked tiers (see components/FieldGuide.tsx): arithmetic on the shop's own
+ * numbers, which offers to fill the field; the shop's own finished jobs,
+ * which does not; and cited published ranges, which are attributed, dated,
+ * and shown only to a shop invoicing in the currency they were collected in.
+ * The inputs themselves still start blank. Nothing is pre-filled, so nothing
+ * is recommended by default — the shop has to reach for it.
  *
  * Almost nothing here is required, on purpose. The two exceptions (see
  * stepError below) are structural, not preferential: a shop needs a name to
@@ -39,6 +48,9 @@ import {
   regionOf,
 } from '../lib/locale'
 import TaxNameHint from '../components/TaxNameHint'
+import FieldGuide, { makeBenchmarkFormatter, noLocalRatesNote } from '../components/FieldGuide'
+import { benchmarksFor, hasLocalRates, ratedCurrencies } from '../lib/benchmarks'
+import { powerPerHour, rateImplies, wearPerHour } from '../lib/derive'
 
 const STEPS = ['Your shop', 'Your rates', 'First machine'] as const
 
@@ -82,6 +94,16 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
   const [depositWaive, setDepositWaive] = useState('150')
   const [materials, setMaterials] = useState(STARTER_MATERIALS)
 
+  // The wear calculator's inputs. Deliberately NOT part of SetupPayload:
+  // they exist to turn "machine price ÷ lifetime hours" from a sentence into
+  // a number, and the answer is what gets stored. Keeping them out of the
+  // schema is why this feature needed no migration.
+  const [calcPrice, setCalcPrice] = useState('')
+  const [calcLife, setCalcLife] = useState('')
+  const [calcMaint, setCalcMaint] = useState('')
+  const [calcHoursYear, setCalcHoursYear] = useState('')
+  const [showCalc, setShowCalc] = useState(false)
+
   // step 3 — the first machine
   const [pName, setPName] = useState('')
   const [pModel, setPModel] = useState('')
@@ -92,6 +114,31 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
 
   const { money } = useMemo(() => makeMoney(currency, locale), [currency, locale])
   const taxHint = useMemo(() => taxHintFor(state), [state])
+
+  // Guidance plumbing. benchmarksFor() is the thing that keeps a dollar
+  // figure away from a shop invoicing in zloty; everything currency-free
+  // comes back regardless of what they picked.
+  const fmtBench = useMemo(() => makeBenchmarkFormatter(money), [money])
+  const localRates = hasLocalRates(currency)
+  const noRatesNote = localRates ? null : noLocalRatesNote(currency, ratedCurrencies())
+  const bench = (field: Parameters<typeof benchmarksFor>[0]) => benchmarksFor(field, currency)
+
+  // What the design rate they just typed actually comes to. The question
+  // "is $35/hr right?" is one almost nobody can answer; "is $33,600 a year
+  // right?" is one almost everybody can.
+  const implied = rateImplies(designHourly)
+
+  // Wear per hour, from the machine price and the life they expect out of
+  // it. This is the division Setup used to print as a sentence.
+  const wear = wearPerHour({
+    price: calcPrice,
+    lifetimeHours: calcLife,
+    maintenancePerYear: calcMaint,
+    hoursPerYear: calcHoursYear,
+  })
+
+  // Electricity per print hour, once the bill and the spec sheet are both in.
+  const power = powerPerHour(pWatts, electricityRate)
   const num = (v: string) => (v.trim() === '' ? 0 : Number(v))
   // Distinct from num(): blank means "not supplied," not zero. Zero would
   // falsely claim free electricity or a printer that draws no power at all,
@@ -333,9 +380,12 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
             <>
               <div className="notice" style={{ marginTop: 14 }}>
                 <span>
-                  <b>These are yours, not ours.</b> Guma ships no default rates on purpose — a number
-                  pre-filled here would be a recommendation, and no tool knows what your hour is worth.
-                  Every one of them is editable later, and a sent quote keeps the numbers it was priced with.
+                  <b>These are yours, not ours.</b> Every box starts empty and stays empty until you
+                  put something in it — nothing here is pre-filled, because a filled field is a
+                  recommendation you have to notice and undo. What you will see underneath them is
+                  what other shops charge, with the source and the date attached, and arithmetic on
+                  numbers you have already given. Take it or ignore it. Every rate is editable later,
+                  and a sent quote keeps the numbers it was priced with.
                 </span>
               </div>
 
@@ -344,11 +394,47 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <label className="lbl" htmlFor="w-design">Design / modeling per hour</label>
                   <input id="w-design" autoFocus type="number" min="0" value={designHourly} onChange={(e) => setDesignHourly(e.target.value)} />
                   <div className="hint">Usually the biggest line on a quote.</div>
+                  <FieldGuide
+                    derived={
+                      implied
+                        ? {
+                            label: 'At this rate',
+                            display: `${money(implied.perDay)} a day`,
+                            workings:
+                              `An ${implied.dayHours}-hour day at what you typed, and about ` +
+                              `${money(implied.perYear)} a year if ${implied.billableHoursPerWeek} hours of a ` +
+                              `week are actually billable across ${implied.weeksPerYear} weeks. ` +
+                              `Most of a print shop's week is quoting, cleaning, failed plates and email, ` +
+                              `so setting a rate against 40 billable hours is how a full year pays for half of one.`,
+                            value: 0,
+                          }
+                        : null
+                    }
+                    benchmarks={bench('designHourly')}
+                    formatBenchmark={fmtBench}
+                    noLocalRates={noRatesNote}
+                  />
                 </div>
                 <div className="fld">
                   <label className="lbl" htmlFor="w-finish">Finishing per hour</label>
                   <input id="w-finish" type="number" min="0" value={finishingHourly} onChange={(e) => setFinishingHourly(e.target.value)} />
                   <div className="hint">Support removal, sanding, wash and cure.</div>
+                  <FieldGuide
+                    derived={
+                      num(designHourly) > 0 && num(finishingHourly) === 0
+                        ? {
+                            label: 'A common starting point',
+                            display: money(num(designHourly) * 0.7),
+                            workings:
+                              'Shops usually bill finishing below design, because it is hands-on but not ' +
+                              'skilled CAD time. This is 70% of the design rate you just set — a place to ' +
+                              'start arguing from, not a figure anyone published.',
+                            value: Math.round(num(designHourly) * 0.7 * 100) / 100,
+                            onAccept: (v) => setFinishingHourly(String(v)),
+                          }
+                        : null
+                    }
+                  />
                 </div>
               </div>
 
@@ -356,6 +442,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                 <div className="fld">
                   <label className="lbl" htmlFor="w-min">Shop minimum</label>
                   <input id="w-min" type="number" min="0" value={minimumOrder} onChange={(e) => setMinimumOrder(e.target.value)} />
+                  <FieldGuide benchmarks={bench('minimumOrder')} formatBenchmark={fmtBench} />
                 </div>
                 <div className="fld">
                   <label className="lbl" htmlFor="w-rush">Rush surcharge %</label>
@@ -365,6 +452,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <label className="lbl" htmlFor="w-markup">Material markup ×</label>
                   <input id="w-markup" type="number" step="0.1" min="1" value={markup} onChange={(e) => setMarkup(e.target.value)} />
                   <div className="hint">Sell = cost × this.</div>
+                  <FieldGuide benchmarks={bench('markup')} formatBenchmark={fmtBench} />
                 </div>
               </div>
 
@@ -372,6 +460,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                 <div className="fld">
                   <label className="lbl" htmlFor="w-dep">Deposit %</label>
                   <input id="w-dep" type="number" min="0" max="100" value={depositPct} onChange={(e) => setDepositPct(e.target.value)} />
+                  <FieldGuide benchmarks={bench('depositPct')} formatBenchmark={fmtBench} />
                 </div>
                 <div className="fld">
                   <label className="lbl" htmlFor="w-depw">Waive deposit below</label>
@@ -382,6 +471,7 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
 
               <div className="pane" style={{ marginTop: 14, marginBottom: 0 }}>
                 <h3>What you pay for filament<span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt-3)', textTransform: 'none', letterSpacing: 0 }}>per kg · leave blank to skip</span></h3>
+                <FieldGuide benchmarks={bench('materialPerKg')} formatBenchmark={fmtBench} />
                 {materials.map((m, i) => (
                   <div key={m.name} className="grid2" style={{ marginTop: i ? 8 : 0, alignItems: 'end' }}>
                     <div className="fld">
@@ -435,13 +525,83 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   <label className="lbl" htmlFor="w-prate">Rate per hour{pName.trim() && <span style={{ color: 'var(--warn)' }}> *</span>}</label>
                   <input id="w-prate" type="number" min="0" value={pRate} onChange={(e) => setPRate(e.target.value)} />
                   <div className="hint">Power, space, your attention.</div>
+                  <FieldGuide
+                    benchmarks={bench('printerRate')}
+                    formatBenchmark={fmtBench}
+                    noLocalRates={noRatesNote}
+                  />
                 </div>
                 <div className="fld">
                   <label className="lbl" htmlFor="w-pwear">Wear per hour{pName.trim() && <span style={{ color: 'var(--warn)' }}> *</span>}</label>
                   <input id="w-pwear" type="number" min="0" value={pWear} onChange={(e) => setPWear(e.target.value)} />
-                  <div className="hint">Machine price ÷ lifetime hours is a fair start.</div>
+                  <div className="hint">
+                    Machine price ÷ lifetime hours is a fair start.{' '}
+                    <button type="button" className="addnote" onClick={() => setShowCalc((v) => !v)}>
+                      {showCalc ? 'hide the calculator' : 'work it out'}
+                    </button>
+                  </div>
+                  {!showCalc && (
+                    <FieldGuide benchmarks={bench('wearHourly')} formatBenchmark={fmtBench} />
+                  )}
                 </div>
               </div>
+
+              {showCalc && (
+                <div className="pane" style={{ marginTop: 12, marginBottom: 0 }}>
+                  <h3>
+                    Work out wear per hour
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt-3)', textTransform: 'none', letterSpacing: 0 }}>
+                      nothing here is saved · only the answer is
+                    </span>
+                  </h3>
+                  <div className="grid2">
+                    <div className="fld">
+                      <label className="lbl" htmlFor="w-cprice">What the machine cost</label>
+                      <input id="w-cprice" type="number" min="0" value={calcPrice} onChange={(e) => setCalcPrice(e.target.value)} />
+                    </div>
+                    <div className="fld">
+                      <label className="lbl" htmlFor="w-clife">Print hours you expect out of it</label>
+                      <input id="w-clife" type="number" min="0" value={calcLife} onChange={(e) => setCalcLife(e.target.value)} placeholder="5000" />
+                    </div>
+                  </div>
+                  <div className="grid2" style={{ marginTop: 8 }}>
+                    <div className="fld">
+                      <label className="lbl" htmlFor="w-cmaint">Parts and consumables a year</label>
+                      <input id="w-cmaint" type="number" min="0" value={calcMaint} onChange={(e) => setCalcMaint(e.target.value)} placeholder="optional" />
+                      <div className="hint">Nozzles, belts, fans, plates, FEP.</div>
+                    </div>
+                    <div className="fld">
+                      <label className="lbl" htmlFor="w-choursyear">Hours a year it really runs</label>
+                      <input id="w-choursyear" type="number" min="0" value={calcHoursYear} onChange={(e) => setCalcHoursYear(e.target.value)} placeholder="optional" />
+                      <div className="hint">Only needed to spread the consumables.</div>
+                    </div>
+                  </div>
+                  <FieldGuide
+                    derived={
+                      wear
+                        ? {
+                            label: 'Wear per hour',
+                            display: money(wear.perHour),
+                            workings: wear.includesMaintenance
+                              ? `${money(wear.fromPrice)} of machine plus ${money(wear.fromMaintenance)} of ` +
+                                'consumables, per print hour. Folding consumables in is the part most shops skip, ' +
+                                'and it is why their machine time looks cheaper than it is.'
+                              : `${money(wear.fromPrice)} of machine per print hour, purchase price only. ` +
+                                'Add what you spend a year on parts and the hours it runs, and this will include ' +
+                                'them — without that it is knowingly light.',
+                            value: Math.round(wear.perHour * 10000) / 10000,
+                            onAccept: (v) => {
+                              setPWear(String(v))
+                              setShowCalc(false)
+                            },
+                          }
+                        : null
+                    }
+                    benchmarks={bench('wearHourly')}
+                    formatBenchmark={fmtBench}
+                  />
+                </div>
+              )}
 
               <div className="fld" style={{ marginTop: 10, maxWidth: 260 }}>
                 <label className="lbl" htmlFor="w-pwatts">Power draw while printing, watts</label>
@@ -451,6 +611,21 @@ export default function Setup({ onDone, fullName }: { onDone: () => void; fullNa
                   into an actual cost — without it Guma prices the project the same either way, it just can't show you
                   the real margin on it.
                 </div>
+                <FieldGuide
+                  derived={
+                    power !== null
+                      ? {
+                          label: 'Electricity per print hour',
+                          display: money(power),
+                          workings:
+                            `${pWatts}W at ${electricityRate} per kWh. This is a cost, not a rate — ` +
+                            `add it to wear to see what an hour on this machine has to clear before ` +
+                            `any of the rate above is margin.`,
+                          value: power,
+                        }
+                      : null
+                  }
+                />
               </div>
 
               <div className="hint" style={{ marginTop: 12 }}>

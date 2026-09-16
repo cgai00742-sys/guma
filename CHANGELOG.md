@@ -246,6 +246,74 @@ been a regression against that — and against the multi-timezone test sweep
 that exists specifically to catch it (`npm run test:tz`, six zones from
 UTC-10 to UTC+14).
 
+### Setup tells you what things cost
+
+Setup carried a notice reading "Guma ships no default rates on purpose — a
+number pre-filled here would be a recommendation, and no tool knows what
+your hour is worth", and then, two fields later, "machine price ÷ lifetime
+hours is a fair start". It told you the formula and left you to do the
+division, in a form, on a screen that had every input it needed a few pixels
+away. Principle is not much use to someone staring at an empty box who
+guesses, guesses low, and finds out a year later.
+
+There is now guidance beside the rate and cost fields, in three tiers,
+ranked by how much authority each deserves and never mixed up:
+
+- **Yours** — arithmetic on numbers you supplied. Wear per hour from what
+  the machine cost, the hours you expect out of it and what you spend a year
+  on nozzles and belts; electricity per print hour from the wattage and your
+  own kWh rate; what an hourly rate comes to in a day and a year. This tier
+  offers a button that fills the field, because accepting your own division
+  is not accepting a recommendation.
+- **Your history** — your finished jobs, added up. What a delivered job is
+  actually worth here, what an hour logged against a job actually returns,
+  what margin survives to the bottom. Never fills a field: what you have
+  been getting and what you should charge are different questions.
+- **Published** — what other shops charge, per a named source, with the URL
+  and the date attached. Nine cited figures covering machine time by tier,
+  CAD rates, filament cost, markup multiples, machine life, annual
+  consumables, shop minimums and deposits.
+
+Every input still starts empty and stays empty. Nothing is pre-filled, so
+nothing is recommended by default — the guidance sits underneath, and you
+have to reach for it.
+
+### Published rates do not cross a currency
+
+The hard part of the above. Every published range was collected in one
+currency in one market: "$25–45/hr" is useful in Honolulu and actively
+misleading in Kraków, and Guma runs wherever it is downloaded. Converting
+would be worse still — there is no exchange rate in a local-first app, and a
+stale one turns a cited figure into a fabricated one.
+
+So a figure tagged with a currency is shown only to a shop invoicing in that
+currency. Everyone else gets the portable half — markup multiples, deposit
+percentages, machine lifetime hours, all of which mean the same thing
+anywhere — plus a plain statement that Guma has no published rate data for
+their market and that their own history will be the better guide. Same rule
+as locale.ts: a blank is honest, a wrong figure that looks researched is
+not. It is enforced by `benchmarks.test.ts` at the function level and by a
+render test at the screen level, both of which were run against a
+deliberately broken version first to confirm they see it.
+
+The table also expires. `REVIEWED_ON` records when a human last checked
+every figure against its source, and the suite fails once that is eighteen
+months old, because a 2026 figure sitting unexamined in 2029 is worse than
+no figure — it still looks like research.
+
+### An unmeasured job is not a perfect job
+
+The history tier counts only delivered work that had something recorded
+against it. A delivered project with no runs and no logged hours has an
+actual cost of zero, and counting those would report 100% margin on them —
+turning the one feature meant to tell a shop the truth about its pricing
+into the most confident liar in the app. Those jobs are reported separately,
+as the size of the blind spot, and everything is a median with the middle
+half of the range beside it so that one catastrophe cannot move the number a
+shop sets its rates by.
+
+358 tests, up from 310.
+
 ## 1.0.0 — 2026-09-03
 
 The first release meant to be installed by someone who is not the author.
