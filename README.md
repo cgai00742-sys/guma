@@ -284,6 +284,11 @@ src/lib/data.ts            picks a backend at runtime: local SQLite in the
                            desktop app, hosted Supabase in the browser.
                            Screens only ever import from here.
 src/lib/search.ts          the one matcher every search box in the app runs
+src/lib/rowAnchor.ts       keeps a clicked row still when a drawer opens or
+                           closes -- WebKit has no scroll anchoring
+src/lib/styles.test.ts     the stylesheet contract: a class may not stop a
+                           table row being a table row, and every class the
+                           app uses has to exist
 src/lib/searchItems.ts     how each kind of row reads as something findable
 src/lib/data.local.ts      every database call, against the SQLite file the desktop app owns
 src/lib/data.supabase.ts   every database call, against your hosted Supabase project
@@ -304,7 +309,7 @@ scripts/repair-migrations.mjs   `npm run db:repair`, for a database whose
 Useful scripts:
 
 ```bash
-npm test                   # 295 tests, including a full intake-to-delivered walk
+npm test                   # 307 tests, including a full intake-to-delivered walk
 npm run test:tz            # the same suite swept across six timezones
 npm run tauri dev          # the desktop app against live source
 npm run db:repair          # fix a database that will not open after a schema change

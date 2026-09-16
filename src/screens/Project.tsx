@@ -80,6 +80,7 @@ import {
   type Flag,
   type ResolvedGateItem,
 } from '../lib/gates'
+import { useRowAnchor } from '../lib/rowAnchor'
 import { makeMoney } from '../lib/pricing'
 import { todayISO } from '../lib/dates'
 import { buildComparison, type Comparison } from '../lib/actuals'
@@ -1241,6 +1242,9 @@ function BuildSheet({
   const [saving, setSaving] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
   const [reprintFor, setReprintFor] = useState<string | null>(null)
+  // A part's history drawer changes the height of the build sheet above
+  // whatever you click next. See rowAnchor.ts.
+  const holdRow = useRowAnchor(openId)
   const [why, setWhy] = useState('')
 
   async function guard(fn: () => Promise<unknown>) {
@@ -1296,7 +1300,10 @@ function BuildSheet({
                           type="button"
                           className="linkbtn"
                           style={{ marginLeft: 8, fontSize: 10 }}
-                          onClick={() => setOpenId(openId === p.id ? null : p.id)}
+                          onClick={(e) => {
+                            holdRow(e.currentTarget.closest('tr'))
+                            setOpenId(openId === p.id ? null : p.id)
+                          }}
                         >
                           history ({p.history.length})
                         </button>

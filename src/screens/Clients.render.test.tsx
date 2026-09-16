@@ -281,3 +281,32 @@ describe('adding a client is something you can see happen', () => {
     expect(await screen.findByRole('button', { name: /saved/i })).toBeDefined()
   })
 })
+
+describe('the row you click is a control, not decoration', () => {
+  it('opens and closes a client from the keyboard alone', async () => {
+    clients = [row({ id: 'c1', name: 'Hafen GmbH' })]
+    await renderClients()
+    const user = userEvent.setup()
+
+    const line = screen.getByTitle(/show their projects/i)
+    expect(line.getAttribute('tabindex')).toBe('0')
+    expect(line.getAttribute('aria-expanded')).toBe('false')
+
+    line.focus()
+    await user.keyboard('{Enter}')
+    expect(screen.getByRole('heading', { name: /their details/i })).toBeDefined()
+    expect(screen.getByTitle(/hide their projects/i).getAttribute('aria-expanded')).toBe('true')
+
+    await user.keyboard('{Enter}')
+    expect(screen.queryByRole('heading', { name: /their details/i })).toBeNull()
+  })
+
+  it('opens on Space without also scrolling the page', async () => {
+    clients = [row({ id: 'c1', name: 'Hafen GmbH' })]
+    await renderClients()
+    const user = userEvent.setup()
+    screen.getByTitle(/show their projects/i).focus()
+    await user.keyboard(' ')
+    expect(screen.getByRole('heading', { name: /their details/i })).toBeDefined()
+  })
+})

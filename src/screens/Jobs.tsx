@@ -255,8 +255,15 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
                     <tr
                       key={j.jobId}
                       className="row"
+                      tabIndex={0}
                       title="Open this project"
                       onClick={() => navigate(`/project/${j.jobId}`)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          navigate(`/project/${j.jobId}`)
+                        }
+                      }}
                     >
                       <td style={{ fontFamily: 'var(--mono)', color: 'var(--txt-3)' }}>{j.ref}</td>
                       <td>

@@ -876,7 +876,24 @@ th{
   position:sticky;top:0;z-index:1;
 }
 td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
-tr.row{cursor:pointer;border-bottom:none}
+/* A clickable table row is still a table row.
+   .row (section 3) is the flex list-row utility, and applying it to a <tr>
+   was silently setting display:flex on the row -- which takes the <tr> out
+   of the table entirely. Its cells stop being table cells, so they stop
+   participating in the table's column widths, so every row sizes itself
+   independently and none of them line up with the header. Expanding a row
+   inserted a real table-row into the middle of that, which regrouped the
+   browser's anonymous table boxes and made the remaining rows visibly
+   relocate -- the "other client jumps to the top" report.
+   display is the fix. font-size is the other half of the leak: .row is
+   13px, this table is 12px, so clickable rows were rendering a size larger
+   than the rows around them. The rest of .row's declarations (gap,
+   align-items, padding) are inert on a table-row and are neutralised here
+   anyway, so nothing can come back through this door. */
+tr.row{
+  display:table-row;font-size:inherit;padding:0;gap:0;align-items:initial;
+  cursor:pointer;border-bottom:none;
+}
 tr.row:hover td{background:var(--panel-2)}
 tr.row:last-child td{border-bottom:none}
 

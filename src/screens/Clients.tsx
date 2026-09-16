@@ -57,6 +57,7 @@ import { Flash, SaveButton, useFlash, useSaver } from '../components/Saving'
 import SearchField from '../components/SearchField'
 import { filterBy } from '../lib/search'
 import { asSearchItem } from '../lib/searchItems'
+import { useRowAnchor } from '../lib/rowAnchor'
 
 type SortKey = 'name' | 'value' | 'owed' | 'active' | 'last'
 
@@ -79,6 +80,15 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
   const [openId, setOpenId] = useState<string | null>(params.get('open'))
   const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Opening one client closes another, which changes the height of the list
+  // above the row being clicked. Without this the row slides out from under
+  // the cursor -- see rowAnchor.ts for why the browser will not do it here.
+  const holdRow = useRowAnchor(openId)
+
+  function toggleOpen(id: string, row: Element | null) {
+    holdRow(row)
+    setOpenId(openId === id ? null : id)
+  }
 
   const rates = useMemo(() => toRateSet(ctx.rateCard, ctx.shop), [ctx.rateCard, ctx.shop])
   const { money } = useMemo(() => makeMoney(rates.currency, rates.locale), [rates])
@@ -323,10 +333,26 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
             <tbody>
               {shown.map((r) => (
                 <Fragment key={r.id}>
+                {/* guma.css has carried a `tr.row:focus-visible` rule the
+                    whole time, for a state these rows could never reach --
+                    a <tr> with an onClick and nothing else is unreachable
+                    from the keyboard and announces itself to a screen
+                    reader as a plain row of data. The stylesheet was
+                    describing a control; now the markup is one. */}
                 <tr
                   className="row"
+                  tabIndex={0}
+                  aria-expanded={openId === r.id}
                   title={openId === r.id ? 'Hide their projects' : 'Show their projects'}
-                  onClick={() => setOpenId(openId === r.id ? null : r.id)}
+                  onClick={(e) => toggleOpen(r.id, e.currentTarget)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      // Space scrolls the page by default, which on a list
+                      // of rows is the opposite of what was asked for.
+                      e.preventDefault()
+                      toggleOpen(r.id, e.currentTarget)
+                    }
+                  }}
                 >
                   <td>
                     <div style={{ fontWeight: 500, color: 'var(--txt)' }}>

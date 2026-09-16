@@ -56,6 +56,7 @@ import { Flash, SaveButton, useFlash, useSaver } from '../components/Saving'
 import SearchField from '../components/SearchField'
 import { asSearchItem } from '../lib/searchItems'
 import { filterBy } from '../lib/search'
+import { useRowAnchor } from '../lib/rowAnchor'
 
 /**
  * The sample job from the design: four brackets, six hours modelling, PA-CF,
@@ -1291,6 +1292,7 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [openId, setOpenId] = useState<string | null>(null)
+  const holdRow = useRowAnchor(openId)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
 
@@ -1490,7 +1492,13 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
                       <button
                         type="button"
                         className="btn sm"
-                        onClick={() => setOpenId(openId === m.id ? null : m.id)}
+                        onClick={(e) => {
+                          // Keep this material's row where it is: opening
+                          // one purchase log closes another, which changes
+                          // the height of everything above.
+                          holdRow(e.currentTarget.closest('tr'))
+                          setOpenId(openId === m.id ? null : m.id)
+                        }}
                       >
                         {openId === m.id ? 'Close' : 'Purchases'}
                       </button>

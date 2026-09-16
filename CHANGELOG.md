@@ -7,6 +7,49 @@ Notable changes, newest first. Dates are the day the work landed.
 The first round of changes driven by someone actually using the app rather
 than reading its tests.
 
+### Fixed: the tables were not tables
+
+Reported as "click a client, open the drawer, close it again, and the other
+client jumps to the top and looks wrong in position." It was worse than
+that, and it was on screen the whole time.
+
+`.row` is the design system's flex utility for list rows. Two screens — the
+Clients table and the Projects list — put it on a `<tr>`, which set
+`display:flex` on a table row. A row with `display:flex` is not a table row:
+its cells stop being table cells, so they stop taking part in the table's
+column widths, so every row sized itself independently and none of them
+lined up with the header. Money and dates wrapped mid-value. Expanding a row
+inserted a genuine table-row into the middle of that, which regrouped the
+browser's anonymous table boxes and made the remaining rows physically move
+— the jump.
+
+Nothing caught it, and nothing in this repo could have: the render tests
+draw into jsdom, which performs no layout at all and will happily report
+that a completely scrambled table is fine. So the fix comes with a different
+kind of test — `src/lib/styles.test.ts` reads every `className` the app uses
+and checks it against the stylesheet, and fails if a class on a `<tr>`,
+`<td>` or `<th>` changes that element's display, naming the file, the line
+and the rule to add. It also fails on any class no stylesheet defines. Both
+checks were run against the broken code first, to be sure they see it.
+
+### Rows stay where you click them
+
+Only one drawer is open at a time, so opening a row below an open one closes
+that one first and everything shifts up — including the row you were aiming
+at, while you are still looking at where it used to be. Browsers have a
+feature for this, CSS scroll anchoring, and every browser has it except
+WebKit — which is exactly what the desktop app is, since a Tauri window on
+macOS is a WKWebView. So Guma does it itself, for the client list, the
+material purchase logs and the build sheet's part history.
+
+### Clickable rows are reachable from the keyboard
+
+guma.css has carried a `tr.row:focus-visible` rule the whole time, for a
+state those rows could not reach: a `<tr>` with an `onClick` and nothing
+else cannot be focused and announces itself as a plain row of data. The
+stylesheet was describing a control. Now the markup is one — Tab to a row,
+Enter or Space to open it, and `aria-expanded` says whether it is open.
+
 ### One box that finds anything
 
 A shop's things live on four screens, two of which are tabs inside a third.
