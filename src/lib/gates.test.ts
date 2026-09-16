@@ -42,6 +42,7 @@ function localDaysAgo(n: number, from: Date = NOW): string {
 function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
   return {
     phase: 'design',
+    kind: 'client',
     priority: 'medium',
     createdAt: '2026-08-01T00:00:00Z',
     takenInAt: '2026-08-01T00:00:00Z',
@@ -64,6 +65,9 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     hasActuals: false,
     actualRuns: 0,
     actualHours: 0,
+    machineHours: 0,
+    materialUnits: 0,
+    failedUnits: 0,
     parts: 0,
     partsPrinted: 0,
     partsPassed: 0,

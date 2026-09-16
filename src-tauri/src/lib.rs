@@ -71,6 +71,12 @@ pub fn run() {
       sql: include_str!("../migrations/0011_retire_machines.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 12,
+      description: "in-house work: jobs with no client, so unbilled capacity is visible",
+      sql: include_str!("../migrations/0012_in_house.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

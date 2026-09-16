@@ -585,7 +585,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
 const JOB_LIST_SQL = `
   select j.id as job_id, j.ref, j.title, j.brief, j.created_at, j.updated_at,
          j.taken_in_at,
-         j.phase, j.priority, j.asset_origin, j.poc,
+         j.phase, j.kind, j.priority, j.asset_origin, j.poc,
          j.needed_by, j.window_from, j.window_locked, j.at_risk,
          j.delivery_on, j.delivery_how,
          c.id as client_id, c.name as client_name, c.kind as client_kind,
@@ -613,6 +613,9 @@ const JOB_LIST_SQL = `
          coalesce(ps.reprint, 0) as parts_reprint,
          coalesce(ps.reprints_ever, 0) as reprints_ever,
          coalesce(a.runs, 0) as actual_runs,
+         coalesce(a.machine_hours, 0) as machine_hours,
+         coalesce(a.material_units, 0) as material_units,
+         coalesce(a.failed_units, 0) as failed_units,
          coalesce(a.design_hours, 0) + coalesce(a.finishing_hours, 0)
            + coalesce(a.admin_hours, 0) as actual_hours,
          (coalesce(a.runs, 0) > 0
@@ -631,6 +634,10 @@ const JOB_LIST_SQL = `
 
 interface JobListSqlRow {
   job_id: string
+  kind: string
+  machine_hours: number | null
+  material_units: number | null
+  failed_units: number | null
   ref: string
   title: string
   brief: string | null
@@ -675,6 +682,7 @@ interface JobListSqlRow {
 function factsFrom(r: JobListSqlRow): ProjectFacts {
   return {
     phase: r.phase,
+    kind: r.kind === 'inhouse' ? 'inhouse' : 'client',
     priority: r.priority,
     createdAt: r.created_at,
     takenInAt: r.taken_in_at,
@@ -702,6 +710,9 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     hasActuals: Number(r.has_actuals) === 1,
     actualRuns: Number(r.actual_runs ?? 0),
     actualHours: Number(r.actual_hours ?? 0),
+    machineHours: Number(r.machine_hours ?? 0),
+    materialUnits: Number(r.material_units ?? 0),
+    failedUnits: Number(r.failed_units ?? 0),
     parts: Number(r.parts ?? 0),
     partsPrinted: Number(r.parts_printed ?? 0),
     partsPassed: Number(r.parts_passed ?? 0),

@@ -321,8 +321,18 @@ export interface GateAnswer {
  * the job_money view, so that all of that logic stays pure and testable
  * without a database anywhere near it.
  */
+/** Work somebody is paying for, or work the shop does for itself.
+ *  In-house covers R&D, test prints, calibration, samples and designing
+ *  the shop's own products -- everything that consumes machine hours,
+ *  material and labour without a client on the other end. See
+ *  0012_in_house.sql for why this is a job kind rather than a client. */
+export type JobKind = 'client' | 'inhouse'
+
 export interface ProjectFacts {
   phase: JobPhase
+  /** Billed work or the shop's own. In-house jobs never carry a quote,
+   *  a deposit or a receivable, and are excluded from every client count. */
+  kind: JobKind
   priority: JobPriority
   createdAt: string
   /**
@@ -367,6 +377,15 @@ export interface ProjectFacts {
   actualRuns: number
   /** Design + finishing + admin hours logged. */
   actualHours: number
+  /** Machine hours logged. Separate from actualHours, which is human time:
+   *  a print runs unattended, and counting the two together would say a
+   *  shop worked a fourteen-hour day because a printer did. */
+  machineHours: number
+  /** Material units drawn, and of those the ones consumed by runs that
+   *  failed. Shrinkage is the second one, and it is a real cost that
+   *  otherwise leaves no trace anywhere. */
+  materialUnits: number
+  failedUnits: number
   /** Build-sheet rollup. `parts` is zero for a project that does not use
    *  one, which is what lets the QC gate fall back to a manual tick rather
    *  than becoming permanently unclearable. */

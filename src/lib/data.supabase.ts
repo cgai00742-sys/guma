@@ -550,6 +550,7 @@ function factsFrom(
   const events: string[] = (r.job_events ?? []).map((e: any) => e.at)
   return {
     phase: r.phase,
+    kind: r.kind === 'inhouse' ? 'inhouse' : 'client',
     priority: r.priority,
     createdAt: r.created_at,
     takenInAt: r.taken_in_at ?? null,
@@ -573,6 +574,9 @@ function factsFrom(
       acts.runs > 0 || acts.designHours + acts.finishingHours + acts.adminHours > 0,
     actualRuns: acts.runs,
     actualHours: acts.designHours + acts.finishingHours + acts.adminHours,
+    machineHours: acts.machineHours,
+    materialUnits: acts.materialUnits,
+    failedUnits: acts.failedUnits,
     parts: Number(r.job_parts_summary?.[0]?.parts ?? 0),
     partsPrinted: Number(r.job_parts_summary?.[0]?.printed ?? 0),
     partsPassed: Number(r.job_parts_summary?.[0]?.passed ?? 0),

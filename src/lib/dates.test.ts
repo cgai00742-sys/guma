@@ -114,13 +114,14 @@ when('local calendar dates', () => {
 
 when('flags, from Hawaii', () => {
   const facts = (over: Partial<ProjectFacts> = {}): ProjectFacts => ({
-    phase: 'design', priority: 'medium', createdAt: '2026-08-01T00:00:00Z',
+    phase: 'design', kind: 'client', priority: 'medium', createdAt: '2026-08-01T00:00:00Z',
     takenInAt: '2026-08-01T00:00:00Z', neededBy: null, windowFrom: null,
     windowLocked: false, atRisk: false, deliveryOn: null, deliveryHow: null,
     brief: null, poc: null, quoteStatus: 'accepted', quoteTotal: 500,
     depositDue: 0, depositOwed: 0, balanceOwed: 0, lastActivityAt: null,
     minimumOrder: 0, actualCost: 0, hasActuals: false, actualRuns: 0,
-    actualHours: 0, parts: 0, partsPrinted: 0, partsPassed: 0,
+    actualHours: 0, machineHours: 0, materialUnits: 0, failedUnits: 0,
+    parts: 0, partsPrinted: 0, partsPassed: 0,
     partsReprint: 0, reprintsEver: 0, ...over,
   })
 
