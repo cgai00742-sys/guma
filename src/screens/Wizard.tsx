@@ -60,6 +60,9 @@ const CHANNELS = [
   { value: 'wholesale', label: 'Wholesale' },
 ]
 
+type Tech = 'fdm' | 'resin' | 'composite' | 'sls'
+const TECHS: Tech[] = ['fdm', 'resin', 'composite', 'sls']
+
 const num = (v: string) => (v.trim() === '' ? 0 : Number(v))
 const orNull = (v: string) => (v.trim() === '' ? null : Number(v))
 
@@ -111,7 +114,6 @@ export default function Wizard({
   const val = (key: string) => answers[key] ?? ''
 
   const answered = q ? q.fields.every((f) => val(f.key).trim() !== '') : false
-  const canGo = answered || !!q?.optional
 
   /* ---- what Guma can work out from the answer on screen ---------------- */
   const statePower = powerRateFor(val('state'))
@@ -230,33 +232,51 @@ export default function Wizard({
         currency,
         locale,
         paper: shop?.paper ?? '',
-      } as never)
+      })
     }
 
     if (q.id === 'machine' || q.id === 'wear' || q.id === 'watts') {
       const existing = ctx?.printerRows.find((p) => !p.archived)
       await savePrinter(id, {
-        id: existing?.id ?? null,
+        // PrinterInput makes id OPTIONAL, not nullable: a new machine omits
+        // it. Passing null asks the backend to update the row with id null.
+        ...(existing ? { id: existing.id } : {}),
         name: val('pName').trim() || existing?.name || 'Bay 1',
         model: existing?.model ?? '',
-        tech: val('pTech') || existing?.tech || 'fdm',
+        // The select only ever offers these four, but the answer travels as
+        // a string, so it is narrowed here rather than asserted.
+        tech: (TECHS.includes(val('pTech') as Tech) ? val('pTech') : existing?.tech ?? 'fdm') as Tech,
         rate_hourly: Number(existing?.rate_hourly ?? 0),
-        wear_hourly: wear ? Math.round(wear.perHour * 10000) / 10000 : Number(existing?.wear_hourly ?? 0),
+        wear_hourly: wear
+          ? Math.round(wear.perHour * 10000) / 10000
+          : Number(existing?.wear_hourly ?? 0),
         watts: orNull(val('pWatts')) ?? existing?.watts ?? null,
-      } as never)
+      })
     }
 
     if (q.id === 'material' && num(val('mPerKg')) > 0) {
       const existing = ctx?.materials[0]
+      // MaterialInput is camelCase -- costPerUnit, not cost_per_unit. The
+      // snake_case version compiled only because of an `as never` cast, sent
+      // undefined into a NOT NULL column, and failed at the database:
+      //   NOT NULL constraint failed: materials.cost_per_unit
+      // Every cast in this function is gone for that reason.
       await saveMaterial(id, {
-        id: existing?.id ?? null,
+        ...(existing ? { id: existing.id } : {}),
         name: val('mName').trim() || 'PLA',
         kind: val('mName').trim() || 'PLA',
         swatch: '#5A6B7C',
         unit: 'g',
-        cost_per_unit: num(val('mPerKg')) / 1000,
-        sell_override: null,
-      } as never)
+        // Stored per gram; the question asks per kilo because that is how
+        // filament is bought.
+        costPerUnit: num(val('mPerKg')) / 1000,
+        sellOverride: null,
+        // ctx.materials are MaterialRef (what pricing needs), which does not
+        // carry stock levels. A material edited here keeps whatever it had;
+        // a new one starts at nothing on hand, which is true.
+        onHand: 0,
+        reorderAt: 0,
+      })
     }
 
     if (['rate', 'finishing', 'deposit', 'minimum', 'markup'].includes(q.id) && ctx) {
@@ -267,7 +287,7 @@ export default function Wizard({
         deposit_pct: num(val('depositPct')) || Number(ctx.rateCard.deposit_pct),
         minimum_order: num(val('minimumOrder')) || Number(ctx.rateCard.minimum_order),
         material_markup: num(val('markup')) || Number(ctx.rateCard.material_markup),
-      } as never)
+      })
     }
 
     if (q.id === 'tax' && ctx) {
@@ -290,8 +310,12 @@ export default function Wizard({
     setError(null)
     try {
       await saveCurrent()
-      // Part one ends with a landing, not with question eight.
-      if (partOneDone(answers) && q && q.id === partOne()[partOne().length - 1].id) {
+      // Part one ends with a landing, not with question eight -- and it
+      // ends there whether or not every question was answered. Somebody who
+      // skipped the electricity rate because the bill is in a drawer
+      // somewhere still deserves the "here is what you can do now" screen
+      // rather than being walked silently into part two.
+      if (q && q.id === partOne()[partOne().length - 1].id) {
         setFinished(true)
       } else if (at < list.length - 1) {
         setAt(at + 1)
@@ -319,16 +343,42 @@ export default function Wizard({
   }
 
   /* ---- the landing between part one and part two ----------------------- */
+  /** Part-one questions left blank. Named rather than counted, so the
+   *  landing can say which ones instead of just how many. */
+  const skipped = partOne().filter((x) => x.fields.some((f) => val(f.key).trim() === ''))
+
   if (finished) {
     const inPartTwo = list.some((x) => x.part === 2)
     return (
       <div className="wrap" style={{ paddingTop: 48, maxWidth: 560 }}>
         <div className="pane">
-          <h2 style={{ marginBottom: 4 }}>That is enough to start.</h2>
+          <h2 style={{ marginBottom: 4 }}>
+            {partOneDone(answers) ? 'That is enough to start.' : 'Picked up where you left it.'}
+          </h2>
           <div style={{ fontSize: 13, lineHeight: '19px', color: 'var(--txt-2)', marginTop: 8 }}>
-            Guma can now tell you what a job costs you — material, machine, wear and your own
-            hours. Log something you are working on and it will show you the number.
+            {partOneDone(answers) ? (
+              <>
+                Guma can now tell you what a job costs you — material, machine, wear and your own
+                hours. Log something you are working on and it will show you the number.
+              </>
+            ) : (
+              <>
+                You skipped {skipped.length} question{skipped.length === 1 ? '' : 's'}, so some of
+                what a job costs will read low until they are answered. Nothing is lost — come back
+                from the banner on Projects when you have the numbers.
+              </>
+            )}
           </div>
+          {!partOneDone(answers) && (
+            <div className="guide" style={{ marginTop: 12 }}>
+              <div className="guide-g">
+                <div className="guide-h"><span className="guide-tag alt">Still open</span></div>
+                <div className="guide-note">
+                  {skipped.map((x) => x.ask.replace(/\?$/, '')).join(' · ')}
+                </div>
+              </div>
+            </div>
+          )}
           {error && <div className="alert" style={{ marginTop: 12 }}><span>{error}</span></div>}
           <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
             <button type="button" className="btn primary" onClick={startFirstJob} disabled={busy}>
@@ -409,14 +459,26 @@ export default function Wizard({
                 Back
               </button>
             )}
+            {/*
+              Every question can be skipped, not only the ones marked
+              optional. Somebody who does not know their electricity rate
+              yet should move on and come back with the bill, rather than
+              inventing a number to get past the screen -- an invented
+              number looks answered forever, and this whole program is
+              built on the difference between a blank and a guess.
+
+              Skipped questions are not lost: setupPlan still counts them
+              as open, the banner still carries them, and the wizard
+              resumes on the first one next time.
+            */}
             <button
               type="button"
-              className="btn primary"
+              className={answered ? 'btn primary' : 'btn'}
               onClick={next}
-              disabled={busy || !canGo}
+              disabled={busy}
               style={{ marginLeft: 'auto' }}
             >
-              {busy ? 'Saving…' : answered ? 'Next' : q.optional ? 'Skip' : 'Next'}
+              {busy ? 'Saving…' : answered ? 'Next' : 'Skip for now'}
             </button>
           </div>
         </div>
