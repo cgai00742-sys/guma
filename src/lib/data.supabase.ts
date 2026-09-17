@@ -10,7 +10,8 @@
  * carrying Supabase secrets.
  */
 import { supabase } from './supabase'
-import type { MaterialRef, PrinterRef } from './pricing'
+import { round2, type MaterialRef, type PrinterRef } from './pricing'
+import { feeFor } from './selling'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
@@ -63,8 +64,23 @@ export type {
   PartInput,
   PartStatus,
   QuoteStatus,
+  ChannelRow,
+  ChannelInput,
+  ProductRow,
+  ProductInput,
+  BatchRow,
+  BatchInput,
+  SaleRow,
+  SaleInput,
 } from './data.types'
 import type {
+  ChannelRow,
+  ChannelInput,
+  ProductRow,
+  ProductInput,
+  BatchInput,
+  SaleRow,
+  SaleInput,
   ShopIdentityInput,
   ShopCostsInput,
   ShopQuoteTermsInput,
@@ -1611,5 +1627,261 @@ export async function takeProjectIn(shopId: string, jobId: string, actorId: stri
  *  so there is no pragma to set here. */
 export async function deleteProject(shopId: string, jobId: string): Promise<void> {
   const { error } = await supabase.from('jobs').delete().eq('id', jobId).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+/* ---- the selling side ------------------------------------------------- */
+/** The hosted half of what data.local.ts does over the same four tables.
+ *  See 0016_selling.sql, and data.local.ts for the reasoning. */
+
+export async function listChannels(shopId: string): Promise<ChannelRow[]> {
+  const { data, error } = await supabase
+    .from('channels')
+    .select('id, name, fee_pct, fee_flat, archived')
+    .eq('shop_id', shopId)
+    .order('archived')
+    .order('name')
+  if (error) throw error
+  return (data ?? []).map((c) => ({
+    id: String(c.id),
+    name: String(c.name),
+    fee_pct: Number(c.fee_pct),
+    fee_flat: Number(c.fee_flat),
+    archived: c.archived ? 1 : 0,
+  }))
+}
+
+export async function saveChannel(shopId: string, next: ChannelInput): Promise<ChannelRow> {
+  const name = next.name.trim()
+  if (!name) throw new Error('A place you sell needs a name.')
+  if (next.feePct < 0 || next.feePct > 100) throw new Error('A fee is a percentage between 0 and 100.')
+  if (next.feeFlat < 0) throw new Error('A flat fee cannot be negative.')
+
+  const row = {
+    shop_id: shopId,
+    name,
+    fee_pct: next.feePct,
+    fee_flat: next.feeFlat,
+    archived: next.archived === true,
+  }
+  const query = next.id
+    ? supabase.from('channels').update(row).eq('id', next.id).eq('shop_id', shopId)
+    : supabase.from('channels').insert(row)
+  const { data, error } = await query.select('id, name, fee_pct, fee_flat, archived').single()
+  if (error) throw error
+  return {
+    id: String(data.id),
+    name: String(data.name),
+    fee_pct: Number(data.fee_pct),
+    fee_flat: Number(data.fee_flat),
+    archived: data.archived ? 1 : 0,
+  }
+}
+
+export async function listShelf(shopId: string): Promise<ProductRow[]> {
+  const [products, stock] = await Promise.all([
+    supabase
+      .from('products')
+      .select('id, name, design_job_id, design_cost, design_hours, archived')
+      .eq('shop_id', shopId)
+      .order('archived')
+      .order('name'),
+    supabase
+      .from('batch_stock')
+      .select('*, batches!inner ( job_id, note, created_at )')
+      .eq('shop_id', shopId)
+      .order('made_on', { ascending: false }),
+  ])
+  if (products.error) throw products.error
+  if (stock.error) throw stock.error
+
+  const batches = (stock.data ?? []).map((b) => {
+    const parent = (b as { batches: { job_id: string | null; note: string | null } }).batches
+    return {
+      id: String(b.batch_id),
+      product_id: String(b.product_id),
+      job_id: parent?.job_id ?? null,
+      units_made: Number(b.units_made),
+      unit_cost: Number(b.unit_cost),
+      made_on: String(b.made_on),
+      note: parent?.note ?? null,
+      units_sold: Number(b.units_sold),
+      units_left: Number(b.units_left),
+      revenue: Number(b.revenue),
+      fees: Number(b.fees),
+      cost_of_sold: Number(b.cost_of_sold),
+      estimated: (parent?.job_id ?? null) === null,
+    }
+  })
+
+  return (products.data ?? []).map((p) => ({
+    id: String(p.id),
+    name: String(p.name),
+    design_job_id: p.design_job_id ? String(p.design_job_id) : null,
+    design_cost: p.design_cost === null ? null : Number(p.design_cost),
+    design_hours: p.design_hours === null ? null : Number(p.design_hours),
+    archived: p.archived ? 1 : 0,
+    batches: batches.filter((b) => b.product_id === String(p.id)),
+  }))
+}
+
+export async function saveProduct(shopId: string, next: ProductInput): Promise<string> {
+  const name = next.name.trim()
+  if (!name) throw new Error('A product needs a name.')
+  const row = {
+    shop_id: shopId,
+    name,
+    design_job_id: next.designJobId ?? null,
+    design_cost: next.designCost ?? null,
+    design_hours: next.designHours ?? null,
+    archived: next.archived === true,
+  }
+  const query = next.id
+    ? supabase.from('products').update(row).eq('id', next.id).eq('shop_id', shopId)
+    : supabase.from('products').insert(row)
+  const { data, error } = await query.select('id').single()
+  if (error) throw error
+  return String(data.id)
+}
+
+export async function saveBatch(shopId: string, next: BatchInput): Promise<string> {
+  if (!Number.isFinite(next.unitsMade) || next.unitsMade < 1) {
+    throw new Error('A batch is at least one unit.')
+  }
+  if (!Number.isFinite(next.unitCost) || next.unitCost < 0) {
+    throw new Error('A unit cost cannot be negative.')
+  }
+
+  if (next.id) {
+    const { data: stock, error: stockErr } = await supabase
+      .from('batch_stock')
+      .select('units_sold')
+      .eq('batch_id', next.id)
+      .single()
+    if (stockErr) throw stockErr
+    if (next.unitsMade < Number(stock.units_sold)) {
+      throw new Error(
+        `${stock.units_sold} of these have already sold, so the batch cannot be fewer than that.`,
+      )
+    }
+    const { error } = await supabase
+      .from('batches')
+      .update({ units_made: next.unitsMade, note: next.note ?? null })
+      .eq('id', next.id)
+      .eq('shop_id', shopId)
+    if (error) throw error
+    return next.id
+  }
+
+  const { data, error } = await supabase
+    .from('batches')
+    .insert({
+      shop_id: shopId,
+      product_id: next.productId,
+      job_id: next.jobId ?? null,
+      units_made: next.unitsMade,
+      unit_cost: next.unitCost,
+      made_on: next.madeOn,
+      note: next.note ?? null,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  return String(data.id)
+}
+
+export async function listSales(shopId: string, batchId?: string): Promise<SaleRow[]> {
+  let query = supabase
+    .from('sales')
+    .select('id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note, channels ( name )')
+    .eq('shop_id', shopId)
+  if (batchId) query = query.eq('batch_id', batchId)
+  const { data, error } = await query
+    .order('sold_on', { ascending: false })
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return (data ?? []).map((s) => ({
+    id: String(s.id),
+    batch_id: String(s.batch_id),
+    channel_id: s.channel_id ? String(s.channel_id) : null,
+    // PostgREST types a to-one embed as an array even though channel_id is
+    // a single foreign key, so this reads the first rather than asserting
+    // the shape it wishes it had.
+    channel_name: (() => {
+      const c = (s as unknown as { channels?: { name: string } | { name: string }[] | null }).channels
+      if (!c) return null
+      return Array.isArray(c) ? (c[0]?.name ?? null) : c.name
+    })(),
+    units: Number(s.units),
+    unit_price: Number(s.unit_price),
+    fee_total: Number(s.fee_total),
+    sold_on: String(s.sold_on),
+    note: s.note ?? null,
+  }))
+}
+
+export async function recordSale(shopId: string, next: SaleInput): Promise<string> {
+  if (!Number.isFinite(next.units) || next.units < 1) throw new Error('A sale is at least one unit.')
+  if (!Number.isFinite(next.unitPrice) || next.unitPrice < 0) {
+    throw new Error('A price cannot be negative.')
+  }
+
+  const { data: stock, error: stockErr } = await supabase
+    .from('batch_stock')
+    .select('units_left')
+    .eq('batch_id', next.batchId)
+    .eq('shop_id', shopId)
+    .maybeSingle()
+  if (stockErr) throw stockErr
+  if (!stock) throw new Error('That batch does not exist.')
+  if (next.units > Number(stock.units_left)) {
+    throw new Error(
+      `Only ${stock.units_left} of those are left. Record another batch if you made more.`,
+    )
+  }
+
+  let fee = 0
+  if (next.channelId) {
+    const { data: channel, error: chErr } = await supabase
+      .from('channels')
+      .select('id, name, fee_pct, fee_flat')
+      .eq('id', next.channelId)
+      .eq('shop_id', shopId)
+      .maybeSingle()
+    if (chErr) throw chErr
+    if (channel) {
+      fee = feeFor(
+        {
+          id: String(channel.id),
+          name: String(channel.name),
+          feePct: Number(channel.fee_pct),
+          feeFlat: Number(channel.fee_flat),
+        },
+        next.units,
+        next.unitPrice,
+      )
+    }
+  }
+
+  const { data, error } = await supabase
+    .from('sales')
+    .insert({
+      shop_id: shopId,
+      batch_id: next.batchId,
+      channel_id: next.channelId,
+      units: next.units,
+      unit_price: next.unitPrice,
+      fee_total: round2(fee),
+      sold_on: next.soldOn,
+      note: next.note ?? null,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  return String(data.id)
+}
+
+export async function deleteSale(shopId: string, saleId: string): Promise<void> {
+  const { error } = await supabase.from('sales').delete().eq('id', saleId).eq('shop_id', shopId)
   if (error) throw error
 }

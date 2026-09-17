@@ -27,22 +27,31 @@ const saveMaterial = vi.fn(async (_shopId: string, _input: Record<string, unknow
 const saveRateCard = vi.fn(async () => {})
 const saveShopQuoteTerms = vi.fn(async () => {})
 const createInHouseJob = vi.fn(async () => 'job-1')
+const listChannels = vi.fn(async () => [])
+const saveChannel = vi.fn(async (_shopId: string, _input: Record<string, unknown>) => ({
+  id: 'ch-1', name: 'Etsy', fee_pct: 9.5, fee_flat: 0.45, archived: 0,
+}))
 
 vi.mock('../lib/data', async () => {
   const types = await import('../lib/data.types')
   return {
     ...types,
     setupShop, saveShopIdentity, savePrinter, saveMaterial, saveRateCard,
-    saveShopQuoteTerms, createInHouseJob,
+    saveShopQuoteTerms, createInHouseJob, listChannels, saveChannel,
   }
 })
 
-async function renderWizard() {
+async function renderWizard(ctx: unknown = null) {
   vi.resetModules()
   const { default: Wizard } = await import('./Wizard')
+  const { makeCtx } = await import('../lib/fixtures')
   render(
     <MemoryRouter>
-      <Wizard ctx={null} fullName="Owner" onSaved={() => {}} />
+      <Wizard
+        ctx={ctx === 'full' ? makeCtx() : null}
+        fullName="Owner"
+        onSaved={() => {}}
+      />
     </MemoryRouter>,
   )
 }
@@ -177,5 +186,53 @@ describe('a question can always be skipped', () => {
     expect(screen.getByText(/will read low until they are answered/i)).toBeDefined()
     // And names what is still open, so it is not a mystery later.
     expect(screen.getByText(/What do you pay for electricity/)).toBeDefined()
+  })
+})
+
+describe('where you sell', () => {
+  it('creates the channels, with Etsy at its published cut', async () => {
+    /**
+     * The wizard asked this question and threw the answer away, so the
+     * first sale anybody recorded had nowhere to subtract a fee from and
+     * every profit figure read high. Etsy's real cut is not the 6.5%
+     * everyone quotes -- 6.5% transaction plus 3% + $0.25 processing plus
+     * $0.20 to list -- so the number here is checked, not rounded.
+     */
+    const user = userEvent.setup()
+    await renderWizard('full')
+    await screen.findByRole('heading', { level: 2 })
+
+    // Through the rest of part one and the landing that ends it, which is
+    // the route anybody actually takes to these questions.
+    for (let i = 0; i < 10; i += 1) {
+      if (screen.queryByRole('button', { name: /keep setting up/i })) break
+      await goOn(user)
+      await waitFor(() => expect(document.body.textContent).toBeTruthy())
+    }
+    await user.click(screen.getByRole('button', { name: /keep setting up/i }))
+    await waitFor(() => expect(asked()).toMatch(/How do you mostly get paid/i))
+
+    await fill(user, { branch: 'selling' })
+    await goOn(user)
+    await walkTo(user, /Where do you sell/i)
+
+    await user.click(screen.getByRole('button', { name: /^Etsy$/ }))
+    await user.click(screen.getByRole('button', { name: /markets and fairs/i }))
+    await goOn(user)
+
+    await waitFor(() => expect(saveChannel).toHaveBeenCalledTimes(2))
+    const made = saveChannel.mock.calls.map((c) => c[1]) as unknown as {
+      name: string; feePct: number; feeFlat: number
+    }[]
+    const etsy = made.find((c) => c.name === 'Etsy')
+    expect(etsy?.feePct).toBe(9.5)
+    expect(etsy?.feeFlat).toBe(0.45)
+
+    // A market stall charges for the table, not a slice of each sale, so
+    // Guma does not invent one. The Shelf says out loud that this channel
+    // takes nothing rather than leaving it to be discovered.
+    const market = made.find((c) => c.name === 'Markets and fairs')
+    expect(market?.feePct).toBe(0)
+    expect(market?.feeFlat).toBe(0)
   })
 })

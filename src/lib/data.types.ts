@@ -825,3 +825,107 @@ export interface PartInput {
   note?: string | null
   sort?: number
 }
+
+/* ---- the selling side ------------------------------------------------- */
+/**
+ * What a shop makes for itself and sells, rather than what somebody
+ * commissioned. See 0014_selling.sql for why design cost lives on the
+ * product and production cost is frozen on the batch.
+ */
+
+/** Where a shop sells, and what that place takes. */
+export interface ChannelRow {
+  id: string
+  name: string
+  /** Percent of the sale price, 0..100. */
+  fee_pct: number
+  /** Taken per sale regardless of size -- listing and processing fees. */
+  fee_flat: number
+  archived: number
+}
+
+export interface ChannelInput {
+  id?: string
+  name: string
+  feePct: number
+  feeFlat: number
+  archived?: boolean
+}
+
+/** A run of units, made on a day, at a cost that never moves again. */
+export interface BatchRow {
+  id: string
+  product_id: string
+  job_id: string | null
+  units_made: number
+  unit_cost: number
+  made_on: string
+  note: string | null
+  units_sold: number
+  units_left: number
+  revenue: number
+  fees: number
+  cost_of_sold: number
+  /**
+   * True when the unit cost was typed rather than derived from logged runs
+   * and hours -- stock that existed before Guma did. Guma still counts it,
+   * and still says which number it is standing on.
+   *
+   * Derived from job_id rather than stored: a batch with no job behind it
+   * is exactly one whose cost nobody can check. A stored flag would be a
+   * second version of the same fact, free to disagree with the first.
+   */
+  estimated: boolean
+}
+
+export interface BatchInput {
+  id?: string
+  productId: string
+  jobId?: string | null
+  unitsMade: number
+  unitCost: number
+  madeOn: string
+  note?: string | null
+}
+
+/** A thing the shop makes more than once, with every batch of it. */
+export interface ProductRow {
+  id: string
+  name: string
+  design_job_id: string | null
+  design_cost: number | null
+  design_hours: number | null
+  archived: number
+  batches: BatchRow[]
+}
+
+export interface ProductInput {
+  id?: string
+  name: string
+  designJobId?: string | null
+  designCost?: number | null
+  designHours?: number | null
+  archived?: boolean
+}
+
+export interface SaleRow {
+  id: string
+  batch_id: string
+  channel_id: string | null
+  channel_name: string | null
+  units: number
+  unit_price: number
+  fee_total: number
+  sold_on: string
+  note: string | null
+}
+
+export interface SaleInput {
+  id?: string
+  batchId: string
+  channelId: string | null
+  units: number
+  unitPrice: number
+  soldOn: string
+  note?: string | null
+}

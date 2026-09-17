@@ -23,7 +23,8 @@
  * is checked off.
  */
 import Database from '@tauri-apps/plugin-sql'
-import type { MaterialRef, PrinterRef } from './pricing'
+import { round2, type MaterialRef, type PrinterRef } from './pricing'
+import { feeFor } from './selling'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody } from './data.types'
 import { osCurrency, osLocale } from './locale'
 import { LATEST_RATE_CARD } from './rateCards'
@@ -66,6 +67,14 @@ import type {
   PartInput,
   PartStatus,
   QuoteStatus,
+  ChannelRow,
+  ChannelInput,
+  ProductRow,
+  ProductInput,
+  BatchRow,
+  BatchInput,
+  SaleRow,
+  SaleInput,
 } from './data.types'
 
 export {
@@ -116,6 +125,14 @@ export type {
   PartInput,
   PartStatus,
   QuoteStatus,
+  ChannelRow,
+  ChannelInput,
+  ProductRow,
+  ProductInput,
+  BatchRow,
+  BatchInput,
+  SaleRow,
+  SaleInput,
 } from './data.types'
 
 let dbPromise: Promise<Database> | null = null
@@ -2146,4 +2163,274 @@ export async function deleteProject(shopId: string, jobId: string): Promise<void
   await d.execute('pragma foreign_keys = ON')
   const res = await d.execute('delete from jobs where id = ? and shop_id = ?', [jobId, shopId])
   if (res.rowsAffected === 0) throw new Error('That project no longer exists.')
+}
+
+/* ---- the selling side ------------------------------------------------- */
+/**
+ * What the shop makes for itself and sells.
+ *
+ * Everything here reads the batch_stock view rather than summing sales in
+ * JavaScript, for the same reason job_money and job_actuals are views: a
+ * figure folded at read time cannot be stale, and there is no recalculate
+ * button for somebody to forget to press.
+ */
+
+/** Where the shop sells. Archived channels stay, so old sales keep a name. */
+export async function listChannels(shopId: string): Promise<ChannelRow[]> {
+  const d = await db()
+  return d.select<ChannelRow[]>(
+    'select id, name, fee_pct, fee_flat, archived from channels where shop_id = ? order by archived, name',
+    [shopId],
+  )
+}
+
+export async function saveChannel(shopId: string, next: ChannelInput): Promise<ChannelRow> {
+  const name = next.name.trim()
+  if (!name) throw new Error('A place you sell needs a name.')
+  if (next.feePct < 0 || next.feePct > 100) throw new Error('A fee is a percentage between 0 and 100.')
+  if (next.feeFlat < 0) throw new Error('A flat fee cannot be negative.')
+
+  const d = await db()
+  const id = next.id ?? uuid()
+  if (next.id) {
+    await d.execute(
+      'update channels set name = ?, fee_pct = ?, fee_flat = ?, archived = ? where id = ? and shop_id = ?',
+      [name, next.feePct, next.feeFlat, next.archived ? 1 : 0, id, shopId],
+    )
+  } else {
+    await d.execute(
+      'insert into channels (id, shop_id, name, fee_pct, fee_flat, archived) values (?, ?, ?, ?, ?, ?)',
+      [id, shopId, name, next.feePct, next.feeFlat, next.archived ? 1 : 0],
+    )
+  }
+  const rows = await d.select<ChannelRow[]>(
+    'select id, name, fee_pct, fee_flat, archived from channels where id = ?',
+    [id],
+  )
+  return rows[0]
+}
+
+/**
+ * Every product, with its batches and what each one has done.
+ *
+ * One query per table rather than a join, because a product has many
+ * batches and a batch has many sales: joined, the rows multiply and the
+ * money has to be de-duplicated in JavaScript, which is where money bugs
+ * come from.
+ */
+export async function listShelf(shopId: string): Promise<ProductRow[]> {
+  const d = await db()
+  const [products, batches] = await Promise.all([
+    d.select<
+      {
+        id: string
+        name: string
+        design_job_id: string | null
+        design_cost: number | null
+        design_hours: number | null
+        archived: number
+      }[]
+    >(
+      `select id, name, design_job_id, design_cost, design_hours, archived
+       from products where shop_id = ? order by archived, name`,
+      [shopId],
+    ),
+    d.select<
+      (Omit<BatchRow, 'estimated'> & { product_id: string })[]
+    >(
+      `select s.batch_id as id, s.product_id, b.job_id, s.units_made, s.unit_cost,
+              s.made_on, b.note, s.units_sold, s.units_left, s.revenue, s.fees,
+              s.cost_of_sold
+       from batch_stock s
+       join batches b on b.id = s.batch_id
+       where s.shop_id = ?
+       order by s.made_on desc, b.created_at desc`,
+      [shopId],
+    ),
+  ])
+
+  return products.map((p) => ({
+    ...p,
+    batches: batches
+      .filter((b) => b.product_id === p.id)
+      .map((b) => ({ ...b, estimated: b.job_id === null })),
+  }))
+}
+
+export async function saveProduct(shopId: string, next: ProductInput): Promise<string> {
+  const name = next.name.trim()
+  if (!name) throw new Error('A product needs a name.')
+
+  const d = await db()
+  const id = next.id ?? uuid()
+  if (next.id) {
+    await d.execute(
+      `update products set name = ?, design_job_id = ?, design_cost = ?, design_hours = ?,
+         archived = ? where id = ? and shop_id = ?`,
+      [
+        name,
+        next.designJobId ?? null,
+        next.designCost ?? null,
+        next.designHours ?? null,
+        next.archived ? 1 : 0,
+        id,
+        shopId,
+      ],
+    )
+  } else {
+    await d.execute(
+      `insert into products (id, shop_id, name, design_job_id, design_cost, design_hours, archived)
+       values (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        shopId,
+        name,
+        next.designJobId ?? null,
+        next.designCost ?? null,
+        next.designHours ?? null,
+        next.archived ? 1 : 0,
+      ],
+    )
+  }
+  return id
+}
+
+/**
+ * A run of units at a cost that never moves again.
+ *
+ * The cost is frozen here on purpose. A keychain made when filament was
+ * $22/kg cost that, whatever a spool costs today, and recomputing it later
+ * would rewrite what last month actually cost -- which this program refuses
+ * everywhere else too.
+ */
+export async function saveBatch(shopId: string, next: BatchInput): Promise<string> {
+  if (!Number.isFinite(next.unitsMade) || next.unitsMade < 1) {
+    throw new Error('A batch is at least one unit.')
+  }
+  if (!Number.isFinite(next.unitCost) || next.unitCost < 0) {
+    throw new Error('A unit cost cannot be negative.')
+  }
+  const d = await db()
+  const id = next.id ?? uuid()
+  if (next.id) {
+    // Units made and the note can be corrected; the frozen cost and the job
+    // behind it cannot, because those are what the figure means.
+    const sold = await d.select<{ units_sold: number }[]>(
+      'select units_sold from batch_stock where batch_id = ?',
+      [id],
+    )
+    if (sold[0] && next.unitsMade < Number(sold[0].units_sold)) {
+      throw new Error(
+        `${sold[0].units_sold} of these have already sold, so the batch cannot be fewer than that.`,
+      )
+    }
+    await d.execute('update batches set units_made = ?, note = ? where id = ? and shop_id = ?', [
+      next.unitsMade,
+      next.note ?? null,
+      id,
+      shopId,
+    ])
+  } else {
+    await d.execute(
+      `insert into batches (id, shop_id, product_id, job_id, units_made, unit_cost, made_on, note)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        shopId,
+        next.productId,
+        next.jobId ?? null,
+        next.unitsMade,
+        next.unitCost,
+        next.madeOn,
+        next.note ?? null,
+      ],
+    )
+  }
+  return id
+}
+
+export async function listSales(shopId: string, batchId?: string): Promise<SaleRow[]> {
+  const d = await db()
+  const where = batchId ? 'and s.batch_id = ?' : ''
+  const params: unknown[] = batchId ? [shopId, batchId] : [shopId]
+  return d.select<SaleRow[]>(
+    `select s.id, s.batch_id, s.channel_id, c.name as channel_name, s.units,
+            s.unit_price, s.fee_total, s.sold_on, s.note
+     from sales s
+     left join channels c on c.id = s.channel_id
+     where s.shop_id = ? ${where}
+     order by s.sold_on desc, s.created_at desc`,
+    params,
+  )
+}
+
+/**
+ * Units leaving, at a price, through a place that takes a cut.
+ *
+ * The fee is worked out here and STORED, so changing a channel's fee next
+ * year cannot rewrite what a sale actually netted -- the same rule that
+ * keeps a quote's rates with the quote.
+ */
+export async function recordSale(shopId: string, next: SaleInput): Promise<string> {
+  if (!Number.isFinite(next.units) || next.units < 1) throw new Error('A sale is at least one unit.')
+  if (!Number.isFinite(next.unitPrice) || next.unitPrice < 0) {
+    throw new Error('A price cannot be negative.')
+  }
+
+  const d = await db()
+  const left = await d.select<{ units_left: number }[]>(
+    'select units_left from batch_stock where batch_id = ? and shop_id = ?',
+    [next.batchId, shopId],
+  )
+  if (!left[0]) throw new Error('That batch does not exist.')
+  if (next.units > Number(left[0].units_left)) {
+    throw new Error(
+      `Only ${left[0].units_left} of those are left. Record another batch if you made more.`,
+    )
+  }
+
+  const channels = next.channelId
+    ? await d.select<ChannelRow[]>(
+        'select id, name, fee_pct, fee_flat, archived from channels where id = ? and shop_id = ?',
+        [next.channelId, shopId],
+      )
+    : []
+  const channel = channels[0]
+  const fee = channel
+    ? feeFor(
+        {
+          id: channel.id,
+          name: channel.name,
+          feePct: Number(channel.fee_pct),
+          feeFlat: Number(channel.fee_flat),
+        },
+        next.units,
+        next.unitPrice,
+      )
+    : 0
+
+  const id = next.id ?? uuid()
+  await d.execute(
+    `insert into sales (id, shop_id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      shopId,
+      next.batchId,
+      next.channelId,
+      next.units,
+      next.unitPrice,
+      round2(fee),
+      next.soldOn,
+      next.note ?? null,
+    ],
+  )
+  return id
+}
+
+/** A sale recorded wrongly is a typo, not history -- nothing was sent to
+ *  anyone. Deleting puts the units back on the shelf. */
+export async function deleteSale(shopId: string, saleId: string): Promise<void> {
+  const d = await db()
+  await d.execute('delete from sales where id = ? and shop_id = ?', [saleId, shopId])
 }

@@ -27,6 +27,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   createInHouseJob,
+  listChannels,
+  saveChannel,
   saveMaterial,
   savePrinter,
   saveRateCard,
@@ -47,17 +49,30 @@ import {
 import { makeMoney } from '../lib/pricing'
 import { currencySymbol, osCurrency, osLocale, regionOf } from '../lib/locale'
 import { powerRateFor, US_AVERAGE_CENTS } from '../lib/power'
+import { ETSY_US } from '../lib/selling'
 import { wearPerHour, rateImplies } from '../lib/derive'
 import { US_STATES, taxHintFor } from '../lib/taxHelp'
 import { benchmarksFor } from '../lib/benchmarks'
 import FieldGuide, { benchmarkGroup, makeBenchmarkFormatter, type GuideGroup } from '../components/FieldGuide'
 
+/**
+ * The places a shop sells, and what each one is known to take.
+ *
+ * Only Etsy carries a fee here, because Etsy publishes one and it is a
+ * fact rather than a guess: 6.5% transaction, 3% + $0.25 processing and
+ * $0.20 to list -- about a tenth of a $50 sale and nearly a fifth of a $5
+ * one. The rest are created at zero on purpose. A market stall charges for
+ * the table, not a slice of each sale; a shop's own site could be on any
+ * processor. Inventing a number for those would be Guma quietly deciding
+ * what somebody's business costs, which it does nowhere else. The Shelf
+ * shows a channel taking nothing and says what that does to the figures.
+ */
 const CHANNELS = [
-  { value: 'etsy', label: 'Etsy' },
-  { value: 'market', label: 'Markets and fairs' },
-  { value: 'direct', label: 'Direct / word of mouth' },
-  { value: 'site', label: 'My own site' },
-  { value: 'wholesale', label: 'Wholesale' },
+  { value: 'etsy', label: 'Etsy', feePct: ETSY_US.feePct, feeFlat: ETSY_US.feeFlat },
+  { value: 'market', label: 'Markets and fairs', feePct: 0, feeFlat: 0 },
+  { value: 'direct', label: 'Direct / word of mouth', feePct: 0, feeFlat: 0 },
+  { value: 'site', label: 'My own site', feePct: 0, feeFlat: 0 },
+  { value: 'wholesale', label: 'Wholesale', feePct: 0, feeFlat: 0 },
 ]
 
 type Tech = 'fdm' | 'resin' | 'composite' | 'sls'
@@ -288,6 +303,24 @@ export default function Wizard({
         minimum_order: num(val('minimumOrder')) || Number(ctx.rateCard.minimum_order),
         material_markup: num(val('markup')) || Number(ctx.rateCard.material_markup),
       })
+    }
+
+    // The wizard asked where they sell and then threw the answer away.
+    // Creating the channels here is what makes "you keep $X" possible on
+    // the very first sale rather than after somebody finds a settings page.
+    if (q.id === 'channels') {
+      const picked = val('channels').split(',').filter(Boolean)
+      if (picked.length > 0) {
+        const existing = await listChannels(id)
+        for (const value of picked) {
+          const spec = CHANNELS.find((c) => c.value === value)
+          if (!spec) continue
+          // Re-entering the wizard must not create a second Etsy, and must
+          // not reset a fee the shop has since corrected.
+          if (existing.some((c) => c.name === spec.label)) continue
+          await saveChannel(id, { name: spec.label, feePct: spec.feePct, feeFlat: spec.feeFlat })
+        }
+      }
     }
 
     if (q.id === 'tax' && ctx) {

@@ -9,6 +9,7 @@ import Intake from './screens/Intake'
 import Projects from './screens/Projects'
 import Project from './screens/Project'
 import Clients from './screens/Clients'
+import Shelf from './screens/Shelf'
 import QuoteDoc from './screens/QuoteDoc'
 import Closeout from './screens/Closeout'
 import WelcomeModal from './components/WelcomeModal'
@@ -248,6 +249,7 @@ export default function App() {
             <Route path="/jobs" element={<Navigate to="/projects?view=list" replace />} />
             <Route path="/project/:jobId" element={<Project ctx={ctx} />} />
             <Route path="/clients" element={<Clients ctx={ctx} />} />
+            <Route path="/shelf" element={<Shelf ctx={ctx} />} />
             <Route path="/settings" element={<Settings ctx={ctx} onSaved={refresh} />} />
             {/* Reachable any time, resuming wherever the shop left off. */}
             <Route
@@ -324,6 +326,10 @@ function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean })
           <div className="tabs" style={{ border: 'none' }}>
             {tab('/projects', 'Projects')}
             {tab('/clients', 'Clients')}
+            {/* The other half of the business. A shop selling at a market or
+                on Etsy does work nobody commissioned, and until this tab
+                existed none of it was anywhere in the program. */}
+            {tab('/shelf', 'Shelf')}
             {tab('/settings', 'Shop settings')}
           </div>
           {/* Search sits between the tabs and the action, because it is

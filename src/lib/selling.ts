@@ -208,3 +208,44 @@ function sum(ns: number[]): number {
 function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
+
+/**
+ * Splitting what an in-house job cost into the two halves that belong in
+ * different places.
+ *
+ * A job's recorded cost is one number: material, machine, wear, and every
+ * hour logged against it. But design and production do not behave the same
+ * way. The filament and the machine hours went into THESE units and belong
+ * on the batch, frozen. The evening spent modelling it went into the
+ * DESIGN, and belongs to the product however many batches follow.
+ *
+ * Putting design in both places is the bug this function exists to stop:
+ * the unit cost would carry it, the payback would count it again, and the
+ * shop would be told the thing costs more than it does while also being
+ * told it has recovered less than it has.
+ */
+export interface JobCostSplit {
+  /** Material, machine, wear and the hands-on hours that made these units. */
+  production: number
+  /** The design hours, at the rate in force. Belongs to the product. */
+  design: number
+}
+
+export function splitJobCost(
+  job: { actualCost: number; designHours: number },
+  designHourly: number,
+): JobCostSplit {
+  const design = round2(Math.max(0, job.designHours) * Math.max(0, designHourly))
+  return {
+    // Never below zero: a job whose only recorded cost IS design hours has
+    // no production cost, not a negative one.
+    production: round2(Math.max(0, job.actualCost - design)),
+    design,
+  }
+}
+
+/** What one unit cost to produce. Zero units is not a division. */
+export function unitCostFrom(split: JobCostSplit, units: number): number {
+  if (!(units > 0)) return 0
+  return round2(split.production / units)
+}

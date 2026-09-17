@@ -35,6 +35,9 @@ vi.mock('./lib/data', async () => {
     saveRateCard,
     savePrinter: vi.fn(async () => {}),
     saveMaterial: vi.fn(async () => {}),
+    listShelf: vi.fn(async () => []),
+    listChannels: vi.fn(async () => []),
+    listSales: vi.fn(async () => []),
   }
 })
 // The app decides it is a desktop build by asking Tauri, and NeedsSetup is
@@ -221,5 +224,21 @@ describe('the rate question', () => {
     await waitFor(() => expect(saveRateCard).toHaveBeenCalled())
     const [, card] = saveRateCard.mock.calls[0] as unknown as [string, { design_hourly: number }]
     expect(card.design_hourly).toBe(65)
+  })
+})
+
+describe('the other half of the business', () => {
+  it('has a tab of its own, and it opens', async () => {
+    // A shop selling at a market does work nobody commissioned, and until
+    // the Shelf existed none of it was anywhere in the program. A screen
+    // that is routed but not reachable is the exact failure this file was
+    // written for the first time.
+    ctx = makeCtx()
+    const user = userEvent.setup()
+    await renderApp('/')
+    await waitFor(() => expect(loadShopContext).toHaveBeenCalled())
+
+    await user.click(await screen.findByRole('link', { name: 'Shelf' }))
+    expect(await screen.findByRole('heading', { name: 'Shelf' })).toBeDefined()
   })
 })

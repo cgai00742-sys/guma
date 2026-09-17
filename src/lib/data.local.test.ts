@@ -2174,3 +2174,143 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(Number(after.printerRows.find((p) => p.id === printer.id)?.archived)).toBe(0)
   })
 })
+
+/**
+ * The selling side, end to end.
+ *
+ * Everything here is money arithmetic that a shop will act on, so none of
+ * it is mocked: real schema, real view, real SQLite. The two rules worth
+ * the most are the ones nobody would notice being broken -- the fee is
+ * frozen at the sale, and the cost that counts is the cost of what SOLD,
+ * not of what was made.
+ */
+describe('the shelf', () => {
+  const etsy = { name: 'Etsy', feePct: 9.5, feeFlat: 0.45 }
+
+  async function shopWithStock(local: typeof import('./data.local')) {
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const channel = await local.saveChannel(shopId, etsy)
+    const productId = await local.saveProduct(shopId, { name: 'Hex keychain' })
+    const batchId = await local.saveBatch(shopId, {
+      productId,
+      unitsMade: 40,
+      unitCost: 1.15,
+      madeOn: '2026-09-01',
+    })
+    return { shopId, channelId: channel.id, productId, batchId }
+  }
+
+  it('counts what sold, what is left, and what the platform took', async () => {
+    const local = await import('./data.local')
+    const { shopId, channelId, batchId } = await shopWithStock(local)
+
+    await local.recordSale(shopId, {
+      batchId,
+      channelId,
+      units: 12,
+      unitPrice: 9,
+      soldOn: '2026-09-14',
+    })
+
+    const [product] = await local.listShelf(shopId)
+    const batch = product.batches[0]
+    expect(batch.units_made).toBe(40)
+    expect(batch.units_sold).toBe(12)
+    expect(batch.units_left).toBe(28)
+    expect(Number(batch.revenue)).toBeCloseTo(108, 2)
+    // 9.5% of $108, plus $0.45. The cut nobody subtracts.
+    expect(Number(batch.fees)).toBeCloseTo(10.71, 2)
+    // Twelve units at $1.15 -- NOT forty. The other twenty-eight are stock,
+    // which is a different problem with a different answer.
+    expect(Number(batch.cost_of_sold)).toBeCloseTo(13.8, 2)
+  })
+
+  it('freezes the fee at the sale, so changing it later rewrites nothing', async () => {
+    const local = await import('./data.local')
+    const { shopId, channelId, batchId } = await shopWithStock(local)
+    await local.recordSale(shopId, {
+      batchId,
+      channelId,
+      units: 10,
+      unitPrice: 10,
+      soldOn: '2026-09-14',
+    })
+    const before = (await local.listSales(shopId))[0]
+
+    // Etsy puts its rate up. Last month's sale did not change.
+    await local.saveChannel(shopId, { id: channelId, name: 'Etsy', feePct: 20, feeFlat: 1 })
+    const after = (await local.listSales(shopId))[0]
+    expect(Number(after.fee_total)).toBe(Number(before.fee_total))
+    expect(Number(after.fee_total)).toBeCloseTo(9.95, 2)
+  })
+
+  it('refuses to sell more than were made, and says how many are left', async () => {
+    const local = await import('./data.local')
+    const { shopId, channelId, batchId } = await shopWithStock(local)
+    await local.recordSale(shopId, { batchId, channelId, units: 38, unitPrice: 9, soldOn: '2026-09-14' })
+
+    await expect(
+      local.recordSale(shopId, { batchId, channelId, units: 5, unitPrice: 9, soldOn: '2026-09-15' }),
+    ).rejects.toThrow(/Only 2 of those are left/)
+  })
+
+  it('puts the units back when a mistyped sale is deleted', async () => {
+    const local = await import('./data.local')
+    const { shopId, channelId, batchId } = await shopWithStock(local)
+    const saleId = await local.recordSale(shopId, {
+      batchId,
+      channelId,
+      units: 12,
+      unitPrice: 9,
+      soldOn: '2026-09-14',
+    })
+
+    await local.deleteSale(shopId, saleId)
+    const [product] = await local.listShelf(shopId)
+    expect(product.batches[0].units_left).toBe(40)
+    expect(Number(product.batches[0].revenue)).toBe(0)
+  })
+
+  it('records stock that predates Guma, and says which number it is standing on', async () => {
+    // A shop adopting this already has a shelf. Refusing to hear about it
+    // would make the profit side useless until they printed something new.
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const productId = await local.saveProduct(shopId, { name: 'Bottle opener' })
+    await local.saveBatch(shopId, {
+      productId,
+      unitsMade: 25,
+      unitCost: 2,
+      madeOn: '2026-06-01',
+      note: 'Made before Guma; cost is my best guess.',
+    })
+
+    const [product] = await local.listShelf(shopId)
+    // No job behind it, so the cost is somebody's estimate and the app says
+    // so rather than presenting it with the same confidence as a measured
+    // one. The flag is derived, not stored -- there is only one fact here.
+    expect(product.batches[0].estimated).toBe(true)
+    expect(product.batches[0].job_id).toBeNull()
+  })
+
+  it('will not shrink a batch below what has already sold', async () => {
+    const local = await import('./data.local')
+    const { shopId, channelId, batchId, productId } = await shopWithStock(local)
+    await local.recordSale(shopId, { batchId, channelId, units: 30, unitPrice: 9, soldOn: '2026-09-14' })
+
+    await expect(
+      local.saveBatch(shopId, { id: batchId, productId, unitsMade: 20, unitCost: 1.15, madeOn: '2026-09-01' }),
+    ).rejects.toThrow(/30 of these have already sold/)
+  })
+
+  it('reports a sale with no channel at full price, with no fee invented', async () => {
+    // A farmers' market stall takes a table fee, not a cut of each sale.
+    const local = await import('./data.local')
+    const { shopId, batchId } = await shopWithStock(local)
+    await local.recordSale(shopId, { batchId, channelId: null, units: 6, unitPrice: 12, soldOn: '2026-09-14' })
+
+    const [product] = await local.listShelf(shopId)
+    expect(Number(product.batches[0].revenue)).toBeCloseTo(72, 2)
+    expect(Number(product.batches[0].fees)).toBe(0)
+  })
+})

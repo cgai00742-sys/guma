@@ -13,7 +13,9 @@ import {
   feeFor,
   netOfFees,
   productResult,
+  splitJobCost,
   summarize,
+  unitCostFrom,
   unitMargin,
   type BatchStock,
   type Channel,
@@ -186,5 +188,45 @@ describe('the one line at the top', () => {
     // Keychain still owes $185 of its design; the bracket has repaid its
     // $90 and does not count as negative outstanding.
     expect(s.designOutstanding).toBeCloseTo(185, 2)
+  })
+})
+
+describe('splitting what an in-house job cost', () => {
+  it('keeps design out of the unit cost, because the product carries it', () => {
+    // The bug this exists to stop: design in the unit cost AND in the
+    // payback means the shop is told the thing costs more than it does
+    // while also being told it has recovered less than it has.
+    const split = splitJobCost({ actualCost: 220, designHours: 6 }, 25)
+    expect(split.design).toBe(150)
+    expect(split.production).toBe(70)
+    expect(unitCostFrom(split, 40)).toBe(1.75)
+  })
+
+  it('does not invent a negative production cost', () => {
+    // An evening of modelling and nothing printed yet. The production cost
+    // is nothing, not less than nothing.
+    const split = splitJobCost({ actualCost: 150, designHours: 6 }, 25)
+    expect(split.production).toBe(0)
+    expect(split.design).toBe(150)
+  })
+
+  it('carries the whole cost into production when no design was logged', () => {
+    const split = splitJobCost({ actualCost: 88, designHours: 0 }, 25)
+    expect(split.design).toBe(0)
+    expect(split.production).toBe(88)
+    expect(unitCostFrom(split, 8)).toBe(11)
+  })
+
+  it('leaves design at zero when the shop has no rate on file', () => {
+    // An unanswered rate is zero here, and zero times six hours is nothing.
+    // Guma does not guess what the hours were worth -- the payback simply
+    // reads "not tracked" until there is a rate.
+    const split = splitJobCost({ actualCost: 220, designHours: 6 }, 0)
+    expect(split.design).toBe(0)
+    expect(split.production).toBe(220)
+  })
+
+  it('refuses to divide by no units', () => {
+    expect(unitCostFrom({ production: 70, design: 0 }, 0)).toBe(0)
   })
 })

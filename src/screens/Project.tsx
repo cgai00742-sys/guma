@@ -55,6 +55,10 @@ import {
   setGateItem,
   updateJobPhase,
   updateProjectFields,
+  listShelf,
+  saveBatch,
+  saveProduct,
+  type ProductRow,
   type PaymentInput,
   type PaymentKind,
   type PaymentMethod,
@@ -84,6 +88,7 @@ import { useRowAnchor } from '../lib/rowAnchor'
 import { makeMoney } from '../lib/pricing'
 import { todayISO } from '../lib/dates'
 import { buildComparison, type Comparison } from '../lib/actuals'
+import { splitJobCost, unitCostFrom } from '../lib/selling'
 
 const DELIVERY_METHODS = [
   'Collected in person',
@@ -788,6 +793,17 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           />
         </div>
       </section>
+
+      {/* ---- what it made, for the shop's own work ---- */}
+      {detail.facts.kind === 'inhouse' && (
+        <MadeSection
+          ctx={ctx}
+          detail={detail}
+          money={money}
+          onSaved={reload}
+          setError={setError}
+        />
+      )}
 
       {/* ---- activity ---- */}
       <section className="sec">
@@ -2081,3 +2097,241 @@ function PrioritySelect({
 // import honest means a future "what will this stage ask for?" preview has
 // the definitions to hand without another round of plumbing.
 void GATES
+
+/**
+ * What this job actually produced.
+ *
+ * Only on in-house work, because that is the only kind where the answer is
+ * units on a shelf rather than a delivery to somebody. A shop that prints
+ * two hundred keychains has turned a job's cost into stock, and until this
+ * existed the cost was recorded and the stock was not, so the job read as
+ * pure expense forever.
+ *
+ * The unit cost is frozen here, from what the job actually recorded --
+ * material at what the shop paid, machine, wear and the hands-on hours --
+ * divided by the units made. Design hours are deliberately left OUT and
+ * carried on the product instead. Design in both places would tell the shop
+ * the thing costs more than it does AND that it has recovered less than it
+ * has. See splitJobCost.
+ */
+function MadeSection({
+  ctx,
+  detail,
+  money,
+  onSaved,
+  setError,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  money: (n: number) => string
+  onSaved: () => void
+  setError: (m: string | null) => void
+}) {
+  const navigate = useNavigate()
+  const [products, setProducts] = useState<ProductRow[]>([])
+  const [productId, setProductId] = useState('')
+  const [name, setName] = useState('')
+  const [units, setUnits] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void listShelf(ctx.shop.id)
+      .then((rows) => {
+        if (!cancelled) setProducts(rows.filter((p) => !p.archived))
+      })
+      .catch(() => {
+        // The shelf being unreadable must not take the project page down
+        // with it. The form still works; it just cannot offer existing
+        // products to add to.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [ctx.shop.id])
+
+  /** Batches already recorded against THIS job, so the section says what it
+   *  has done rather than offering to do it again from scratch. */
+  const already = useMemo(
+    () =>
+      products.flatMap((p) =>
+        p.batches.filter((b) => b.job_id === detail.jobId).map((b) => ({ product: p, batch: b })),
+      ),
+    [products, detail.jobId],
+  )
+
+  const split = splitJobCost(
+    { actualCost: detail.facts.actualCost, designHours: detail.actuals.designHours },
+    Number(ctx.rateCard.design_hourly),
+  )
+  const n = Number(units) || 0
+  const unitCost = unitCostFrom(split, n)
+  const isNew = productId === ''
+
+  async function record() {
+    setBusy(true)
+    setError(null)
+    try {
+      const id = isNew
+        ? await saveProduct(ctx.shop.id, {
+            name,
+            designJobId: detail.jobId,
+            // The design investment, recorded once, on the product. Null
+            // rather than zero when nothing was logged: "not tracked" and
+            // "free" are different answers and the payback says so.
+            designCost: split.design > 0 ? split.design : null,
+            designHours: detail.actuals.designHours > 0 ? detail.actuals.designHours : null,
+          })
+        : productId
+      await saveBatch(ctx.shop.id, {
+        productId: id,
+        jobId: detail.jobId,
+        unitsMade: n,
+        unitCost,
+        madeOn: todayISO(),
+      })
+      setUnits('')
+      setName('')
+      onSaved()
+      navigate('/shelf')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="sec">
+      <div className="sechead">
+        <h4>What this made</h4>
+        <span className="secstat">
+          {already.length > 0
+            ? `${already.reduce((t, a) => t + Number(a.batch.units_made), 0)} on the shelf`
+            : detail.facts.hasActuals
+              ? `${money(split.production)} of production recorded`
+              : 'nothing recorded yet'}
+        </span>
+      </div>
+      <div className="pane" style={{ marginBottom: 0 }}>
+        {already.length > 0 && (
+          <div className="guide" style={{ marginTop: 0, marginBottom: 12 }}>
+            {already.map(({ product, batch }) => (
+              <div className="guide-g" key={batch.id}>
+                <div className="guide-h">
+                  <span className="guide-tag alt">Recorded</span>
+                  <Link to="/shelf" className="addnote" style={{ marginLeft: 'auto' }}>
+                    on the shelf
+                  </Link>
+                </div>
+                <div className="guide-kv">
+                  <div className="guide-r">
+                    <span className="k">
+                      {batch.units_made} × {product.name}
+                    </span>
+                    <span className="v">{money(Number(batch.unit_cost))} each</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!detail.facts.hasActuals ? (
+          <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
+            Log the runs and hours above first. The cost of what this made comes from what was
+            actually recorded, not from a number typed here.
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 12, color: 'var(--txt-2)', marginBottom: 10 }}>
+              This job spent real money. If it produced units you can sell, record them and the cost
+              follows them onto the shelf instead of sitting here as pure expense.
+            </div>
+            <div className="grid3">
+              <div className="fld">
+                <label className="lbl" htmlFor="md-product">What did it make</label>
+                <select
+                  id="md-product"
+                  value={productId}
+                  onChange={(e) => setProductId(e.target.value)}
+                >
+                  <option value="">Something new</option>
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+              {isNew && (
+                <div className="fld">
+                  <label className="lbl" htmlFor="md-name">Call it</label>
+                  <input
+                    id="md-name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Hex keychain"
+                  />
+                </div>
+              )}
+              <div className="fld">
+                <label className="lbl" htmlFor="md-units">How many usable units</label>
+                <input
+                  id="md-units"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={units}
+                  onChange={(e) => setUnits(e.target.value)}
+                />
+                <div className="hint">Failed prints stay a cost. Only count what you can sell.</div>
+              </div>
+            </div>
+
+            {n > 0 && (
+              <div className="guide" style={{ marginTop: 10 }}>
+                <div className="guide-g">
+                  <div className="guide-h"><span className="guide-tag">Yours</span></div>
+                  <div className="guide-kv">
+                    <div className="guide-r">
+                      <span className="k">Production recorded on this job</span>
+                      <span className="v">{money(split.production)}</span>
+                    </div>
+                    <div className="guide-r">
+                      <span className="k">Each one cost you</span>
+                      <span className="v">{money(unitCost)}</span>
+                    </div>
+                    {split.design > 0 && (
+                      <div className="guide-r">
+                        <span className="k">
+                          Design, {detail.actuals.designHours} h — carried on the product
+                        </span>
+                        <span className="v">{money(split.design)}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="guide-note">
+                    Frozen at today. Filament costing what it costs now is what these units cost,
+                    whatever a spool costs next year.
+                    {split.design > 0 &&
+                      ' Design is kept off the unit cost and reported as a payback instead, so making more of them never rewrites what the first batch cost.'}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={busy || n < 1 || (isNew && !name.trim())}
+                onClick={record}
+              >
+                {busy ? 'Saving…' : 'Put them on the shelf'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  )
+}

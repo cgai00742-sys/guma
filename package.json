@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "_typecheck": "tsc -b, not tsc --noEmit: the root tsconfig only holds project references, so --noEmit checks nothing and exits 0 on a file full of errors. Use this.",
+    "typecheck": "tsc -b",
     "preview": "vite preview",
     "test": "vitest run",
     "tauri": "tauri",

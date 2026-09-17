@@ -36,6 +36,14 @@ import type {
   SetupPayload,
   ShopIdentityInput,
   ShopCostsInput,
+  ChannelRow,
+  ChannelInput,
+  ProductRow,
+  ProductInput,
+  BatchRow,
+  BatchInput,
+  SaleRow,
+  SaleInput,
   ShopQuoteTermsInput,
   SaveQuoteArgs,
   SavedQuote,
@@ -132,6 +140,14 @@ export type {
   WorkEntryRow,
   WorkEntryInput,
   QuoteStatus,
+  ChannelRow,
+  ChannelInput,
+  ProductRow,
+  ProductInput,
+  BatchRow,
+  BatchInput,
+  SaleRow,
+  SaleInput,
 }
 
 type Backend = typeof Local | typeof Hosted
@@ -435,4 +451,38 @@ export async function takeProjectIn(shopId: string, jobId: string, actorId: stri
 
 export async function deleteProject(shopId: string, jobId: string): Promise<void> {
   return (await backend()).deleteProject(shopId, jobId)
+}
+
+/* ---- the selling side ------------------------------------------------- */
+
+export async function listChannels(shopId: string): Promise<ChannelRow[]> {
+  return (await backend()).listChannels(shopId)
+}
+
+export async function saveChannel(shopId: string, next: ChannelInput): Promise<ChannelRow> {
+  return (await backend()).saveChannel(shopId, next)
+}
+
+export async function listShelf(shopId: string): Promise<ProductRow[]> {
+  return (await backend()).listShelf(shopId)
+}
+
+export async function saveProduct(shopId: string, next: ProductInput): Promise<string> {
+  return (await backend()).saveProduct(shopId, next)
+}
+
+export async function saveBatch(shopId: string, next: BatchInput): Promise<string> {
+  return (await backend()).saveBatch(shopId, next)
+}
+
+export async function listSales(shopId: string, batchId?: string): Promise<SaleRow[]> {
+  return (await backend()).listSales(shopId, batchId)
+}
+
+export async function recordSale(shopId: string, next: SaleInput): Promise<string> {
+  return (await backend()).recordSale(shopId, next)
+}
+
+export async function deleteSale(shopId: string, saleId: string): Promise<void> {
+  return (await backend()).deleteSale(shopId, saleId)
 }
