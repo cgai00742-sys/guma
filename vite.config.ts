@@ -67,6 +67,23 @@ export default defineConfig({
      * goes red.
      */
     testTimeout: 15000,
+    /**
+     * Scratch folders are not the test suite.
+     *
+     * `device_bash` on the bridge cannot delete files, so superseded screens
+     * and their tests get moved into _superseded/ rather than removed. The
+     * runner happily picked those up and failed on imports to files that no
+     * longer exist -- a red suite that says nothing about the program. The
+     * .gitignore already treats these as scratch; this makes the runner
+     * agree with it.
+     */
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '_superseded/**',
+      '_archive/**',
+      '_to_delete/**',
+    ],
   },
   define: {
     __BUILD_STAMP__: JSON.stringify(stamp()),

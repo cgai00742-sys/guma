@@ -222,6 +222,74 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(ctx.materials).toHaveLength(0)
   })
 
+  it('reads back the rate somebody actually typed, on the day they typed it', async () => {
+    /**
+     * The whole failure, in one test.
+     *
+     * Rates are versioned by INSERT, never edited in place, so a quote's own
+     * snapshot can never drift when a rate changes later. Good. But
+     * `effective_from` is a DATE, and the wizard writes TWO cards on the
+     * same day as a matter of course: one when it creates the shop from the
+     * name (rate_cards has NOT NULL columns, so the row has to exist), and
+     * one six questions later when it asks what an hour is worth.
+     *
+     * Both land on today, `order by effective_from desc limit 1` had nothing
+     * left to sort by, and SQLite handed back the FIRST of the tied rows --
+     * the empty one. So the number was written, stored correctly, and never
+     * read back. From where a person stands that is not a subtle ordering
+     * bug, it is "I typed my rate and the program forgot it."
+     *
+     * Same shape in Settings: change a rate twice in one day and the second
+     * change was invisible.
+     */
+    const local = await import('./data.local')
+
+    const shopId = await local.setupShop({
+      shop: { name: 'Guma Creations', currency: 'USD', locale: 'en-US' },
+      rates: {},
+      printer: null,
+      materials: [],
+      fullName: 'Owner',
+    })
+    const before = await local.loadShopContext()
+    expect(Number(before.rateCard.design_hourly)).toBe(0)
+
+    // What the wizard sends on question seven: the card it has, with the
+    // answer in it.
+    await local.saveRateCard(shopId, {
+      ...before.rateCard,
+      design_hourly: 65,
+      finishing_hourly: 45,
+    })
+
+    const after = await local.loadShopContext()
+    expect(Number(after.rateCard.design_hourly)).toBe(65)
+    expect(Number(after.rateCard.finishing_hourly)).toBe(45)
+    // And the older, emptier card is still on file -- nothing was edited or
+    // thrown away, it is just no longer the one in force.
+    const all = await currentDb.select('select * from rate_cards where shop_id = ?', [shopId])
+    expect((all as unknown[]).length).toBe(2)
+  })
+
+  it('keeps reading the newest rate after a third change the same day', async () => {
+    // Two was the case that broke. Three is the case that proves the rule
+    // is "latest entry wins" rather than "the second one wins".
+    const local = await import('./data.local')
+    const shopId = await local.setupShop({
+      shop: { name: 'Guma Creations', currency: 'USD', locale: 'en-US' },
+      rates: {},
+      printer: null,
+      materials: [],
+      fullName: 'Owner',
+    })
+    for (const rate of [40, 55, 72]) {
+      const ctx = await local.loadShopContext()
+      await local.saveRateCard(shopId, { ...ctx.rateCard, design_hourly: rate })
+    }
+    const ctx = await local.loadShopContext()
+    expect(Number(ctx.rateCard.design_hourly)).toBe(72)
+  })
+
   it('stores a shop that is not in the United States, and keeps it that way', async () => {
     // Migration 0009 added `paper`, and setup now writes currency, locale
     // and paper from the machine rather than from a default. This is the

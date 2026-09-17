@@ -26,6 +26,7 @@ import Database from '@tauri-apps/plugin-sql'
 import type { MaterialRef, PrinterRef } from './pricing'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody } from './data.types'
 import { osCurrency, osLocale } from './locale'
+import { LATEST_RATE_CARD } from './rateCards'
 import type {
   Shop,
   RateCardRow,
@@ -277,7 +278,7 @@ export async function loadShopContext(): Promise<ShopContext> {
 
   const [rateCards, materials, printers] = await Promise.all([
     d.select<RateCardRow[]>(
-      'select * from rate_cards where shop_id = ? order by effective_from desc limit 1',
+      `select * from rate_cards where shop_id = ? ${LATEST_RATE_CARD} limit 1`,
       [shop.id],
     ),
     // Joined to material_costs so a quote is priced against what the shop
@@ -707,7 +708,7 @@ const JOB_LIST_SQL = `
          (select max(at) from job_events e where e.job_id = j.id) as last_activity_at,
          coalesce((select minimum_order from rate_cards
                    where shop_id = j.shop_id
-                   order by effective_from desc limit 1), 0) as minimum_order,
+                   ${LATEST_RATE_CARD} limit 1), 0) as minimum_order,
          -- What has actually been spent, on the same terms actuals.ts uses:
          -- power when wattage and $/kWh are both on file, the machine rate
          -- as the conservative fallback when they are not.
@@ -736,7 +737,7 @@ const JOB_LIST_SQL = `
   left join job_parts_summary ps on ps.job_id = j.id
   left join rate_cards rc on rc.id = (select id from rate_cards
                                        where shop_id = j.shop_id
-                                       order by effective_from desc limit 1)
+                                       ${LATEST_RATE_CARD} limit 1)
   join clients c on c.id = j.client_id
   left join quotes q on q.job_id = j.id
   left join job_money m on m.job_id = j.id

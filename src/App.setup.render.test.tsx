@@ -20,6 +20,7 @@ import type { ShopContext } from './lib/data.types'
 let ctx: ShopContext = makeCtx()
 
 const loadShopContext = vi.fn(async () => ctx)
+const saveRateCard = vi.fn(async () => {})
 vi.mock('./lib/data', async () => {
   const types = await import('./lib/data.types')
   return {
@@ -31,7 +32,7 @@ vi.mock('./lib/data', async () => {
     dismissWelcome: vi.fn(async () => {}),
     saveShopIdentity: vi.fn(async () => {}),
     saveShopQuoteTerms: vi.fn(async () => {}),
-    saveRateCard: vi.fn(async () => {}),
+    saveRateCard,
     savePrinter: vi.fn(async () => {}),
     saveMaterial: vi.fn(async () => {}),
   }
@@ -53,15 +54,30 @@ function polyfillDialog() {
   }
 }
 
-async function renderApp() {
+async function renderApp(at = '/') {
   vi.resetModules()
   const { default: App } = await import('./App')
   const { MemoryRouter } = await import('react-router-dom')
   render(
-    <MemoryRouter initialEntries={['/']}>
+    <MemoryRouter initialEntries={[at]}>
       <App />
     </MemoryRouter>,
   )
+}
+
+/** Next when the question is answered, Skip for now when it is not. */
+const goOn = (u: ReturnType<typeof userEvent.setup>) =>
+  u.click(screen.getByRole('button', { name: /^(next|skip for now)$/i }))
+
+/** Move forward until the wizard asks this, or give up loudly. */
+async function walkTo(u: ReturnType<typeof userEvent.setup>, want: RegExp) {
+  for (let i = 0; i < 10; i += 1) {
+    const asked = screen.queryByRole('heading', { level: 2 })?.textContent ?? ''
+    if (want.test(asked)) return
+    await goOn(u)
+    await waitFor(() => expect(document.body.textContent).toBeTruthy())
+  }
+  throw new Error(`the wizard never asked ${want}`)
 }
 
 /** A shop that exists but cannot price anything honestly yet. */
@@ -131,5 +147,79 @@ describe('launching a shop that is actually finished', () => {
     await renderApp()
     await waitFor(() => expect(loadShopContext).toHaveBeenCalled())
     expect(screen.queryByText('Setting up')).toBeNull()
+  })
+})
+
+describe('leaving the wizard', () => {
+  /**
+   * "Just look around" did nothing, and it was not the button's fault.
+   *
+   * The wizard is reachable two ways: as the front door at `/`, and as a
+   * route at `/setup-guide` that the banner on Projects links to. Deferring
+   * only set a flag, so from `/setup-guide` the app stopped blocking and
+   * then rendered the wizard again -- from its own route. Every one of
+   * these asserts from a starting path, because the path was the bug.
+   */
+  it('gets out from the front door', async () => {
+    ctx = halfSetUp()
+    const user = userEvent.setup()
+    await renderApp('/')
+    await screen.findByText('Setting up')
+
+    await user.click(screen.getByRole('button', { name: /finish later/i }))
+    await waitFor(() => expect(screen.queryByText('Setting up')).toBeNull())
+  })
+
+  it('gets out from the banner route, where it used to sit still', async () => {
+    ctx = halfSetUp()
+    const user = userEvent.setup()
+    await renderApp('/setup-guide')
+    await screen.findByText('Setting up')
+
+    await user.click(screen.getByRole('button', { name: /finish later/i }))
+    await waitFor(() => expect(screen.queryByText('Setting up')).toBeNull())
+    // Landed on the work, not on a blank screen.
+    await waitFor(() => expect(document.body.textContent).toMatch(/not right yet|configured/i))
+  })
+
+  it('gets out from the landing at the end of part one', async () => {
+    // The screen somebody actually reaches: seven questions, then three
+    // buttons, one of which says it will let you look around.
+    ctx = halfSetUp()
+    const user = userEvent.setup()
+    await renderApp('/setup-guide')
+    await screen.findByText('Setting up')
+
+    for (let i = 0; i < 10; i += 1) {
+      if (screen.queryByRole('button', { name: /just look around/i })) break
+      await goOn(user)
+      await waitFor(() => expect(document.body.textContent).toBeTruthy())
+    }
+    await user.click(screen.getByRole('button', { name: /just look around/i }))
+    await waitFor(() => expect(screen.queryByText(/Picked up where you left it/i)).toBeNull())
+    await waitFor(() => expect(document.body.textContent).toMatch(/not right yet|configured/i))
+  })
+})
+
+describe('the rate question', () => {
+  it('sends what was typed', async () => {
+    // Where this one actually broke was the read, not the write -- see
+    // rateCards.test.ts. This is the other half of the pair: proof that the
+    // screen sends the number, so a future failure has only one place left
+    // to hide.
+    ctx = halfSetUp()
+    const user = userEvent.setup()
+    await renderApp('/')
+    await screen.findByText('Setting up')
+
+    await walkTo(user, /hour of your time worth/i)
+    const box = document.getElementById('w-designHourly') as HTMLInputElement
+    await user.clear(box)
+    await user.type(box, '65')
+    await goOn(user)
+
+    await waitFor(() => expect(saveRateCard).toHaveBeenCalled())
+    const [, card] = saveRateCard.mock.calls[0] as unknown as [string, { design_hourly: number }]
+    expect(card.design_hourly).toBe(65)
   })
 })

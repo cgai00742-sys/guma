@@ -133,7 +133,13 @@ export async function loadShopContext(): Promise<ShopContext> {
       .from('rate_cards')
       .select('*')
       .eq('shop_id', profile.shop_id)
+      // effective_from is a DATE and rates are versioned by insert, so two
+      // cards written on the same day tie on it and the winner is whichever
+      // one the planner happens to return -- a rate somebody typed, stored
+      // and then never read back. created_at breaks the tie the way a person
+      // means it. Same bug, same fix as data.local.ts.
       .order('effective_from', { ascending: false })
+      .order('created_at', { ascending: false })
       .limit(1)
       .single(),
     // material_costs embeds so a quote is priced against what the shop
@@ -860,7 +866,9 @@ async function currentRates(
     .from('rate_cards')
     .select('minimum_order, design_hourly, finishing_hourly')
     .eq('shop_id', shopId)
+    // Same-day tie-break as loadShopContext above.
     .order('effective_from', { ascending: false })
+    .order('created_at', { ascending: false })
     .limit(1)
   if (error) throw error
   const r = data?.[0]

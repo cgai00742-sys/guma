@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { isTauri } from '@tauri-apps/api/core'
 import { loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
@@ -48,6 +48,24 @@ export default function App() {
    *  numbers it cannot support. */
   const [setupDeferred, setSetupDeferred] = useState(false)
   const location = useLocation()
+  const navigate = useNavigate()
+
+  /**
+   * Leaving setup has to actually leave.
+   *
+   * Setting the flag alone is not enough, because the wizard is reachable
+   * two ways: as the front door at `/`, and as a route at `/setup-guide`
+   * that the banner on Projects links to. From `/setup-guide`, deferring
+   * dropped through to the router -- which rendered the wizard again, from
+   * its own route. The button looked broken because from where somebody was
+   * standing it was: they pressed "Just look around" and nothing moved.
+   *
+   * So leaving does both: stop blocking, and go to the work.
+   */
+  const leaveSetup = useCallback(() => {
+    setSetupDeferred(true)
+    navigate('/projects')
+  }, [navigate])
 
   useEffect(() => {
     if (desktop) {
@@ -167,7 +185,7 @@ export default function App() {
             ctx={ctx}
             fullName={ownerName}
             onSaved={refresh}
-            onDefer={() => setSetupDeferred(true)}
+            onDefer={leaveSetup}
           />
         </main>
       </>
@@ -241,7 +259,7 @@ export default function App() {
                   onSaved={refresh}
                   // Reached on purpose from the banner, so leaving means
                   // going back to the work rather than falling through.
-                  onDefer={() => setSetupDeferred(true)}
+                  onDefer={leaveSetup}
                 />
               }
             />
