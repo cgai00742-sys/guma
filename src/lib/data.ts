@@ -144,7 +144,46 @@ function backend(): Promise<Backend> {
   return backendPromise
 }
 
+/**
+ * Rate-card values for a shop that has not been asked about rates yet.
+ *
+ * The wizard creates the shop on its FIRST answer -- the name -- so that
+ * closing the window leaves a shop with that name rather than nothing. The
+ * rate card is therefore written before a single rate exists, and
+ * design_hourly and finishing_hourly are the only two columns in that table
+ * with no default on either backend. An unanswered rate arrived as
+ * undefined and SQLite refused the insert:
+ *
+ *   NOT NULL constraint failed: rate_cards.design_hourly
+ *
+ * on question one, as the first thing the program ever did.
+ *
+ * Normalising HERE rather than in each backend is deliberate: the hosted
+ * side hands the payload to a SECURITY DEFINER SQL function, so a fix
+ * written only in data.local.ts would have left Postgres failing the same
+ * way, and nothing would have caught it until somebody hit it.
+ *
+ * Zero is the right value rather than a guess -- it is what setupPlan and
+ * the field guidance already read as "still to do", so a shop with no rates
+ * is visibly unfinished instead of quietly priced at somebody else's
+ * numbers. Markup is 1x for the same reason: material at cost, rather than
+ * Guma choosing a margin on the shop's behalf and never saying so.
+ */
+const UNANSWERED_RATES: Record<string, unknown> = {
+  design_hourly: 0,
+  finishing_hourly: 0,
+  rush_pct: 0,
+  minimum_order: 0,
+  deposit_pct: 0,
+  deposit_when: 'design',
+  deposit_waive_below: 0,
+  material_markup: 1,
+  revisions_incl: 0,
+  revision_hourly: null,
+}
+
 export async function setupShop(p: SetupPayload): Promise<string> {
+  p = { ...p, rates: { ...UNANSWERED_RATES, ...(p.rates ?? {}) } }
   return (await backend()).setupShop(p)
 }
 

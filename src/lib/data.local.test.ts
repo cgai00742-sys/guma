@@ -179,6 +179,49 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(q.balance).toBe(531.61)
   })
 
+  it('creates a shop from nothing but a name', async () => {
+    /**
+     * The wizard creates the shop on the FIRST answer, so that naming it and
+     * closing the window leaves a shop with that name rather than nothing.
+     * That means the rate card gets written before a single rate has been
+     * asked about.
+     *
+     * design_hourly and finishing_hourly are the only two columns in
+     * rate_cards with no SQL default, so an unanswered rate arrived as
+     * undefined and SQLite refused the insert outright:
+     *
+     *   NOT NULL constraint failed: rate_cards.design_hourly
+     *
+     * which a person saw, on question one, as the first thing the program
+     * ever did. Every other rate column has a default and silently would
+     * have been fine, which is exactly why this needs a test rather than
+     * care.
+     */
+    const local = await import('./data.local')
+
+    const shopId = await local.setupShop({
+      shop: { name: 'Guma Creations', currency: 'USD', locale: 'en-US' },
+      rates: {},
+      printer: null,
+      materials: [],
+      fullName: 'Owner',
+    })
+    expect(shopId).toBeTruthy()
+
+    const ctx = await local.loadShopContext()
+    expect(ctx.shop.name).toBe('Guma Creations')
+    // Unanswered, not guessed. Zero is what setupPlan and the field
+    // guidance both already read as "still to do", so the shop shows up as
+    // visibly unfinished rather than quietly pre-priced.
+    expect(Number(ctx.rateCard.design_hourly)).toBe(0)
+    expect(Number(ctx.rateCard.finishing_hourly)).toBe(0)
+    // 1x is material at cost. The schema default of 2 would have been Guma
+    // choosing a markup for the shop and never saying so.
+    expect(Number(ctx.rateCard.material_markup)).toBe(1)
+    expect(ctx.printerRows).toHaveLength(0)
+    expect(ctx.materials).toHaveLength(0)
+  })
+
   it('stores a shop that is not in the United States, and keeps it that way', async () => {
     // Migration 0009 added `paper`, and setup now writes currency, locale
     // and paper from the machine rather than from a default. This is the

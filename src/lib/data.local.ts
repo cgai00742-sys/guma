@@ -139,6 +139,12 @@ function slugify(name: string): string {
 /** First run. No RPC needed — a fresh local database is its own permission
  *  boundary, so this just inserts directly: shop, rate card, first printer
  *  (if given), materials, and an owner profile for `fullName`. */
+/** A number from a payload that may not have been filled in yet. */
+function num(v: unknown, fallback: number): number {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : fallback
+}
+
 export async function setupShop(p: SetupPayload): Promise<string> {
   const d = await db()
   const shop = p.shop as Record<string, unknown>
@@ -187,15 +193,30 @@ export async function setupShop(p: SetupPayload): Promise<string> {
     [
       uuid(),
       shopId,
-      rates.design_hourly,
-      rates.finishing_hourly,
-      rates.rush_pct,
-      rates.minimum_order,
-      rates.deposit_pct,
-      rates.deposit_when,
-      rates.deposit_waive_below,
-      rates.material_markup,
-      rates.revisions_incl,
+      // Every one of these has to survive a shop being created before its
+      // rates have been asked about. The wizard now creates the shop on the
+      // FIRST answer -- the name -- so that closing the window does not
+      // lose everything, which means the rate card is written before a
+      // single rate exists. design_hourly and finishing_hourly are the only
+      // two columns in this table with no SQL default, so an unanswered
+      // rate arrived here as undefined and the insert failed outright.
+      //
+      // Zero is the right value rather than a guess: it is what setupPlan
+      // and the field guidance already read as "not answered yet", and it
+      // makes a shop with no rates visibly unfinished instead of quietly
+      // pre-priced at somebody else's numbers.
+      num(rates.design_hourly, 0),
+      num(rates.finishing_hourly, 0),
+      num(rates.rush_pct, 0),
+      num(rates.minimum_order, 0),
+      num(rates.deposit_pct, 0),
+      (rates.deposit_when as string) || 'design',
+      num(rates.deposit_waive_below, 0),
+      // 1x is material sold at cost, which is the honest "unset" here --
+      // the default of 2 would be Guma deciding a markup on the shop's
+      // behalf and never mentioning it.
+      num(rates.material_markup, 1),
+      num(rates.revisions_incl, 0),
       rates.revision_hourly ?? null,
     ],
   )
