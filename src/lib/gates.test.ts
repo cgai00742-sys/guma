@@ -12,7 +12,10 @@ import {
   STALLED_DAYS,
   flagsFor,
   gateStatus,
+  gatesFor,
+  ladderFor,
   nextPhase,
+  phaseLabel,
   worstTone,
 } from './gates'
 import type { GateAnswer, JobPhase, ProjectFacts } from './data.types'
@@ -271,5 +274,111 @@ describe('flagsFor', () => {
       worstTone(flagsFor(facts({ atRisk: true, quoteStatus: 'accepted', quoteTotal: 500 }), NOW)),
     ).toBe('warn')
     expect(worstTone([])).toBeNull()
+  })
+})
+
+describe('the shop’s own work climbs a ladder of its own', () => {
+  const inHouse = (over: Partial<ProjectFacts> = {}): ProjectFacts =>
+    facts({ kind: 'inhouse', ...over })
+
+  it('is never asked to get client approval for a trial print', () => {
+    // Walking your own experiment past "Client approval" is theatre, and a
+    // checklist that is theatre teaches people to tick without reading --
+    // which costs the gates the only power they have.
+    expect(ladderFor('inhouse')).toEqual(['design', 'review', 'delivered'])
+    expect(ladderFor('inhouse')).not.toContain('approval')
+    expect(ladderFor('inhouse')).not.toContain('scheduled')
+  })
+
+  it('calls the stages what they are', () => {
+    expect(phaseLabel('design', 'inhouse')).toBe('Working')
+    expect(phaseLabel('review', 'inhouse')).toBe('Made')
+    expect(phaseLabel('delivered', 'inhouse')).toBe('Done')
+    // The same stored values still read correctly for client work.
+    expect(phaseLabel('design', 'client')).toBe('Design')
+    expect(phaseLabel('review', 'client')).toBe('Review')
+  })
+
+  it('steps Working to Made, not Working to Client approval', () => {
+    expect(nextPhase('design', 'inhouse')).toBe('review')
+    expect(nextPhase('review', 'inhouse')).toBe('delivered')
+    expect(nextPhase('delivered', 'inhouse')).toBeNull()
+    // Client work is untouched.
+    expect(nextPhase('design', 'client')).toBe('approval')
+  })
+
+  it('asks two questions, both about money that otherwise disappears', () => {
+    // Every extra item here is a reason not to log the next ten-minute
+    // experiment, and those experiments are where the month goes.
+    expect(gatesFor('design', 'inhouse')).toHaveLength(1)
+    expect(gatesFor('review', 'inhouse')).toHaveLength(1)
+    expect(gatesFor('delivered', 'inhouse')).toHaveLength(0)
+  })
+
+  it('clears the first gate off the runs and hours, with no ticking', () => {
+    const blank = gateStatus('design', {}, inHouse({ hasActuals: false }))
+    expect(blank.items[0].checked).toBe(false)
+    expect(blank.items[0].automatic).toBe(true)
+    expect(blank.blocked).toBe(true)
+
+    const logged = gateStatus('design', {}, inHouse({ hasActuals: true }))
+    expect(logged.items[0].checked).toBe(true)
+    expect(logged.blocked).toBe(false)
+    expect(logged.next).toBe('review')
+  })
+
+  it('picks the checklist off the job rather than off the caller', () => {
+    // gateStatus reads kind from the facts, so no screen can ask for a
+    // client gate on an in-house job by passing the wrong argument.
+    const client = gateStatus('design', {}, facts())
+    const mine = gateStatus('design', {}, inHouse())
+    expect(client.items.length).toBeGreaterThan(mine.items.length)
+    expect(mine.items.map((i) => i.key)).toEqual(['spend'])
+  })
+
+  it('ends at Done with nothing left to tick', () => {
+    const done = gateStatus('delivered', {}, inHouse({ hasActuals: true }))
+    expect(done.total).toBe(0)
+    expect(done.next).toBeNull()
+  })
+})
+
+describe('flags that belong to a client, on work that has none', () => {
+  const mine = (over: Partial<ProjectFacts> = {}) =>
+    facts({ kind: 'inhouse', phase: 'design', ...over })
+
+  it('does not tell you a trial print has no quote', () => {
+    /**
+     * This fired on EVERY in-house job, permanently. An in-house job starts
+     * at design, design is past intake, and the rule was "past intake with
+     * no quote". So the board carried a red "No quote" on work that will
+     * never have one and could never clear it -- which is how a shop learns
+     * to ignore the flags that do matter.
+     */
+    const flags = flagsFor(mine(), NOW).map((f) => f.key)
+    expect(flags).not.toContain('unquoted')
+
+    // Still fires where it means something.
+    const client = flagsFor(facts({ phase: 'design', quoteStatus: null }), NOW).map((f) => f.key)
+    expect(client).toContain('unquoted')
+  })
+
+  it('never says unpaid, deposit unpaid or not agreed', () => {
+    const flags = flagsFor(
+      mine({ phase: 'delivered', balanceOwed: 500, depositDue: 200, depositOwed: 200 }),
+      NOW,
+    ).map((f) => f.key)
+    expect(flags).not.toContain('balance')
+    expect(flags).not.toContain('deposit')
+    expect(flags).not.toContain('unagreed')
+  })
+
+  it('still tells you when your own work has gone quiet', () => {
+    // This one earns its place on in-house work: a trial abandoned halfway
+    // is money spent with no conclusion drawn from it.
+    const flags = flagsFor(mine({ lastActivityAt: localDaysAgo(STALLED_DAYS + 1) }), NOW).map(
+      (f) => f.key,
+    )
+    expect(flags).toContain('stalled')
   })
 })

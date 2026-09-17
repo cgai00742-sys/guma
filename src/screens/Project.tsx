@@ -78,6 +78,8 @@ import {
 import {
   GATES,
   PHASE_LABEL,
+  ladderFor,
+  phaseLabel,
   flagsFor,
   gateStatus,
   phaseIndex,
@@ -306,7 +308,19 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
     }
   }
 
-  const here = phaseIndex(detail.phase)
+  /**
+   * Which ladder this job is climbing, and what its rungs are called.
+   *
+   * In-house work has three stages of its own -- Working, Made, Done --
+   * because there is nobody to approve it, nothing to schedule against a
+   * promise and nobody to hand it to. Walking a trial print past "Client
+   * approval" is theatre, and a checklist that is theatre teaches people to
+   * tick without reading. See lib/gates.ts.
+   */
+  const mine = detail.facts.kind === 'inhouse'
+  const ladder = ladderFor(detail.facts.kind)
+  const label = (p: JobPhase) => phaseLabel(p, detail.facts.kind)
+  const here = phaseIndex(detail.phase, detail.facts.kind)
 
   return (
     <div className="wrap" style={{ paddingTop: 16, paddingBottom: 96 }}>
@@ -356,7 +370,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       )}
 
       <div className="stepper" style={{ marginTop: 12, opacity: facts.takenInAt ? 1 : 0.45 }}>
-        {JOB_PHASES.map((p, i) => (
+        {ladder.map((p, i) => (
           <button
             key={p}
             type="button"
@@ -365,14 +379,14 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             onClick={() => setViewPhase(p === detail.phase ? null : p)}
             title={
               i < here
-                ? `${PHASE_LABEL[p]} — cleared. Click to review its gate.`
+                ? `${label(p)} — cleared. Click to review its gate.`
                 : i === here
-                  ? `${PHASE_LABEL[p]} — where this project is now.`
-                  : `${PHASE_LABEL[p]} — not reached yet. Click to see what it will ask for.`
+                  ? `${label(p)} — where this project is now.`
+                  : `${label(p)} — not reached yet. Click to see what it will ask for.`
             }
           >
             <i />
-            {PHASE_LABEL[p]}
+            {label(p)}
           </button>
         ))}
       </div>
@@ -448,8 +462,8 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       <section className="sec" style={{ marginTop: 18 }}>
         <div className="sechead">
           <h4>
-            {PHASE_LABEL[shown]}
-            {gate.next ? ` — gate to ${PHASE_LABEL[gate.next]}` : ''}
+            {label(shown)}
+            {gate.next ? ` — gate to ${label(gate.next)}` : ''}
           </h4>
           <span className={`secstat ${gate.total === 0 ? '' : gate.blocked ? 'warn' : 'ok'}`}>
             {gate.total === 0 ? 'no gate' : `${gate.done} of ${gate.total} cleared`}
@@ -458,8 +472,8 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
 
         {shown !== detail.phase && (
           <div className="hint" style={{ marginBottom: 6 }}>
-            Looking at {PHASE_LABEL[shown]}, which is{' '}
-            {phaseIndex(shown) < here ? 'already behind you' : 'still ahead'}. Ticking here still
+            Looking at {label(shown)}, which is{' '}
+            {phaseIndex(shown, detail.facts.kind) < here ? 'already behind you' : 'still ahead'}. Ticking here still
             records a real answer —{' '}
             <button type="button" className="linkbtn" onClick={() => setViewPhase(null)}>
               back to {PHASE_LABEL[detail.phase]}
@@ -491,6 +505,16 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         )}
       </section>
 
+      {/*
+        Three sections below exist only for work somebody is paying for.
+        Money, a promised window and a handover are not "empty" on a trial
+        print -- they do not apply at all, and showing them as unfilled
+        turns the page into a list of things you have failed to do. The
+        whole complaint about this program was too many options that do not
+        apply; this is the same bug wearing a different hat.
+      */}
+      {!mine && (
+        <>
       {/* ---- money ---- */}
       <section className="sec">
         <div className="sechead">
@@ -747,13 +771,18 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         />
       </section>
 
+        </>
+      )}
+
       {/* ---- what it actually took ---- */}
       <section className="sec">
         <div className="sechead">
           <h4>What it actually took</h4>
           <span
             className={`secstat ${
-              comparison === null
+              mine
+                ? ''
+                : comparison === null
                 ? ''
                 : !comparison.hasActuals
                   ? ''
@@ -764,17 +793,33 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                       : 'ok'
             }`}
           >
-            {comparison === null
-              ? 'needs a quote'
-              : !comparison.hasActuals
-                ? 'nothing recorded yet'
-                : comparison.partial
-                  ? 'partly recorded'
-                  : `real margin ${money(comparison.actualMargin ?? 0)}`}
+            {mine
+              ? detail.facts.hasActuals
+                ? `${money(detail.facts.actualCost)} spent so far`
+                : 'nothing recorded yet'
+              : comparison === null
+                ? 'needs a quote'
+                : !comparison.hasActuals
+                  ? 'nothing recorded yet'
+                  : comparison.partial
+                    ? 'partly recorded'
+                    : `real margin ${money(comparison.actualMargin ?? 0)}`}
           </span>
         </div>
         <div className="pane" style={{ marginBottom: 0 }}>
-          {comparison === null ? (
+          {/*
+            An in-house job has no quote and never will, so "there is
+            nothing to compare against until this has a quote" would be a
+            permanent, useless sentence. What its cost compares against is
+            what it produced -- which is the section directly below.
+          */}
+          {mine ? (
+            <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
+              Nobody is paying for this, so there is no quote to measure it against. What it cost is
+              measured against what it made instead — log the runs and hours here, then record what
+              came out of it below.
+            </div>
+          ) : comparison === null ? (
             <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
               There is nothing to compare against until this project has a quote. Runs and hours can
               still be logged below — they will line up once it does.

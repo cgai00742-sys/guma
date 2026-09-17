@@ -64,6 +64,16 @@ const SOURCES = ['Word of mouth', 'Repeat client', 'Referral', 'Walk-in', 'Websi
  *  there is nothing to price and nobody to bill. */
 const IN_HOUSE = '\u0000in-house'
 
+/** A whole pane as one choice. Left-aligned because it is a sentence to
+ *  read, not a label on a button. */
+const PICK: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  textAlign: 'left',
+  cursor: 'pointer',
+  font: 'inherit',
+}
+
 export default function Intake({ ctx }: { ctx: ShopContext }) {
   const navigate = useNavigate()
   const rates = useMemo(() => toRateSet(ctx.rateCard, ctx.shop), [ctx.rateCard, ctx.shop])
@@ -120,14 +130,29 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   /**
    * Who this job is for, asked before anything else.
    *
-   * In-house work used to be unreachable from here: the client field was
-   * required, so the only way to record a test print was to invent a client
-   * called "In-house" — which then sat in the client list forever, counted
-   * as a customer, and had a receivable. Making it an option in the client
-   * picker rather than a second button elsewhere puts the choice where the
-   * decision actually gets made, and keeps one way in rather than two.
+   * This used to be the second entry in a client dropdown -- and that
+   * dropdown only rendered when the shop ALREADY HAD CLIENTS. On a new
+   * shop there are none, so the in-house option did not exist at all, and
+   * the only way to record a test print was to invent a client called
+   * "In-house" that then sat in the client list forever counting as a
+   * customer with a receivable. A brand-new shop is exactly the shop most
+   * likely to be printing its own things.
+   *
+   * So it is the first question now, and nothing else renders until it is
+   * answered. That is not only a bug fix: for most shops using this, their
+   * own work IS the business, and burying it inside a field labelled
+   * "Client" said the opposite.
    */
-  const inHouse = client === IN_HOUSE
+  const [whoFor, setWhoFor] = useState<'client' | 'inhouse' | null>(null)
+  const inHouse = whoFor === 'inhouse'
+
+  function chooseWho(next: 'client' | 'inhouse') {
+    setWhoFor(next)
+    // The client field is still the mechanism underneath; the sentinel is
+    // what persist() and every field below already read.
+    setClient(next === 'inhouse' ? IN_HOUSE : '')
+    setError(null)
+  }
   const [saving, setSaving] = useState<'idle' | 'draft' | 'intake' | 'send' | 'inhouse'>('idle')
   const [error, setError] = useState<string | null>(null)
 
@@ -250,11 +275,59 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
     }
   }
 
+  /**
+   * One question, and nothing else on screen until it is answered.
+   *
+   * Not a toggle above a form: a toggle invites somebody to start filling
+   * in a client's details and discover halfway down that they picked the
+   * wrong kind. The two paths ask genuinely different questions -- one
+   * prices a quote, the other does not exist -- so the fork comes first.
+   */
+  if (whoFor === null) {
+    return (
+      <div className="wrap" style={{ paddingTop: 20, paddingBottom: 40, maxWidth: 720 }}>
+        <div className="section-head">
+          <div>
+            <h2>New project</h2>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--txt-3)', marginTop: 3 }}>
+              {ref} · opened today · {ctx.profile.full_name}
+            </div>
+          </div>
+        </div>
+
+        <h3 style={{ fontSize: 18, lineHeight: '24px', margin: '4px 0 14px' }}>
+          Who is this one for?
+        </h3>
+
+        <button type="button" className="pane" onClick={() => chooseWho('inhouse')} style={PICK}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--txt)' }}>
+            It is mine
+          </div>
+          <div style={{ fontSize: 12.5, lineHeight: '18px', color: 'var(--txt-2)', marginTop: 4 }}>
+            A test print, a prototype, something you are designing to sell. Nobody is paying for it,
+            so there is no quote and no invoice — you log what it takes, and Guma tells you what your
+            own work costs and what it put on the shelf.
+          </div>
+        </button>
+
+        <button type="button" className="pane" onClick={() => chooseWho('client')} style={PICK}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--txt)' }}>
+            Someone is paying for it
+          </div>
+          <div style={{ fontSize: 12.5, lineHeight: '18px', color: 'var(--txt-2)', marginTop: 4 }}>
+            A commissioned job. Guma prices it, freezes the rates onto the quote when you send it,
+            and follows the deposit and the balance through to handover.
+          </div>
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="wrap" style={{ paddingTop: 20, paddingBottom: 40 }}>
       <div className="section-head">
         <div>
-          <h2>New project</h2>
+          <h2>{inHouse ? 'Something of my own' : 'New project'}</h2>
           <div
             style={{
               display: 'flex',
@@ -372,12 +445,10 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 <label className="lbl" htmlFor="q-client">
                   {inHouse ? 'Who it is for' : 'Client *'}
                 </label>
-                {clients.length > 0 && (
+                {!inHouse && clients.length > 0 && (
                   <select
                     aria-label="Pick an existing client"
-                    value={
-                      client === IN_HOUSE || clients.some((c) => c.name === client) ? client : ''
-                    }
+                    value={clients.some((c) => c.name === client) ? client : ''}
                     style={{ marginBottom: 6 }}
                     onChange={(e) => {
                       const hit = clients.find((c) => c.name === e.target.value)
@@ -393,7 +464,6 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                     }}
                   >
                     <option value="">— someone new —</option>
-                    <option value={IN_HOUSE}>— in-house / R&D · no client, no quote —</option>
                     {clients.map((c) => (
                       <option key={c.id} value={c.name}>
                         {c.name}

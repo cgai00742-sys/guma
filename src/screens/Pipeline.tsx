@@ -38,16 +38,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  JOB_PHASES,
   listJobs,
   updateJobPhase,
   updateJobPriority,
+  type JobKind,
   type JobListRow,
   type JobPhase,
   type JobPriority,
   type ShopContext,
 } from '../lib/data'
-import { PHASE_LABEL, flagsFor, gateStatus, worstTone, type Flag } from '../lib/gates'
+import { flagsFor, gateStatus, ladderFor, phaseLabel, worstTone, type Flag } from '../lib/gates'
 import { filterBy } from '../lib/search'
 import { asSearchItem } from '../lib/searchItems'
 
@@ -86,6 +86,20 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
   const [overPhase, setOverPhase] = useState<JobPhase | null>(null)
   const [query, setQuery] = useState('')
   const [flaggedOnly, setFlaggedOnly] = useState(false)
+  /**
+   * Which half of the business this board is showing.
+   *
+   * Client work climbs seven stages; the shop's own work climbs three of
+   * its own (see lib/gates.ts). Putting both on one board means either ten
+   * columns or in-house cards sitting under headings like "Client
+   * approval", and for a shop whose own work IS most of the work, the
+   * second one is worse than the first.
+   *
+   * The switch only appears once there is in-house work to switch to. A
+   * control for a thing the shop has never done is clutter with a promise
+   * attached.
+   */
+  const [kind, setKind] = useState<JobKind>('client')
 
   useEffect(() => {
     let cancelled = false
@@ -154,13 +168,22 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
 
   const columns = useMemo(
     () =>
-      JOB_PHASES.map((phase) => ({
+      ladderFor(kind).map((phase) => ({
         phase,
-        label: PHASE_LABEL[phase],
+        label: phaseLabel(phase, kind),
         hue: COLUMN_HUE[phase],
-        jobs: filtered.filter((j) => j.phase === phase),
+        jobs: filtered.filter((j) => j.phase === phase && j.facts.kind === kind),
       })),
-    [filtered],
+    [filtered, kind],
+  )
+
+  /** How many of the shop's own jobs exist at all -- decides whether the
+   *  switch is worth showing. Counted before filtering, so searching for
+   *  something that happens to be client work does not make the switch
+   *  vanish mid-typing. */
+  const mineCount = useMemo(
+    () => decorated.filter((j) => j.facts.kind === 'inhouse').length,
+    [decorated],
   )
 
   async function move(jobId: string, toPhase: JobPhase) {
@@ -239,6 +262,24 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
       </div>
 
       <div className="filters" style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+        {mineCount > 0 && (
+          <div className="seg" role="group" aria-label="Whose work to show">
+            <button
+              type="button"
+              aria-pressed={kind === 'client'}
+              onClick={() => setKind('client')}
+            >
+              For clients
+            </button>
+            <button
+              type="button"
+              aria-pressed={kind === 'inhouse'}
+              onClick={() => setKind('inhouse')}
+            >
+              Mine
+            </button>
+          </div>
+        )}
         <input
           value={query}
           type="search"

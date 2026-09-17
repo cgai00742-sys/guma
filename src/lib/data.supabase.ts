@@ -39,6 +39,7 @@ export type {
   SaveQuoteArgs,
   SavedQuote,
   JobListRow,
+  JobKind,
   JobPhase,
   JobPriority,
   ProjectDetail,

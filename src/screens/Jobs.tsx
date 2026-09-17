@@ -24,7 +24,7 @@ import {
   type JobListRow,
   type ShopContext,
 } from '../lib/data'
-import { PHASE_LABEL, flagsFor, gateStatus, worstTone, type Flag } from '../lib/gates'
+import { flagsFor, gateStatus, phaseLabel, worstTone, type Flag } from '../lib/gates'
 import SearchField from '../components/SearchField'
 import { filterBy } from '../lib/search'
 import { asSearchItem } from '../lib/searchItems'
@@ -311,7 +311,7 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
                       </td>
                       <td>
                         {j.facts.takenInAt ? (
-                          <span className="chip">{PHASE_LABEL[j.phase]}</span>
+                          <span className="chip">{phaseLabel(j.phase, j.facts.kind)}</span>
                         ) : (
                           <span
                             className="chip"

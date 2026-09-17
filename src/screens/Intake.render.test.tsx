@@ -36,7 +36,7 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => navigate }
 })
 
-async function renderIntake() {
+async function renderIntake(who: 'client' | 'inhouse' | null = 'client') {
   const { default: Intake } = await import('./Intake')
   render(
     <MemoryRouter>
@@ -45,6 +45,17 @@ async function renderIntake() {
   )
   // The job ref is fetched on mount; wait for it so nothing is mid-flight.
   await screen.findByText(/GUMA-2026-0007/)
+  // The form now opens on one question -- who this is for -- and nothing
+  // else exists until it is answered. Most of the tests below are about
+  // the client path, so they answer it and carry on.
+  if (who !== null) {
+    const user = userEvent.setup()
+    await user.click(
+      screen.getByRole('button', {
+        name: who === 'inhouse' ? /it is mine/i : /someone is paying/i,
+      }),
+    )
+  }
 }
 
 /** The two fields persist() insists on before it will save anything. */
@@ -238,36 +249,36 @@ describe('the money on the form is the shop’s money', () => {
 /**
  * Work with no client, started from the place a job actually gets started.
  *
- * Before this, the client field was required and the only way to record a
- * test print was to invent a client called "In-house" — which then sat in
- * the client list being counted as a customer with a receivable. The fix is
- * an option in the picker rather than a second button elsewhere: one way
- * in, at the moment the decision is made.
+ * This lived in a dropdown that only rendered once the shop already had
+ * clients, so on a new shop the option did not exist at all -- and a new
+ * shop is exactly the one most likely to be printing its own things. The
+ * only way through was to invent a client called "In-house", which then sat
+ * in the client list counting as a customer with a receivable.
+ *
+ * It is the first question now, before anything else is on screen. These
+ * tests are written from a shop with NO clients on purpose, because that is
+ * the shop it was broken for.
  */
 describe('a job nobody is paying for', () => {
-  it('offers in-house in the client picker, once there is a picker at all', async () => {
-    // The picker only renders when the shop has clients on file.
-    listClients.mockResolvedValueOnce([
-      { id: 'c1', name: 'Hafen GmbH', kind: 'business', contact: null, email: null, phone: null,
-        projects: 1, active: 1, value: 0, owed: 0, lastActivity: null },
-    ])
-    await renderIntake()
-    const picker = (await screen.findByLabelText(/pick an existing client/i)) as HTMLSelectElement
-    const labels = Array.from(picker.options).map((o) => o.textContent ?? '')
-    expect(labels.some((l) => /in-house/i.test(l))).toBe(true)
+  it('is offered on a shop that has no clients at all', async () => {
+    // listClients resolves to [] by default here -- a brand-new shop.
+    await renderIntake(null)
+    expect(await screen.findByRole('button', { name: /it is mine/i })).toBeDefined()
+    expect(screen.getByRole('button', { name: /someone is paying/i })).toBeDefined()
   })
 
-  it('needs only a title once in-house is chosen, and never asks for a client', async () => {
-    listClients.mockResolvedValueOnce([
-      { id: 'c1', name: 'Hafen GmbH', kind: 'business', contact: null, email: null, phone: null,
-        projects: 1, active: 1, value: 0, owed: 0, lastActivity: null },
-    ])
-    const user = userEvent.setup()
-    await renderIntake()
+  it('asks who it is for before anything else exists', async () => {
+    // Not a toggle above a form: a toggle lets somebody fill in a client's
+    // details and find out halfway down that they picked the wrong kind.
+    await renderIntake(null)
+    await screen.findByRole('button', { name: /it is mine/i })
+    expect(screen.queryByLabelText(/project title/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /save draft/i })).toBeNull()
+  })
 
-    const picker = (await screen.findByLabelText(/pick an existing client/i)) as HTMLSelectElement
-    const inHouse = Array.from(picker.options).find((o) => /in-house/i.test(o.textContent ?? ''))!
-    await user.selectOptions(picker, inHouse.value)
+  it('needs only a title once it is mine, and never asks for a client', async () => {
+    const user = userEvent.setup()
+    await renderIntake('inhouse')
 
     // The three client-quote buttons collapse to one: a quote, a PDF and a
     // deposit are all meaningless for work nobody is paying for.
@@ -291,5 +302,18 @@ describe('a job nobody is paying for', () => {
     // It never went near the quote machinery.
     expect(saveQuote).not.toHaveBeenCalled()
     expect(navigate).toHaveBeenCalledWith('/project/job-ih')
+  })
+
+  it('does not put in-house back in the client picker', async () => {
+    // One way in. An option that still sat in the picker would be a second
+    // route to the same place, able to disagree with the first.
+    listClients.mockResolvedValueOnce([
+      { id: 'c1', name: 'Hafen GmbH', kind: 'business', contact: null, email: null, phone: null,
+        projects: 1, active: 1, value: 0, owed: 0, lastActivity: null },
+    ])
+    await renderIntake('client')
+    const picker = (await screen.findByLabelText(/pick an existing client/i)) as HTMLSelectElement
+    const labels = Array.from(picker.options).map((o) => o.textContent ?? '')
+    expect(labels.some((l) => /in-house/i.test(l))).toBe(false)
   })
 })

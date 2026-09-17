@@ -1,5 +1,5 @@
 import { daysBetweenLocal } from './dates'
-import type { GateAnswer, JobPhase, ProjectFacts } from './data.types'
+import type { GateAnswer, JobKind, JobPhase, ProjectFacts } from './data.types'
 
 // The client-kind vocabulary, GateAnswer and ProjectFacts all live in
 // data.types.ts rather than here. data.types.ts imports nothing, so putting
@@ -214,6 +214,43 @@ export const GATES: Record<JobPhase, GateItem[]> = {
   delivered: [],
 }
 
+/**
+ * The shop's own work, checked against the two things that actually go
+ * wrong with it.
+ *
+ * Short on purpose. In-house work is the ten-minute experiment that, forty
+ * times over, is where the month went -- and every item added here is a
+ * reason not to log the next one. Two items, both about money that
+ * otherwise disappears without trace.
+ */
+const IN_HOUSE_GATES: Partial<Record<JobPhase, GateItem[]>> = {
+  design: [
+    {
+      key: 'spend',
+      label: 'What it took is logged',
+      why: 'Filament, machine hours and your own time are the whole cost of this. Unlogged, the job reads as free and the month reads as a mystery.',
+      auto: (f) => f.hasActuals,
+      autoFrom: 'from the runs and hours',
+      fix: 'Record a run or some hours under What it actually took.',
+    },
+  ],
+  review: [
+    {
+      key: 'made',
+      label: 'What came out of it is recorded — units on the shelf, or nothing',
+      why: 'A trial that made nothing still cost you, and a trial that made forty keychains turned that cost into stock. Both are answers. Leaving it blank is how the money just vanishes.',
+      fix: 'Put the units on the shelf under What this made, or tick this to say it produced nothing sellable.',
+    },
+  ],
+  delivered: [],
+}
+
+/** The checklist for one stage of whichever ladder this job is climbing. */
+export function gatesFor(phase: JobPhase, kind: JobKind = 'client'): GateItem[] {
+  if (kind === 'inhouse') return IN_HOUSE_GATES[phase] ?? []
+  return GATES[phase] ?? []
+}
+
 export interface ResolvedGateItem extends GateItem {
   checked: boolean
   note: string | null
@@ -235,7 +272,30 @@ export interface GateStatus {
   next: JobPhase | null
 }
 
-const PHASE_ORDER: JobPhase[] = [
+/**
+ * TWO LADDERS, ONE COLUMN.
+ *
+ * Client work moves through seven stages ending in a handover. The shop's
+ * own work does not: there is nobody to approve it, nothing to schedule
+ * against a promise, and nobody to hand it to. Walking a trial print past
+ * "Client approval" is theatre, and a checklist that is theatre teaches
+ * people to tick boxes without reading them -- which costs the gates their
+ * only real power.
+ *
+ * So in-house work climbs three stages of its own: Working, Made, Done.
+ *
+ * WHY THEY REUSE THE SAME STORED VALUES rather than getting three of their
+ * own. jobs.phase carries a CHECK constraint in SQLite, and SQLite cannot
+ * alter a constraint in place -- changing it means rebuilding the jobs
+ * table, which nine tables cascade off. That is the single riskiest
+ * migration this project could ship, and it would buy three strings. So
+ * in-house work borrows design/review/delivered, which already mean
+ * "being worked on", "look at what came out" and "end of the line", and
+ * the LABEL is what differs. One stored fact, two vocabularies, no
+ * migration, and a phase always means the same position in whichever
+ * ladder its job is climbing.
+ */
+const CLIENT_LADDER: JobPhase[] = [
   'intake',
   'design',
   'approval',
@@ -245,7 +305,14 @@ const PHASE_ORDER: JobPhase[] = [
   'delivered',
 ]
 
-export const PHASE_LABEL: Record<JobPhase, string> = {
+/** Working on it, it made something, it is finished. */
+const IN_HOUSE_LADDER: JobPhase[] = ['design', 'review', 'delivered']
+
+export function ladderFor(kind: JobKind = 'client'): JobPhase[] {
+  return kind === 'inhouse' ? IN_HOUSE_LADDER : CLIENT_LADDER
+}
+
+const CLIENT_LABEL: Record<JobPhase, string> = {
   intake: 'Intake',
   design: 'Design',
   approval: 'Client approval',
@@ -255,13 +322,42 @@ export const PHASE_LABEL: Record<JobPhase, string> = {
   delivered: 'Delivered',
 }
 
-export function nextPhase(phase: JobPhase): JobPhase | null {
-  const i = PHASE_ORDER.indexOf(phase)
-  return i >= 0 && i < PHASE_ORDER.length - 1 ? PHASE_ORDER[i + 1] : null
+const IN_HOUSE_LABEL: Partial<Record<JobPhase, string>> = {
+  design: 'Working',
+  review: 'Made',
+  delivered: 'Done',
 }
 
-export function phaseIndex(phase: JobPhase): number {
-  return PHASE_ORDER.indexOf(phase)
+/**
+ * What to call a stage, to the person whose job it is.
+ *
+ * Kept as a function rather than a second lookup table so a caller has to
+ * say which kind of work it is showing -- the old PHASE_LABEL record could
+ * be read without that thought, and every place that did would call an
+ * in-house trial print "Client approval".
+ */
+export function phaseLabel(phase: JobPhase, kind: JobKind = 'client'): string {
+  if (kind === 'inhouse') return IN_HOUSE_LABEL[phase] ?? CLIENT_LABEL[phase]
+  return CLIENT_LABEL[phase]
+}
+
+/**
+ * The old record, still exported because a dozen call sites show client
+ * work and are correct as they stand.
+ *
+ * @deprecated Prefer phaseLabel(phase, kind) anywhere a job's kind is in
+ * scope. This one cannot know, so it answers for client work.
+ */
+export const PHASE_LABEL: Record<JobPhase, string> = CLIENT_LABEL
+
+export function nextPhase(phase: JobPhase, kind: JobKind = 'client'): JobPhase | null {
+  const ladder = ladderFor(kind)
+  const i = ladder.indexOf(phase)
+  return i >= 0 && i < ladder.length - 1 ? ladder[i + 1] : null
+}
+
+export function phaseIndex(phase: JobPhase, kind: JobKind = 'client'): number {
+  return ladderFor(kind).indexOf(phase)
 }
 
 /**
@@ -273,7 +369,12 @@ export function gateStatus(
   answers: Record<string, GateAnswer>,
   facts: ProjectFacts,
 ): GateStatus {
-  const items: ResolvedGateItem[] = GATES[phase].map((item) => {
+  // The job's own kind decides which checklist applies and what comes
+  // next. Reading it off the facts rather than taking it as an argument
+  // means no caller can accidentally ask for a client gate on a trial
+  // print, which is the failure this whole split exists to prevent.
+  const kind = facts.kind
+  const items: ResolvedGateItem[] = gatesFor(phase, kind).map((item) => {
     const answer = answers[item.key]
     // An auto item that returns null is not automatic today — the app has
     // no way to know, so the human answer stands.
@@ -294,7 +395,7 @@ export function gateStatus(
   const total = items.length
   const outstanding = items.filter((i) => !i.checked)
   const missingNotes = items.filter((i) => i.noteMissing)
-  const next = nextPhase(phase)
+  const next = nextPhase(phase, kind)
 
   let blocked = false
   let reason: string
@@ -372,7 +473,17 @@ function money(n: number): string {
 export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
   const out: Flag[] = []
   const delivered = f.phase === 'delivered'
-  const started = phaseIndex(f.phase) >= phaseIndex('design')
+  /**
+   * Work nobody is paying for cannot be unpaid, unquoted, unagreed or
+   * late against a promise. Half the flags below are about a client, and
+   * on an in-house job they are not merely quiet -- `unquoted` fired on
+   * EVERY one of them, permanently, because an in-house job starts at
+   * design and design is past intake. A board covered in a warning that
+   * can never be acted on is how a shop learns to ignore warnings.
+   */
+  const mine = f.kind === 'inhouse'
+  const at = (p: JobPhase) => phaseIndex(p, f.kind)
+  const started = at(f.phase) >= at('design')
 
   if (!delivered && f.neededBy) {
     const late = daysBetweenLocal(f.neededBy, now)
@@ -388,7 +499,7 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
     }
   }
 
-  if (!delivered && f.depositDue > 0 && f.depositOwed > 0 && started) {
+  if (!mine && !delivered && f.depositDue > 0 && f.depositOwed > 0 && started) {
     out.push({
       key: 'deposit',
       tone: 'crit',
@@ -399,7 +510,7 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
     })
   }
 
-  if (delivered && f.balanceOwed > 0) {
+  if (!mine && delivered && f.balanceOwed > 0) {
     out.push({
       key: 'balance',
       tone: 'crit',
@@ -409,7 +520,7 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
     })
   }
 
-  if (!delivered && phaseIndex(f.phase) > phaseIndex('intake') && f.quoteStatus === null) {
+  if (!mine && !delivered && at(f.phase) > at('intake') && f.quoteStatus === null) {
     out.push({
       key: 'unquoted',
       tone: 'crit',
@@ -425,7 +536,7 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
   // past the stage whose entire job is getting a yes.
   if (
     !delivered &&
-    phaseIndex(f.phase) > phaseIndex('approval') &&
+    at(f.phase) > at('approval') &&
     f.quoteStatus !== null &&
     f.quoteStatus !== 'accepted'
   ) {
@@ -495,7 +606,7 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
         key: 'over-budget',
         tone: 'warn',
         label: 'Eating its margin',
-        cause: `${Math.round(share * 100)}% of the quote already spent, with the project still in ${PHASE_LABEL[f.phase].toLowerCase()}.`,
+        cause: `${Math.round(share * 100)}% of the quote already spent, with the project still in ${phaseLabel(f.phase, f.kind).toLowerCase()}.`,
         action:
           'Check what is left against what is gone. This is the last point where a reprint or an extra revision is still a decision rather than a loss.',
       })
