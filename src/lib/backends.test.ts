@@ -14,7 +14,7 @@
  * data.supabase.ts evaluates supabase.ts, which throws when its env vars
  * are absent. This has to work in a bare checkout.
  */
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -82,9 +82,16 @@ describe('the desktop build cannot reach Supabase by accident', () => {
     const offenders: string[] = []
     for (const [name, src] of [
       ['App.tsx', files],
-      ...['Intake', 'Jobs', 'Pipeline', 'Projects', 'Project', 'Clients', 'Settings', 'Setup', 'QuoteDoc', 'Closeout'].map(
-        (n) => [`${n}.tsx`, readFileSync(join(screens, `${n}.tsx`), 'utf8')] as const,
-      ),
+      // Read the directory rather than listing names: a hardcoded list goes
+      // stale the moment a screen is renamed, and it did -- this test broke
+      // on a screen that had been deleted rather than on an import that had
+      // been added, which is the opposite of useful.
+      ...readdirSync(screens)
+        // SignIn is the one screen allowed to import supabase directly: it
+        // calls signInWithPassword, and App loads it with React.lazy so the
+        // desktop build never evaluates it. See the note in App.tsx.
+        .filter((f) => f.endsWith('.tsx') && !f.includes('.test.') && f !== 'SignIn.tsx')
+        .map((f) => [f, readFileSync(join(screens, f), 'utf8')] as const),
     ] as const) {
       if (/^import .*from '.*\/(supabase|data\.supabase)'/m.test(src)) offenders.push(name)
     }

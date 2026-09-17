@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { isTauri } from '@tauri-apps/api/core'
 import { loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
-import Setup from './screens/Setup'
+import Wizard from './screens/Wizard'
 import Settings from './screens/Settings'
 import Intake from './screens/Intake'
 import Projects from './screens/Projects'
@@ -12,7 +12,6 @@ import Clients from './screens/Clients'
 import QuoteDoc from './screens/QuoteDoc'
 import Closeout from './screens/Closeout'
 import WelcomeModal from './components/WelcomeModal'
-import SetupGuide from './screens/SetupGuide'
 import { planFor } from './lib/setupPlan'
 import GlobalSearch from './components/GlobalSearch'
 
@@ -113,19 +112,17 @@ export default function App() {
 
   // A signed-in account (or, on desktop, a fresh install) with no shop yet
   // is a first run, not an error.
+  const ownerName = desktop
+    ? 'Owner'
+    : (session?.user.user_metadata?.full_name as string) ||
+      session?.user.email?.split('@')[0] ||
+      'Owner'
+
+  // A fresh install has no shop. The wizard creates one on the first answer
+  // rather than at the end, so closing the window after naming the shop
+  // leaves a shop with that name -- see screens/Wizard.tsx.
   if (needsSetup) {
-    return (
-      <Setup
-        fullName={
-          desktop
-            ? 'Owner'
-            : (session!.user.user_metadata?.full_name as string) ||
-              session!.user.email?.split('@')[0] ||
-              'Owner'
-        }
-        onDone={refresh}
-      />
-    )
+    return <Wizard ctx={null} fullName={ownerName} onSaved={refresh} />
   }
 
   if (printing) {
@@ -166,7 +163,12 @@ export default function App() {
       <>
         <TopBar ctx={ctx} desktop={desktop} />
         <main className="app-main">
-          <SetupGuide ctx={ctx} onSaved={refresh} onDefer={() => setSetupDeferred(true)} />
+          <Wizard
+            ctx={ctx}
+            fullName={ownerName}
+            onSaved={refresh}
+            onDefer={() => setSetupDeferred(true)}
+          />
         </main>
       </>
     )
@@ -229,9 +231,20 @@ export default function App() {
             <Route path="/project/:jobId" element={<Project ctx={ctx} />} />
             <Route path="/clients" element={<Clients ctx={ctx} />} />
             <Route path="/settings" element={<Settings ctx={ctx} onSaved={refresh} />} />
-            {/* Not a first-run gate: reachable any time, resumes where the
-                shop left off. See src/lib/setupPlan.ts. */}
-            <Route path="/setup-guide" element={<SetupGuide ctx={ctx} onSaved={refresh} />} />
+            {/* Reachable any time, resuming wherever the shop left off. */}
+            <Route
+              path="/setup-guide"
+              element={
+                <Wizard
+                  ctx={ctx}
+                  fullName={ownerName}
+                  onSaved={refresh}
+                  // Reached on purpose from the banner, so leaving means
+                  // going back to the work rather than falling through.
+                  onDefer={() => setSetupDeferred(true)}
+                />
+              }
+            />
             <Route path="*" element={<Navigate to="/projects" replace />} />
           </Routes>
         )}

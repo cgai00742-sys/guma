@@ -79,12 +79,14 @@ beforeEach(() => {
 })
 
 describe('launching an unfinished shop', () => {
-  it('opens on the setup guide, not on the project board', async () => {
+  it('opens on the wizard, not on the project board', async () => {
     ctx = halfSetUp()
     await renderApp()
-    // The regression this file was written for.
-    expect(await screen.findByText(/Setting up/i)).toBeDefined()
-    expect(screen.getByText(/saves as you go/i)).toBeDefined()
+    // The regression this file was written for: the wizard existed, was
+    // routed, and nothing ever opened it.
+    expect(await screen.findByText('Setting up')).toBeDefined()
+    // A question, not a form. See src/lib/wizard.ts.
+    expect(document.body.textContent).toMatch(/\?/)
   })
 
   it('does not stack the welcome splash on top of it', async () => {
@@ -92,16 +94,18 @@ describe('launching an unfinished shop', () => {
     // of the two: it asks for something rather than describing the app.
     ctx = halfSetUp()
     await renderApp()
-    await screen.findByText(/Setting up/i)
+    await screen.findByText('Setting up')
     expect(screen.queryByText(/Price a project honestly/i)).toBeNull()
   })
 
-  it('starts on the first thing that is not answered', async () => {
+  it('resumes on the first question that is not answered', async () => {
     ctx = halfSetUp()
     await renderApp()
-    await screen.findByText(/Setting up/i)
-    // Identity and place are filled in the fixture; power is the first gap.
-    expect(await screen.findByText(/What do you pay per kWh/i)).toBeDefined()
+    await screen.findByText('Setting up')
+    // Name and place are answered in the fixture; the power rate is the
+    // first real gap, so that is the question it opens on rather than
+    // walking somebody back through what they already told it.
+    expect(await screen.findByText(/What do you pay for electricity/i)).toBeDefined()
   })
 
   it('lets somebody through without finishing, and says what it costs', async () => {
@@ -113,7 +117,7 @@ describe('launching an unfinished shop', () => {
     await user.click(screen.getByRole('button', { name: /finish later/i }))
     // Through to the app proper, with the gap carried on a banner rather
     // than silently forgotten.
-    await waitFor(() => expect(screen.queryByText(/saves as you go/i)).toBeNull())
+    await waitFor(() => expect(screen.queryByText('Setting up')).toBeNull())
     // The gap follows you onto the board rather than being forgotten.
     await waitFor(() =>
       expect(document.body.textContent).toMatch(/not right yet|configured/i),
@@ -126,6 +130,6 @@ describe('launching a shop that is actually finished', () => {
     ctx = makeCtx()
     await renderApp()
     await waitFor(() => expect(loadShopContext).toHaveBeenCalled())
-    expect(screen.queryByText(/saves as you go/i)).toBeNull()
+    expect(screen.queryByText('Setting up')).toBeNull()
   })
 })

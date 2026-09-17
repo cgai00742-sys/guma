@@ -16,3 +16,7 @@ mcp/dist
 # scratch folders kept out of the repo on purpose
 _archive/
 _to_delete/
+_superseded/
+_dist_stale_*/
+_dist_old/
+*.unused
