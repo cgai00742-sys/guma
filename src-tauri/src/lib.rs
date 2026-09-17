@@ -83,6 +83,12 @@ pub fn run() {
       sql: include_str!("../migrations/0013_guide.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 14,
+      description: "selling: products, batches, channels and sales",
+      sql: include_str!("../migrations/0014_selling.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()
