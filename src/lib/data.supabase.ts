@@ -310,6 +310,7 @@ export async function createClient(shopId: string, input: ClientEditInput): Prom
     .from('clients')
     .select('id')
     .eq('shop_id', shopId)
+    .eq('system', false)
     .ilike('name', name)
   if (dupeErr) throw dupeErr
   if (dupes && dupes.length > 0) {
@@ -585,7 +586,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
   }))
 }
 
-const JOB_SELECT = `id, ref, title, brief, created_at, updated_at, taken_in_at, phase, priority,
+const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_in_at, phase, priority,
    asset_origin, poc, needed_by, window_from, window_locked, at_risk,
    delivery_on, delivery_how,
    clients!inner ( id, name, kind, contact, email, phone ),
@@ -780,6 +781,9 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
     .from('clients')
     .select('id')
     .eq('shop_id', args.shopId)
+    // A client typed as "In-house" must get a real client row, never the
+    // hidden one in-house jobs hang off. Same filter as data.local.ts.
+    .eq('system', false)
     .ilike('name', args.client.name)
     .limit(1)
 
@@ -1135,6 +1139,8 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
        jobs ( id, phase, quotes ( status, total ), job_money ( balance_owed ), job_events ( at ) )`,
     )
     .eq('shop_id', shopId)
+    // The in-house row is a storage detail, not a client. See 0017_in_house.sql.
+    .eq('system', false)
     .order('name')
   if (error) throw error
   return ((data ?? []) as any[]).map((c) => {
