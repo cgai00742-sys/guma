@@ -826,6 +826,78 @@ export interface PartInput {
   sort?: number
 }
 
+/* ---- slicer imports ---------------------------------------------------- */
+/**
+ * What a slicer said about a file, kept deliberately apart from what a
+ * machine did. See 0015_slice_imports.sql: these never reach job_actuals,
+ * because job_actuals sums print_runs and a prediction is not a measurement.
+ *
+ * Every number here is named est* for the same reason.
+ */
+
+export type SliceImportKind = '3mf' | 'gcode' | '3mf-model'
+
+/** One object on the plate, and the build-sheet row it filled in. */
+export interface SliceSectionRow {
+  id: string
+  /** Null once the part has been deleted. The prediction still happened. */
+  partId: string | null
+  label: string
+  qty: number
+  estMinutes: number | null
+  estGrams: number | null
+  material: string | null
+}
+
+export interface SliceImportRow {
+  id: string
+  fileName: string
+  kind: SliceImportKind
+  /** The machine as the file named it, verbatim, matched or not. */
+  printerModel: string | null
+  printerId: string | null
+  printerName: string | null
+  materialText: string | null
+  materialId: string | null
+  materialName: string | null
+  estMinutes: number | null
+  estGrams: number | null
+  /** What the reader should know: plates combined, labels missing, and so on. */
+  notes: string[]
+  importedAt: string
+  sections: SliceSectionRow[]
+}
+
+export interface SliceSectionInput {
+  label: string
+  qty: number
+  estMinutes: number | null
+  estGrams: number | null
+  material: string | null
+}
+
+export interface SliceImportInput {
+  fileName: string
+  kind: SliceImportKind
+  printerModel: string | null
+  printerId: string | null
+  materialText: string | null
+  materialId: string | null
+  estMinutes: number | null
+  estGrams: number | null
+  notes: string[]
+  sections: SliceSectionInput[]
+}
+
+/** What an import did, so the screen can say it rather than guess. */
+export interface SliceImportResult {
+  importId: string
+  /** Build-sheet rows created by this file. */
+  partsAdded: number
+  /** Rows that already existed and were matched by name -- a re-slice. */
+  partsMatched: number
+}
+
 /* ---- the selling side ------------------------------------------------- */
 /**
  * What a shop makes for itself and sells, rather than what somebody

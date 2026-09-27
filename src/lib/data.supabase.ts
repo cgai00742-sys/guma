@@ -63,6 +63,10 @@ export type {
   WorkEntryInput,
   PartRow,
   PartInput,
+  SliceImportInput,
+  SliceImportResult,
+  SliceImportRow,
+  SliceSectionRow,
   PartStatus,
   QuoteStatus,
   ChannelRow,
@@ -113,6 +117,10 @@ import type {
   PartInput,
   PartStatus,
   QuoteStatus,
+  SliceImportInput,
+  SliceImportResult,
+  SliceImportRow,
+  SliceSectionRow,
 } from './data.types'
 
 /**
@@ -1890,5 +1898,186 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
 
 export async function deleteSale(shopId: string, saleId: string): Promise<void> {
   const { error } = await supabase.from('sales').delete().eq('id', saleId).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+/* ---- slicer imports ---------------------------------------------------- */
+/**
+ * The hosted twin of data.local.ts's slice import functions. Read that file
+ * for the reasoning; the rules are identical and deliberately so.
+ *
+ * Written alongside the desktop implementation and not yet exercised: the
+ * offline edition is being proven first, and 0019_slice_imports.sql has not
+ * been applied to the live hosted project. It exists now because
+ * backends.test.ts fails the build the moment a function is on one backend
+ * and not the other -- the guard that exists because the web build once
+ * threw "is not a function" on a stranger's first day.
+ */
+
+export async function importSlice(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: SliceImportInput,
+): Promise<SliceImportResult> {
+  if (!input.sections.length) throw new Error('That file had nothing on the plate.')
+
+  const { data: head, error: headErr } = await supabase
+    .from('slice_imports')
+    .insert({
+      shop_id: shopId,
+      job_id: jobId,
+      file_name: input.fileName,
+      kind: input.kind,
+      printer_model: input.printerModel,
+      printer_id: input.printerId,
+      material_text: input.materialText,
+      material_id: input.materialId,
+      est_minutes: input.estMinutes,
+      est_grams: input.estGrams,
+      // jsonb would be the native choice, but the desktop stores JSON text
+      // and both backends must mean the same thing on the way back out.
+      notes: JSON.stringify(input.notes ?? []),
+    })
+    .select('id')
+    .single()
+  if (headErr) throw headErr
+  const importId = head.id as string
+
+  const { data: existing, error: exErr } = await supabase
+    .from('job_parts')
+    .select('id, label, sort')
+    .eq('job_id', jobId)
+  if (exErr) throw exErr
+
+  const byLabel = new Map(
+    (existing ?? []).map((r) => [String(r.label).trim().toLowerCase(), r.id as string]),
+  )
+  let sort = Math.max(-1, ...(existing ?? []).map((r) => Number(r.sort ?? -1))) + 1
+
+  let partsAdded = 0
+  let partsMatched = 0
+
+  for (const sec of input.sections) {
+    const label = sec.label.trim()
+    if (!label) continue
+    const qty = Math.max(1, Math.floor(Number(sec.qty) || 1))
+    let partId = byLabel.get(label.toLowerCase()) ?? null
+
+    if (partId) partsMatched++
+    else {
+      const { data: part, error: partErr } = await supabase
+        .from('job_parts')
+        .insert({ shop_id: shopId, job_id: jobId, label, qty, sort: sort++ })
+        .select('id')
+        .single()
+      if (partErr) throw partErr
+      partId = part.id as string
+      const { error: evErr } = await supabase.from('part_events').insert({
+        part_id: partId,
+        job_id: jobId,
+        kind: 'status',
+        to_status: 'pending',
+        note: `Imported from ${input.fileName}`,
+        actor_id: actorId,
+      })
+      if (evErr) throw evErr
+      byLabel.set(label.toLowerCase(), partId)
+      partsAdded++
+    }
+
+    const { error: secErr } = await supabase.from('slice_sections').insert({
+      import_id: importId,
+      part_id: partId,
+      label,
+      qty,
+      est_minutes: sec.estMinutes,
+      est_grams: sec.estGrams,
+      material: sec.material,
+    })
+    if (secErr) throw secErr
+  }
+
+  return { importId, partsAdded, partsMatched }
+}
+
+export async function listSliceImports(
+  shopId: string,
+  jobId: string,
+): Promise<SliceImportRow[]> {
+  const { data, error } = await supabase
+    .from('slice_imports')
+    .select(
+      `id, file_name, kind, printer_model, printer_id, material_text, material_id,
+       est_minutes, est_grams, notes, imported_at,
+       printers ( name ), materials ( name ),
+       slice_sections ( id, part_id, label, qty, est_minutes, est_grams, material )`,
+    )
+    .eq('shop_id', shopId)
+    .eq('job_id', jobId)
+    .order('imported_at', { ascending: false })
+    // Deterministic tie-break, same reason as the desktop's rowid: several
+    // files imported in one go can share a timestamp, and an unordered tie
+    // lists the newest last.
+    .order('id', { ascending: false })
+  if (error) throw error
+
+  return (data ?? []).map((r) => {
+    const printer = r.printers as { name?: string } | null
+    const material = r.materials as { name?: string } | null
+    const sections = (r.slice_sections ?? []) as {
+      id: string
+      part_id: string | null
+      label: string
+      qty: number
+      est_minutes: number | null
+      est_grams: number | null
+      material: string | null
+    }[]
+    return {
+      id: r.id as string,
+      fileName: r.file_name as string,
+      kind: r.kind as SliceImportRow['kind'],
+      printerModel: r.printer_model as string | null,
+      printerId: r.printer_id as string | null,
+      printerName: printer?.name ?? null,
+      materialText: r.material_text as string | null,
+      materialId: r.material_id as string | null,
+      materialName: material?.name ?? null,
+      estMinutes: r.est_minutes == null ? null : Number(r.est_minutes),
+      estGrams: r.est_grams == null ? null : Number(r.est_grams),
+      notes: parseNotes(r.notes as string | null),
+      importedAt: r.imported_at as string,
+      sections: sections.map(
+        (s): SliceSectionRow => ({
+          id: s.id,
+          partId: s.part_id,
+          label: s.label,
+          qty: Number(s.qty),
+          estMinutes: s.est_minutes == null ? null : Number(s.est_minutes),
+          estGrams: s.est_grams == null ? null : Number(s.est_grams),
+          material: s.material,
+        }),
+      ),
+    }
+  })
+}
+
+function parseNotes(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const v: unknown = JSON.parse(raw)
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+export async function deleteSliceImport(shopId: string, importId: string): Promise<void> {
+  const { error } = await supabase
+    .from('slice_imports')
+    .delete()
+    .eq('id', importId)
+    .eq('shop_id', shopId)
   if (error) throw error
 }

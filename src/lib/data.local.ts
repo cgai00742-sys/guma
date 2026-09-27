@@ -65,6 +65,10 @@ import type {
   WorkEntryInput,
   PartRow,
   PartInput,
+  SliceImportInput,
+  SliceImportResult,
+  SliceImportRow,
+  SliceSectionRow,
   PartStatus,
   QuoteStatus,
   ChannelRow,
@@ -2434,4 +2438,217 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
 export async function deleteSale(shopId: string, saleId: string): Promise<void> {
   const d = await db()
   await d.execute('delete from sales where id = ? and shop_id = ?', [saleId, shopId])
+}
+
+/* ---- slicer imports ---------------------------------------------------- */
+
+/**
+ * Record what a sliced file said, and fill in the build sheet from it.
+ *
+ * Two things happen, and only the first is a fact:
+ *
+ *   - job_parts rows appear, one per object on the plate. Those are real.
+ *   - slice_imports / slice_sections record the prediction. Those stay
+ *     predictions until somebody logs an actual print_run by hand.
+ *
+ * Nothing here writes a print_run, which is the whole point -- job_actuals
+ * sums print_runs with no filter on outcome, so a row there would put an
+ * estimate into a project's real cost. See 0015_slice_imports.sql.
+ *
+ * A section whose label already exists on this job is MATCHED, not
+ * duplicated: that is the fixed-file-for-reprint case, and the shop wants
+ * the new estimate attached to the part it already has rather than a second
+ * row with the same name. Matching is on the trimmed label, case-insensitive,
+ * because "Hull A" and "hull a" out of two slicer sessions are one part.
+ * The existing part's qty is deliberately NOT overwritten -- a re-slice of
+ * one copy of a part the shop needs four of should not silently reduce the
+ * build sheet.
+ */
+export async function importSlice(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: SliceImportInput,
+): Promise<SliceImportResult> {
+  if (!input.sections.length) throw new Error('That file had nothing on the plate.')
+  const d = await db()
+  const importId = crypto.randomUUID()
+
+  await d.execute(
+    `insert into slice_imports
+       (id, shop_id, job_id, file_name, kind, printer_model, printer_id,
+        material_text, material_id, est_minutes, est_grams, notes)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      importId,
+      shopId,
+      jobId,
+      input.fileName,
+      input.kind,
+      input.printerModel,
+      input.printerId,
+      input.materialText,
+      input.materialId,
+      input.estMinutes,
+      input.estGrams,
+      JSON.stringify(input.notes ?? []),
+    ],
+  )
+
+  const existing = await d.select<{ id: string; label: string }[]>(
+    'select id, label from job_parts where job_id = ?',
+    [jobId],
+  )
+  const byLabel = new Map(existing.map((r) => [r.label.trim().toLowerCase(), r.id]))
+  const sortStart = await d.select<{ n: number }[]>(
+    'select coalesce(max(sort), -1) + 1 as n from job_parts where job_id = ?',
+    [jobId],
+  )
+  let sort = sortStart[0]?.n ?? 0
+
+  let partsAdded = 0
+  let partsMatched = 0
+
+  for (const sec of input.sections) {
+    const label = sec.label.trim()
+    if (!label) continue
+    const qty = Math.max(1, Math.floor(Number(sec.qty) || 1))
+    let partId = byLabel.get(label.toLowerCase()) ?? null
+
+    if (partId) partsMatched++
+    else {
+      partId = crypto.randomUUID()
+      await d.execute(
+        `insert into job_parts (id, shop_id, job_id, label, qty, sort)
+         values (?, ?, ?, ?, ?, ?)`,
+        [partId, shopId, jobId, label, qty, sort++],
+      )
+      await d.execute(
+        `insert into part_events (part_id, job_id, kind, to_status, note, actor_id)
+         values (?, ?, 'status', 'pending', ?, ?)`,
+        [partId, jobId, `Imported from ${input.fileName}`, actorId],
+      )
+      byLabel.set(label.toLowerCase(), partId)
+      partsAdded++
+    }
+
+    await d.execute(
+      `insert into slice_sections
+         (id, import_id, part_id, label, qty, est_minutes, est_grams, material)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [crypto.randomUUID(), importId, partId, label, qty, sec.estMinutes, sec.estGrams, sec.material],
+    )
+  }
+
+  return { importId, partsAdded, partsMatched }
+}
+
+/** Every file imported against a project, newest first. */
+export async function listSliceImports(
+  shopId: string,
+  jobId: string,
+): Promise<SliceImportRow[]> {
+  const d = await db()
+  const heads = await d.select<
+    {
+      id: string
+      file_name: string
+      kind: SliceImportRow['kind']
+      printer_model: string | null
+      printer_id: string | null
+      printer_name: string | null
+      material_text: string | null
+      material_id: string | null
+      material_name: string | null
+      est_minutes: number | null
+      est_grams: number | null
+      notes: string | null
+      imported_at: string
+    }[]
+  >(
+    `select i.id, i.file_name, i.kind, i.printer_model, i.printer_id, p.name as printer_name,
+            i.material_text, i.material_id, m.name as material_name,
+            i.est_minutes, i.est_grams, i.notes, i.imported_at
+       from slice_imports i
+       left join printers p on p.id = i.printer_id
+       left join materials m on m.id = i.material_id
+      where i.shop_id = ? and i.job_id = ?
+      -- rowid breaks the tie, per the rule lib/rateCards.ts learned the hard
+      -- way: imported_at is a text timestamp, dropping four sliced files at
+      -- once writes them inside the same millisecond, and SQLite then returns
+      -- the FIRST -- so the newest import would list as the oldest.
+      order by i.imported_at desc, i.rowid desc`,
+    [shopId, jobId],
+  )
+  if (!heads.length) return []
+
+  const sections = await d.select<
+    {
+      id: string
+      import_id: string
+      part_id: string | null
+      label: string
+      qty: number
+      est_minutes: number | null
+      est_grams: number | null
+      material: string | null
+    }[]
+  >(
+    `select s.id, s.import_id, s.part_id, s.label, s.qty, s.est_minutes, s.est_grams, s.material
+       from slice_sections s
+       join slice_imports i on i.id = s.import_id
+      where i.shop_id = ? and i.job_id = ?`,
+    [shopId, jobId],
+  )
+
+  const byImport = new Map<string, SliceSectionRow[]>()
+  for (const r of sections) {
+    const list = byImport.get(r.import_id) ?? []
+    list.push({
+      id: r.id,
+      partId: r.part_id,
+      label: r.label,
+      qty: Number(r.qty),
+      estMinutes: r.est_minutes == null ? null : Number(r.est_minutes),
+      estGrams: r.est_grams == null ? null : Number(r.est_grams),
+      material: r.material,
+    })
+    byImport.set(r.import_id, list)
+  }
+
+  return heads.map((h) => ({
+    id: h.id,
+    fileName: h.file_name,
+    kind: h.kind,
+    printerModel: h.printer_model,
+    printerId: h.printer_id,
+    printerName: h.printer_name,
+    materialText: h.material_text,
+    materialId: h.material_id,
+    materialName: h.material_name,
+    estMinutes: h.est_minutes == null ? null : Number(h.est_minutes),
+    estGrams: h.est_grams == null ? null : Number(h.est_grams),
+    // Stored as JSON text, same as rates_snapshot. A bad parse must not take
+    // the screen down over a advisory note.
+    notes: parseNotes(h.notes),
+    importedAt: h.imported_at,
+    sections: byImport.get(h.id) ?? [],
+  }))
+}
+
+function parseNotes(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const v: unknown = JSON.parse(raw)
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/** Forget an import. The build-sheet parts it created are left alone --
+ *  they are the shop's now, not the file's. */
+export async function deleteSliceImport(shopId: string, importId: string): Promise<void> {
+  const d = await db()
+  await d.execute('delete from slice_imports where id = ? and shop_id = ?', [importId, shopId])
 }

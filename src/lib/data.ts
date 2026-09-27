@@ -72,6 +72,9 @@ import type {
   RunOutcome,
   PartRow,
   PartInput,
+  SliceImportInput,
+  SliceImportResult,
+  SliceImportRow,
   PartStatus,
   QuoteInputsRow,
   PrintRunRow,
@@ -487,4 +490,26 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
 
 export async function deleteSale(shopId: string, saleId: string): Promise<void> {
   return (await backend()).deleteSale(shopId, saleId)
+}
+
+/* ---- slicer imports ---------------------------------------------------- */
+
+export async function importSlice(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  input: SliceImportInput,
+): Promise<SliceImportResult> {
+  return (await backend()).importSlice(shopId, jobId, actorId, input)
+}
+
+export async function listSliceImports(
+  shopId: string,
+  jobId: string,
+): Promise<SliceImportRow[]> {
+  return (await backend()).listSliceImports(shopId, jobId)
+}
+
+export async function deleteSliceImport(shopId: string, importId: string): Promise<void> {
+  return (await backend()).deleteSliceImport(shopId, importId)
 }

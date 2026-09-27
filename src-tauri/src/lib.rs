@@ -89,6 +89,12 @@ pub fn run() {
       sql: include_str!("../migrations/0014_selling.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 15,
+      description: "slice imports: what the slicer said, kept out of actuals",
+      sql: include_str!("../migrations/0015_slice_imports.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()
