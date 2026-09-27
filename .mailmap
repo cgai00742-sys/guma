@@ -1,0 +1,14 @@
+# One person, four spellings. `cgai00247@gmail.com` is a typo of
+# `cgai00742@gmail.com` -- transposed digits -- and it is the address git was
+# configured with, so it carries the majority of the history. The config is
+# fixed; this file makes the record already written read correctly, without
+# rewriting any commit.
+#
+# Left of the angle brackets is the canonical identity. Everything after it is
+# an alias that maps onto it.
+CG <cgai00742@gmail.com> <cgai00247@gmail.com>
+CG <cgai00742@gmail.com> Christopher Guerrero <cgai00742@gmail.com>
+
+# Claude-assisted commits keep their own attribution. Anthropic's terms assign
+# rights in the output to the user, so this is a record of how the work was
+# done, not a second rights-holder.
