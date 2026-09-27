@@ -21,6 +21,14 @@
  * environment. The parser splits table bodies on top-level commas, so it
  * copes with several columns on one line and with commas inside check(...)
  * and numeric(10,2).
+ *
+ * It also checks one thing that has nothing to do with the desktop, because
+ * it is the same blind spot one level further in. 0015_guide.sql enabled row
+ * level security on guide_seen and stopped there. On Postgres, RLS with no
+ * policy is DENY, not allow: the hosted guide read back nothing and wrote
+ * nothing, silently, while every column matched and this file passed. So
+ * every hosted table that enables RLS must also gain a policy. Fixed in
+ * 0018_guide_policy.sql.
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
@@ -113,6 +121,36 @@ function hostedSchema(): Map<string, Set<string>> {
   return schema
 }
 
+/**
+ * Tables the hosted migrations turn RLS on for, and tables they create a
+ * policy on. Order does not matter -- a later migration may carry the policy
+ * for a table an earlier one locked down -- so both are collected across the
+ * whole migration set and compared once at the end.
+ */
+function hostedRls(): { enabled: Set<string>; policied: Set<string> } {
+  const sql = read('supabase/migrations')
+    .join('\n')
+    .replace(/--[^\n]*/g, '')
+  const enabled = new Set<string>()
+  const policied = new Set<string>()
+
+  for (const m of sql.matchAll(
+    /alter table (?:if exists )?(?:only )?(?:public\.)?"?(\w+)"?\s+enable row level security/gi,
+  ))
+    enabled.add(m[1])
+  for (const m of sql.matchAll(/create policy\s+"?[\w]+"?\s+on\s+(?:public\.)?"?(\w+)"?/gi))
+    policied.add(m[1])
+
+  // 0016_selling.sql does both inside a do $$ ... $$ loop over a text array,
+  // so the statements above never appear literally. Read the array instead.
+  for (const m of sql.matchAll(/foreach\s+\w+\s+in\s+array\s+array\[([^\]]+)\]/gi))
+    for (const q of m[1].matchAll(/'(\w+)'/g)) {
+      enabled.add(q[1])
+      policied.add(q[1])
+    }
+  return { enabled, policied }
+}
+
 describe('the desktop and hosted schemas describe the same shop', () => {
   const desktop = desktopSchema()
   const hosted = hostedSchema()
@@ -148,5 +186,33 @@ describe('the desktop and hosted schemas describe the same shop', () => {
   it('carries the in-house columns on both sides, which is where this started', () => {
     expect(hosted.get('jobs')?.has('kind')).toBe(true)
     expect(hosted.get('clients')?.has('system')).toBe(true)
+  })
+
+  describe('row level security on the hosted side', () => {
+    const { enabled, policied } = hostedRls()
+
+    it('the parser actually found the RLS statements', () => {
+      // Guards the guard, same as above: finding nothing would pass everything.
+      expect(enabled.size).toBeGreaterThan(10)
+      expect(enabled.has('jobs')).toBe(true)
+      // Enabled and policied inside 0016's do-block, not as literal statements.
+      expect(enabled.has('sales')).toBe(true)
+      expect(policied.has('sales')).toBe(true)
+    })
+
+    it('every table with RLS enabled has a policy', () => {
+      // RLS with no policy is DENY on Postgres. A table locked down and left
+      // unreachable reads exactly like a feature that does not work.
+      const locked = [...enabled].filter((t) => !policied.has(t)).sort()
+      expect(
+        locked,
+        'hosted tables with RLS enabled and no policy -- every read and write on these is denied',
+      ).toEqual([])
+    })
+
+    it('guide_seen is reachable, which is the bug that prompted this', () => {
+      expect(enabled.has('guide_seen')).toBe(true)
+      expect(policied.has('guide_seen')).toBe(true)
+    })
   })
 })
