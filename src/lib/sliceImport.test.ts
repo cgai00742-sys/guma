@@ -114,11 +114,10 @@ describe('G-code', () => {
   it('reads grams, time and material out of a PrusaSlicer footer', async () => {
     const f = await parseSliceFile(gcodeFile('bracket.gcode', PRUSA_FOOTER))
     expect(f.kind).toBe('gcode')
-    // "total filament used" repeats the per-tool figure, so both lines match
-    // the same regex and 12.34 is counted twice. That is Voltage's behaviour
-    // and the totals line is the one a person sees, so it is left alone --
-    // but it is asserted here so a future change to it is deliberate.
-    expect(f.totals.estGrams).toBeCloseTo(24.68, 2)
+    // 12.34, not 24.68. Voltage's parser matched both the per-tool line and
+    // the total line and added them, so every single-tool print reported
+    // double its grams -- and grams x material cost is money.
+    expect(f.totals.estGrams).toBeCloseTo(12.34, 2)
     expect(f.totals.estMinutes).toBe(62) // 1h 2m 3s, rounded
     expect(f.totals.material).toBe('PETG')
     expect(f.printerModel).toBe('Prusa XL') // "XL" is expanded
@@ -159,6 +158,54 @@ ${PRUSA_FOOTER}`
     expect(f.sections).toEqual([
       expect.objectContaining({ label: 'Paddle blade', qty: 2 }),
     ])
+  })
+})
+
+describe('the two ways PrusaSlicer writes grams', () => {
+  it('trusts the total line over the per-extruder line, and never adds them', async () => {
+    const f = await parseSliceFile(
+      gcodeFile(
+        'single.gcode',
+        `; filament used [g] = 12.34
+; total filament used [g] = 12.34
+; estimated printing time (normal mode) = 30m
+; filament_type = PLA`,
+      ),
+    )
+    expect(f.totals.estGrams).toBeCloseTo(12.34, 2)
+  })
+
+  it('reads a multi-material line without stopping at the first comma', async () => {
+    const f = await parseSliceFile(
+      gcodeFile(
+        'mmu.gcode',
+        `; filament used [g] = 3.09,2.50
+; total filament used [g] = 5.59
+; estimated printing time (normal mode) = 1h
+; filament_type = PLA;PETG`,
+      ),
+    )
+    // The old parser took 3.09 (stopped at the comma) and added 5.59 = 8.68.
+    expect(f.totals.estGrams).toBeCloseTo(5.59, 2)
+    // Per-extruder grams line up with per-extruder types, so the breakdown
+    // is real rather than the whole plate attributed to one material. The
+    // breakdown is apportioned across sections and so rounds to 0.1 g
+    // (3.09 -> 3.1); the TOTAL above is not rounded. At filament prices
+    // 0.01 g is a hundredth of a cent, and the totals are what cost money.
+    expect(f.sections[0].materialsBreakdown).toEqual({ PLA: 3.1, PETG: 2.5 })
+    expect(f.totals.material).toBe('PLA, PETG')
+  })
+
+  it('falls back to summing the extruders when there is no total line', async () => {
+    const f = await parseSliceFile(
+      gcodeFile(
+        'nototal.gcode',
+        `; filament used [g] = 4.0,6.0
+; estimated printing time (normal mode) = 20m
+; filament_type = PLA;PETG`,
+      ),
+    )
+    expect(f.totals.estGrams).toBeCloseTo(10, 2)
   })
 })
 

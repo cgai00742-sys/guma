@@ -472,12 +472,41 @@ function parseGcode(src: string, fileName: string): SliceFile {
     )
   }
 
-  let grams = 0
-  const gramsPerTool: number[] = []
-  for (const [, g] of src.matchAll(/;\s*(?:total )?filament used \[g\]\s*=\s*([\d.]+)/g)) {
-    grams += parseFloat(g)
-    gramsPerTool.push(parseFloat(g))
-  }
+  /**
+   * PrusaSlicer writes the grams TWICE, and the two lines mean different
+   * things:
+   *
+   *   ; filament used [g] = 3.09,2.50     <- per extruder, comma separated
+   *   ; total filament used [g] = 5.59    <- the authoritative total
+   *
+   * Voltage's parser matched `(?:total )?filament used [g]` and added every
+   * hit, so a single-tool print counted its one figure twice and reported
+   * double -- 12.34 g became 24.68 g. On a multi-material print it was wrong
+   * differently: `([\d.]+)` stops at the comma, so it took the first
+   * extruder's grams and then added the real total to it.
+   *
+   * Both are fixed the same way: read the two lines separately, trust the
+   * total when the slicer gives one, and fall back to summing the per-tool
+   * figures when it does not. Note the `[ \t]*` after the semicolon rather
+   * than `\s*` -- the per-tool pattern must not match across the newline
+   * into the "total" line.
+   *
+   * This changes reported grams for every G-code import, and material cost
+   * is grams x weighted purchase cost, so it changes money. That is the
+   * point: the old number was wrong, in the flattering direction for
+   * single-tool prints, which is most of them.
+   */
+  const perToolLine = src.match(/;[ \t]*filament used \[g\][ \t]*=[ \t]*([\d.,\s]+)/)
+  const gramsPerTool = perToolLine
+    ? perToolLine[1]
+        .split(',')
+        .map((n) => parseFloat(n.trim()))
+        .filter((n) => Number.isFinite(n))
+    : []
+  const totalLine = src.match(/;[ \t]*total filament used \[g\][ \t]*=[ \t]*([\d.]+)/)
+  const grams = totalLine
+    ? parseFloat(totalLine[1])
+    : gramsPerTool.reduce((a, b) => a + b, 0)
   const tm = src.match(/;\s*estimated printing time.*?=\s*(.+)/)
   const estMinutes = tm ? parseTimeToMin(tm[1]) : null
 
