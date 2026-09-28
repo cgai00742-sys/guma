@@ -47,6 +47,8 @@ import {
   addPart,
   addProjectNote,
   importSlice,
+  deleteSliceImport,
+  sliceFileContent,
   deletePart,
   choosePartVariant,
   setPartStatus,
@@ -93,6 +95,7 @@ import {
   type ResolvedGateItem,
 } from '../lib/gates'
 import { useRowAnchor } from '../lib/rowAnchor'
+import { mb, packFile, tooBigNote, unpackFile, type KeptFile } from '../lib/sliceFile'
 import {
   allowedStatuses,
   buildingPhase,
@@ -1415,6 +1418,10 @@ function SliceImport({
   setError: (m: string | null) => void
 }) {
   const [read, setRead] = useState<SliceFile | null>(null)
+  /** The file's own bytes, packed for storage. Null when it was over the
+   *  cap -- the import still goes ahead, and `tooBig` says so. */
+  const [kept, setKept] = useState<KeptFile | null>(null)
+  const [tooBig, setTooBig] = useState<string | null>(null)
   const [printerId, setPrinterId] = useState('')
   const [materialId, setMaterialId] = useState('')
   const [saving, setSaving] = useState(false)
@@ -1432,6 +1439,14 @@ function SliceImport({
     try {
       const parsed = await parseSliceFile(file)
       setRead(parsed)
+      // Keep the file itself, not only what it said. Reported by CG: "I
+      // already uploaded the file that was used to print the piece and
+      // it's not there anymore" -- it never was. Packing cannot fail the
+      // import: the numbers are the part that matters.
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const packed = await packFile(bytes)
+      setKept(packed)
+      setTooBig(packed ? null : tooBigNote(bytes.byteLength))
       setPrinterId(matchPrinter(ctx.printerRows, parsed.printerModel)?.id ?? '')
       setMaterialId(matchMaterial(ctx.materials, parsed.totals.material)?.id ?? '')
     } catch (e) {
@@ -1442,6 +1457,8 @@ function SliceImport({
 
   function clear() {
     setRead(null)
+    setKept(null)
+    setTooBig(null)
     setDragging(false)
     setPrinterId('')
     setMaterialId('')
@@ -1456,6 +1473,7 @@ function SliceImport({
     setError(null)
     try {
       const res = await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
+        file: kept,
         fileName: read.fileName,
         kind: read.kind,
         printerModel: read.printerModel,
@@ -1480,7 +1498,9 @@ function SliceImport({
           `${res.partsMatched} already on the sheet, estimate updated`,
         )
       setDone(
-        `${read.fileName} — ${bits.join(' · ') || 'read, nothing to add'}. It is listed under ` +
+        `${read.fileName} — ${bits.join(' · ') || 'read, nothing to add'}${
+          kept ? ', file kept' : ''
+        }. It is listed under ` +
           '“Sliced files” below; record it as printed when it comes off the machine and the ' +
           'filament comes off the shelf.',
       )
@@ -1630,6 +1650,18 @@ function SliceImport({
             </div>
           </div>
 
+          {tooBig && (
+            <div className="hint" style={{ marginTop: 6, color: 'var(--warn)' }}>
+              {tooBig}
+            </div>
+          )}
+          {kept && (
+            <div className="hint" style={{ marginTop: 6 }}>
+              The file itself will be kept with the project — {mb(kept.byteSize)}, stored as{' '}
+              {mb(kept.storedSize)}. Reprinting in eight months means reprinting THIS file, not one
+              with the same name.
+            </div>
+          )}
           {read.notes.map((n) => (
             <div className="hint" key={n} style={{ marginTop: 6 }}>
               {n}
@@ -1705,6 +1737,50 @@ function SliceRuns({
    * where you lifted one object off the plate and left the rest.
    */
   const [markParts, setMarkParts] = useState(true)
+  const [removing, setRemoving] = useState<string | null>(null)
+
+  /**
+   * Write the kept file back out.
+   *
+   * An object URL and a click, which is what a webview gives us -- there
+   * is no save dialog to call. It lands wherever downloads land.
+   */
+  async function saveCopy(importId: string, fileName: string) {
+    setSaving(true)
+    setError(null)
+    try {
+      const row = await sliceFileContent(ctx.shop.id, importId)
+      if (!row) throw new Error('That file was not kept — only what it said.')
+      const bytes = await unpackFile(row.content)
+      const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart]))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      // Let the click start before the URL stops being valid.
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function remove(importId: string) {
+    setSaving(true)
+    setError(null)
+    try {
+      await deleteSliceImport(ctx.shop.id, importId)
+      setRemoving(null)
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   if (detail.slices.length === 0) return null
 
@@ -1796,16 +1872,84 @@ function SliceRuns({
                 </span>
               </div>
               {openId !== s.id && (
-                <button
-                  type="button"
-                  className={`btn sm ${runs.length ? '' : 'primary'}`}
-                  disabled={busy || saving}
-                  onClick={() => open(s)}
-                >
-                  {runs.length ? 'Record another run' : 'This print happened'}
-                </button>
+                <div className="btnrow" style={{ margin: 0 }}>
+                  {s.keptBytes != null && (
+                    <button
+                      type="button"
+                      className="btn sm"
+                      disabled={busy || saving}
+                      title={`Writes the stored file back out — ${mb(s.keptBytes)}, byte for byte the one that was imported.`}
+                      onClick={() => void saveCopy(s.id, s.fileName)}
+                    >
+                      Save a copy
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={`btn sm ${runs.length ? '' : 'primary'}`}
+                    disabled={busy || saving}
+                    onClick={() => open(s)}
+                  >
+                    {runs.length ? 'Record another run' : 'This print happened'}
+                  </button>
+                  {/* Removing an import is allowed and deliberately small.
+                      A file imported onto the wrong project is the common
+                      case, and the runs recorded from it STAY -- the print
+                      still happened. See 0017_run_from_slice.sql. */}
+                  <button
+                    type="button"
+                    className="linkbtn"
+                    style={{ fontSize: 10, width: 'auto', marginTop: 0 }}
+                    disabled={busy || saving}
+                    // Named for the file: the build sheet below has a
+                    // "remove" on every part row, and two controls with one
+                    // name is how the wrong thing gets deleted.
+                    aria-label={`Remove the file ${s.fileName}`}
+                    onClick={() => setRemoving(removing === s.id ? null : s.id)}
+                  >
+                    remove
+                  </button>
+                </div>
               )}
             </div>
+
+            <div className="hint" style={{ marginTop: 4 }}>
+              {s.keptBytes != null ? (
+                <>The file is kept with this project — {mb(s.keptBytes)}.</>
+              ) : (
+                <span style={{ color: 'var(--warn)' }}>
+                  Only what this file said was kept, not the file. Imports from here on keep the
+                  file itself; re-import it to store a copy.
+                </span>
+              )}
+            </div>
+
+            {removing === s.id && (
+              <div className="attn crit" style={{ marginTop: 8 }}>
+                <b>Remove {s.fileName}?</b>
+                <div style={{ marginTop: 4, fontSize: 12 }}>
+                  This drops the import, its per-part estimates and the stored file.{' '}
+                  {runs.length > 0
+                    ? `The ${runs.length} run${runs.length === 1 ? '' : 's'} recorded from it stay — the print still happened, and its cost is real.`
+                    : 'Nothing was recorded from it.'}{' '}
+                  The parts it added to the build sheet stay too; remove those on the sheet if you
+                  want them gone.
+                </div>
+                <div className="btnrow" style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="btn sm danger"
+                    disabled={saving}
+                    onClick={() => void remove(s.id)}
+                  >
+                    {saving ? 'Removing…' : 'Remove it'}
+                  </button>
+                  <button type="button" className="btn sm" onClick={() => setRemoving(null)}>
+                    Keep it
+                  </button>
+                </div>
+              </div>
+            )}
 
             {runs.length > 0 && (
               <div className="hint" style={{ marginTop: 6, color: 'var(--ok)' }}>

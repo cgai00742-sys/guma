@@ -1039,6 +1039,10 @@ export interface SliceImportRow {
   notes: string[]
   importedAt: string
   sections: SliceSectionRow[]
+  /** The real file's size when Guma kept a copy, null when it did not.
+   *  Read from slice_files without dragging the bytes along: every screen
+   *  wants to say whether the file is there, and none of them want it. */
+  keptBytes: number | null
 }
 
 export interface SliceSectionInput {
@@ -1049,7 +1053,17 @@ export interface SliceSectionInput {
   material: string | null
 }
 
+/** The file itself, packed by sliceFile.ts. Absent when it was over the
+ *  cap or the platform could not compress -- the import still happens. */
+export interface KeptFileInput {
+  content: string
+  byteSize: number
+  storedSize: number
+  encoding: 'gzip-base64'
+}
+
 export interface SliceImportInput {
+  file?: KeptFileInput | null
   fileName: string
   kind: SliceImportKind
   printerModel: string | null

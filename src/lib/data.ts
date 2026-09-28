@@ -521,6 +521,13 @@ export async function importSlice(
   return (await backend()).importSlice(shopId, jobId, actorId, input)
 }
 
+export async function sliceFileContent(
+  shopId: string,
+  importId: string,
+): Promise<{ content: string; byteSize: number } | null> {
+  return (await backend()).sliceFileContent(shopId, importId)
+}
+
 export async function listSliceImports(
   shopId: string,
   jobId: string,

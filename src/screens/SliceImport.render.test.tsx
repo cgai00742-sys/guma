@@ -60,6 +60,22 @@ function freshDb() {
   }
 }
 
+// jsdom does not implement the compression streams. Safari has had both
+// since 16.4 and the 3MF parser already depends on DecompressionStream in
+// the real app, so borrowing Node's implementation here tests the same
+// path rather than a stub.
+{
+  const web = (await import(/* @vite-ignore */ ['node', 'stream/web'].join(':'))) as {
+    CompressionStream?: unknown
+    DecompressionStream?: unknown
+  }
+  const g = globalThis as Record<string, unknown>
+  if (!g.CompressionStream && web.CompressionStream) g.CompressionStream = web.CompressionStream
+  if (!g.DecompressionStream && web.DecompressionStream) {
+    g.DecompressionStream = web.DecompressionStream
+  }
+}
+
 let currentDb: ReturnType<typeof freshDb>
 vi.mock('@tauri-apps/plugin-sql', () => ({ default: { load: async () => currentDb } }))
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => true }))
@@ -394,6 +410,133 @@ describe("the shop's own work", () => {
   })
 })
 
+describe('turning the file into what actually happened', () => {
+  /**
+   * The gap CG found: "the sliced gcode file should give you the numbers
+   * you need to deduct from materials and print hours." Import alone
+   * deliberately does not, because an estimate is not an actual -- so the
+   * one-click confirm has to exist, and has to be reachable from where the
+   * file was dropped.
+   */
+  it('records the print from the file, deducting the spool and logging the hours', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+
+    // Pre-filled from the file: 86.5 g rounds to 87, 2h 3m to 2.05 hours.
+    const units = (await screen.findByLabelText(/off the spool/i)) as HTMLInputElement
+    expect(units.value).toBe('87')
+    const hours = screen.getByLabelText(/machine hours/i) as HTMLInputElement
+    expect(hours.value).toBe('2.05')
+
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+
+    await waitFor(() => {
+      const a = currentDb.sqlite
+        .prepare('select material_units, machine_hours, runs from job_actuals where job_id = ?')
+        .get(jobId) as Record<string, number>
+      expect(a).toMatchObject({ material_units: 87, machine_hours: 2.05, runs: 1 })
+    })
+    const m = currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }
+    expect(Number(m.on_hand)).toBe(913)
+    await screen.findByText(/Recorded — 1 run/i)
+  })
+
+  it('asks what went wrong when the print failed, and still bills the material', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
+    await user.type(await screen.findByLabelText(/what went wrong/i), 'Warped off the plate')
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+
+    await waitFor(() => {
+      const r = currentDb.sqlite
+        .prepare('select outcome, failure_reason, units_used from print_runs')
+        .get() as Record<string, unknown>
+      expect(r).toMatchObject({ outcome: 'failed', failure_reason: 'Warped off the plate' })
+      expect(Number(r.units_used)).toBe(87)
+    })
+    // A failed run burned the filament all the same.
+    const m = currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }
+    expect(Number(m.on_hand)).toBe(913)
+    await screen.findByRole('button', { name: /record another run/i })
+  })
+})
+
+describe('the file itself, kept', () => {
+  /** CG: "I already uploaded the file that was used to print the piece and
+   *  it's not there anymore." It never was -- the import took the numbers
+   *  and let the bytes go. */
+  it('stores the file with the import, and says so on the row', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    // Said before anything is written, while the file can still be discarded.
+    await screen.findByText(/The file itself will be kept with the project/)
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+
+    await waitFor(() => {
+      const f = currentDb.sqlite
+        .prepare('select byte_size, stored_size, encoding, content from slice_files')
+        .get() as Record<string, unknown>
+      expect(f).toBeDefined()
+      expect(Number(f.byte_size)).toBeGreaterThan(0)
+      expect(f.encoding).toBe('gzip-base64')
+      expect(String(f.content).length).toBeGreaterThan(0)
+    })
+
+    await screen.findByText(/The file is kept with this project/)
+    expect(screen.getByRole('button', { name: /save a copy/i })).toBeDefined()
+  })
+
+  it('removes an import without erasing the print that was recorded from it', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+    await screen.findByText(/Recorded — 1 run/i)
+
+    await user.click(screen.getByRole('button', { name: /remove the file/i }))
+    await screen.findByText(/the print still happened/i)
+    await user.click(screen.getByRole('button', { name: /remove it/i }))
+
+    await waitFor(() => {
+      const n = currentDb.sqlite.prepare('select count(*) as n from slice_imports').get() as {
+        n: number
+      }
+      expect(n.n).toBe(0)
+    })
+    const runs = currentDb.sqlite
+      .prepare('select slice_import_id from print_runs')
+      .all() as { slice_import_id: string | null }[]
+    expect(runs).toHaveLength(1)
+    expect(runs[0].slice_import_id).toBeNull()
+    const files = currentDb.sqlite.prepare('select count(*) as n from slice_files').get() as {
+      n: number
+    }
+    expect(files.n).toBe(0)
+  })
+})
+
 describe('a plate is one print, and the whole plate comes off it', () => {
   /** The Voltage failure this prevents: the tool reserved and marked parts
    *  one at a time, so a plate of two objects looked like two half-jobs and
@@ -534,8 +677,9 @@ describe('the import is findable, and says what it did', () => {
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
     await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
 
-    // The thing whose absence read as "nothing happened".
-    await screen.findByText(/Reef buoy_sliced\.gcode — 2 parts added\./i)
+    // The thing whose absence read as "nothing happened". It also says
+    // the file itself was kept, which is the other half of the answer.
+    await screen.findByText(/Reef buoy_sliced\.gcode — 2 parts added, file kept\./i)
   })
 
   it('says when a re-import updated parts rather than adding them', async () => {

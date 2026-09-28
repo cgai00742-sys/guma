@@ -119,6 +119,12 @@ pub fn run() {
       sql: include_str!("../migrations/0019_quote_revisions.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 20,
+      description: "keep the sliced file itself, not just what it said",
+      sql: include_str!("../migrations/0020_slice_files.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

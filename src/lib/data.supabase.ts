@@ -2167,6 +2167,19 @@ export async function importSlice(
   if (headErr) throw headErr
   const importId = head.id as string
 
+  // The bytes, when the caller kept them. See 0020_slice_files.sql for why
+  // they live apart from the row that names the file.
+  if (input.file) {
+    const { error } = await supabase.from('slice_files').insert({
+      import_id: importId,
+      byte_size: input.file.byteSize,
+      stored_size: input.file.storedSize,
+      encoding: input.file.encoding,
+      content: input.file.content,
+    })
+    if (error) throw error
+  }
+
   const { data: existing, error: exErr } = await supabase
     .from('job_parts')
     .select('id, label, sort')
@@ -2234,6 +2247,7 @@ export async function listSliceImports(
       `id, file_name, kind, printer_model, printer_id, material_text, material_id,
        est_minutes, est_grams, notes, imported_at,
        printers ( name ), materials ( name ),
+       slice_files ( byte_size ),
        slice_sections ( id, part_id, label, qty, est_minutes, est_grams, material )`,
     )
     .eq('shop_id', shopId)
@@ -2271,6 +2285,10 @@ export async function listSliceImports(
       estGrams: r.est_grams == null ? null : Number(r.est_grams),
       notes: parseNotes(r.notes as string | null),
       importedAt: r.imported_at as string,
+      keptBytes:
+        (r.slice_files as { byte_size: number }[] | null)?.[0]?.byte_size == null
+          ? null
+          : Number((r.slice_files as { byte_size: number }[])[0].byte_size),
       sections: sections.map(
         (s): SliceSectionRow => ({
           id: s.id,
@@ -2294,6 +2312,21 @@ function parseNotes(raw: string | null): string[] {
   } catch {
     return []
   }
+}
+
+/** See data.local.ts's sliceFileContent. */
+export async function sliceFileContent(
+  shopId: string,
+  importId: string,
+): Promise<{ content: string; byteSize: number } | null> {
+  const { data, error } = await supabase
+    .from('slice_files')
+    .select('content, byte_size, slice_imports!inner ( shop_id )')
+    .eq('import_id', importId)
+    .eq('slice_imports.shop_id', shopId)
+    .maybeSingle()
+  if (error) throw error
+  return data ? { content: data.content as string, byteSize: Number(data.byte_size) } : null
 }
 
 export async function deleteSliceImport(shopId: string, importId: string): Promise<void> {

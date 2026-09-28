@@ -2825,6 +2825,16 @@ export async function importSlice(
     ],
   )
 
+  // The bytes, when the caller kept them. A separate row so that every
+  // ordinary read of slice_imports stays cheap. See 0020_slice_files.sql.
+  if (input.file) {
+    await d.execute(
+      `insert into slice_files (import_id, byte_size, stored_size, encoding, content)
+       values (?, ?, ?, ?, ?)`,
+      [importId, input.file.byteSize, input.file.storedSize, input.file.encoding, input.file.content],
+    )
+  }
+
   const existing = await d.select<{ id: string; label: string }[]>(
     'select id, label from job_parts where job_id = ?',
     [jobId],
@@ -2894,11 +2904,13 @@ export async function listSliceImports(
       est_grams: number | null
       notes: string | null
       imported_at: string
+      kept_bytes: number | null
     }[]
   >(
     `select i.id, i.file_name, i.kind, i.printer_model, i.printer_id, p.name as printer_name,
             i.material_text, i.material_id, m.name as material_name,
-            i.est_minutes, i.est_grams, i.notes, i.imported_at
+            i.est_minutes, i.est_grams, i.notes, i.imported_at,
+            (select byte_size from slice_files f where f.import_id = i.id) as kept_bytes
        from slice_imports i
        left join printers p on p.id = i.printer_id
        left join materials m on m.id = i.material_id
@@ -2962,6 +2974,7 @@ export async function listSliceImports(
     // the screen down over a advisory note.
     notes: parseNotes(h.notes),
     importedAt: h.imported_at,
+    keptBytes: h.kept_bytes == null ? null : Number(h.kept_bytes),
     sections: byImport.get(h.id) ?? [],
   }))
 }
@@ -2978,6 +2991,29 @@ function parseNotes(raw: string | null): string[] {
 
 /** Forget an import. The build-sheet parts it created are left alone --
  *  they are the shop's now, not the file's. */
+/**
+ * The stored file, base64 of gzip, or null when Guma did not keep one.
+ *
+ * Its own call on purpose: this is the only read that moves the bytes, and
+ * it happens when somebody asks for the file, not every time a screen
+ * lists what was imported.
+ */
+export async function sliceFileContent(
+  shopId: string,
+  importId: string,
+): Promise<{ content: string; byteSize: number } | null> {
+  const d = await db()
+  const rows = await d.select<{ content: string; byte_size: number }[]>(
+    `select f.content, f.byte_size
+       from slice_files f
+       join slice_imports i on i.id = f.import_id
+      where f.import_id = ? and i.shop_id = ?`,
+    [importId, shopId],
+  )
+  const r = rows[0]
+  return r ? { content: r.content, byteSize: Number(r.byte_size) } : null
+}
+
 export async function deleteSliceImport(shopId: string, importId: string): Promise<void> {
   const d = await db()
   await d.execute('delete from slice_imports where id = ? and shop_id = ?', [importId, shopId])
