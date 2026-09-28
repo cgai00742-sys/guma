@@ -109,6 +109,7 @@ import {
 import { makeMoney } from '../lib/pricing'
 import { todayISO, formatDate } from '../lib/dates'
 import { startBy } from '../lib/schedule'
+import { defaultOpen, readFolds, writeFolds, type FoldScope } from '../lib/folds'
 import { buildComparison, type Comparison } from '../lib/actuals'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
@@ -119,6 +120,29 @@ const DELIVERY_METHODS = [
   'Post',
   'Digital files only',
 ]
+
+/**
+ * Which sections are open on this screen, remembered between visits.
+ *
+ * One state object rather than a hook per section: the sections are
+ * rendered in one component, and eight independent pieces of state that
+ * all write the same key would race each other.
+ */
+function useFolds(scope: FoldScope) {
+  const [state, setState] = useState<Record<string, boolean>>(() => readFolds(scope))
+  // A project moving from live to done changes what should be open, so the
+  // remembered state is re-read when the scope changes.
+  useEffect(() => setState(readFolds(scope)), [scope])
+  return {
+    isOpen: (id: string) => state[id] ?? defaultOpen(scope, id),
+    set: (id: string, open: boolean) =>
+      setState((prev) => {
+        const next = { ...prev, [id]: open }
+        writeFolds(scope, next)
+        return next
+      }),
+  }
+}
 
 export default function Project({ ctx }: { ctx: ShopContext }) {
   const { jobId = '' } = useParams()
@@ -135,6 +159,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
    *  stage rail lets you look back at a cleared gate without moving the
    *  project, which is the whole reason earlier gates are kept. */
   const [viewPhase, setViewPhase] = useState<JobPhase | null>(null)
+  // Finished projects open differently from live ones: a delivered project
+  // is a record behind a summary, not a control panel.
+  const fold = useFolds(detail?.phase === 'delivered' ? 'done' : 'live')
 
   const rates = useMemo(() => toRateSet(ctx.rateCard, ctx.shop), [ctx.rateCard, ctx.shop])
   const { money } = useMemo(() => makeMoney(rates.currency, rates.locale), [rates])
@@ -453,13 +480,17 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           gate reads has to be changeable from the same screen that tells
           you it is blocking. It was not, and a project saved with an empty
           brief could never leave intake. */}
-      <section className="sec" style={{ marginTop: 18 }}>
-        <div className="sechead">
+      <details className="sec fold" style={{ marginTop: 18 }}
+        data-fold="brief"
+        open={fold.isOpen('brief')}
+        onToggle={(e) => fold.set('brief', e.currentTarget.open)}
+      >
+        <summary className="sechead">
           <h4>The brief</h4>
           <span className={`secstat ${(detail.brief ?? '').trim().length >= 20 ? 'ok' : 'warn'}`}>
             {(detail.brief ?? '').trim() ? 'written down' : 'nothing written down'}
           </span>
-        </div>
+        </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
           <div className="fld">
             <label className="lbl" htmlFor="p-title">
@@ -494,11 +525,15 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             </div>
           </div>
         </div>
-      </section>
+      </details>
 
       {/* ---- the gate ---- */}
-      <section className="sec" style={{ marginTop: 18 }}>
-        <div className="sechead">
+      <details className="sec fold" style={{ marginTop: 18 }}
+        data-fold="gate"
+        open={fold.isOpen('gate')}
+        onToggle={(e) => fold.set('gate', e.currentTarget.open)}
+      >
+        <summary className="sechead">
           <h4>
             {label(shown)}
             {gate.next ? ` — gate to ${label(gate.next)}` : ''}
@@ -506,7 +541,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           <span className={`secstat ${gate.total === 0 ? '' : gate.blocked ? 'warn' : 'ok'}`}>
             {gate.total === 0 ? 'no gate' : `${gate.done} of ${gate.total} cleared`}
           </span>
-        </div>
+        </summary>
 
         {shown !== detail.phase && (
           <div className="hint" style={{ marginBottom: 6 }}>
@@ -572,7 +607,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             {gate.blocked && <div className="gblock">{gate.reason}</div>}
           </div>
         )}
-      </section>
+      </details>
 
       {/*
         Three sections below exist only for work somebody is paying for.
@@ -585,8 +620,12 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       {!mine && (
         <>
       {/* ---- money ---- */}
-      <section className="sec">
-        <div className="sechead">
+      <details className="sec fold"
+        data-fold="money"
+        open={fold.isOpen('money')}
+        onToggle={(e) => fold.set('money', e.currentTarget.open)}
+      >
+        <summary className="sechead">
           <h4>Money</h4>
           <span
             className={`secstat ${
@@ -599,7 +638,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           >
             {facts.quoteStatus === null ? 'not priced' : `quote ${facts.quoteStatus}`}
           </span>
-        </div>
+        </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
           {facts.quoteStatus === null ? (
             <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
@@ -700,16 +739,20 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             </>
           )}
         </div>
-      </section>
+      </details>
 
       {/* ---- the promise ---- */}
-      <section className="sec">
-        <div className="sechead">
+      <details className="sec fold"
+        data-fold="people"
+        open={fold.isOpen('people')}
+        onToggle={(e) => fold.set('people', e.currentTarget.open)}
+      >
+        <summary className="sechead">
           <h4>Who and when</h4>
           <span className={`secstat ${facts.windowLocked ? 'ok' : 'warn'}`}>
             {facts.windowLocked ? 'committed' : 'still moveable'}
           </span>
-        </div>
+        </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
           <div className="grid3">
             <div className="fld">
@@ -775,16 +818,20 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             </span>
           </div>
         </div>
-      </section>
+      </details>
 
       {/* ---- what actually happened ---- */}
-      <section className="sec">
-        <div className="sechead">
+      <details className="sec fold"
+        data-fold="handover"
+        open={fold.isOpen('handover')}
+        onToggle={(e) => fold.set('handover', e.currentTarget.open)}
+      >
+        <summary className="sechead">
           <h4>Handover</h4>
           <span className={`secstat ${facts.deliveryOn ? 'ok' : ''}`}>
             {facts.deliveryOn ? `handed over ${facts.deliveryOn}` : 'not yet delivered'}
           </span>
-        </div>
+        </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
           <div className="grid2">
             <div className="fld">
@@ -821,7 +868,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             claim, a late-payment chase, a repeat order six months on.
           </div>
         </div>
-      </section>
+      </details>
 
         </>
       )}
@@ -839,8 +886,12 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         meant slicer import was unreachable on in-house work -- the work
         most likely to be sliced and re-sliced.
       */}
-      <section className="sec">
-        <div className="sechead">
+      <details className="sec fold"
+        data-fold="build"
+        open={fold.isOpen('build')}
+        onToggle={(e) => fold.set('build', e.currentTarget.open)}
+      >
+        <summary className="sechead">
           <h4>Build sheet</h4>
           <span
             className={`secstat ${
@@ -858,7 +909,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
               : `${facts.partsPassed} of ${facts.parts} passed` +
                 (facts.partsReprint > 0 ? ` · ${facts.partsReprint} going back` : '')}
           </span>
-        </div>
+        </summary>
         <StartByLine detail={detail} locale={rates.locale} />
         <BuildSheet
           ctx={ctx}
@@ -868,11 +919,15 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           onChanged={reload}
           setError={setError}
         />
-      </section>
+      </details>
 
       {/* ---- what it actually took ---- */}
-      <section className="sec">
-        <div className="sechead">
+      <details className="sec fold"
+        data-fold="actuals"
+        open={fold.isOpen('actuals')}
+        onToggle={(e) => fold.set('actuals', e.currentTarget.open)}
+      >
+        <summary className="sechead">
           <h4>What it actually took</h4>
           <span
             className={`secstat ${
@@ -901,7 +956,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                     ? 'partly recorded'
                     : `real margin ${money(comparison.actualMargin ?? 0)}`}
           </span>
-        </div>
+        </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
           {/*
             An in-house job has no quote and never will, so "there is
@@ -933,7 +988,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             setError={setError}
           />
         </div>
-      </section>
+      </details>
 
       {/* ---- what it made, for the shop's own work ---- */}
       {detail.facts.kind === 'inhouse' && (
@@ -947,13 +1002,17 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       )}
 
       {/* ---- activity ---- */}
-      <section className="sec">
-        <div className="sechead">
+      <details className="sec fold"
+        data-fold="activity"
+        open={fold.isOpen('activity')}
+        onToggle={(e) => fold.set('activity', e.currentTarget.open)}
+      >
+        <summary className="sechead">
           <h4>Activity</h4>
           <span className="secstat">
             {detail.events.length} entr{detail.events.length === 1 ? 'y' : 'ies'}
           </span>
-        </div>
+        </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
           <div className="fld" style={{ marginBottom: 8 }}>
             <textarea
@@ -992,7 +1051,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             ))}
           </div>
         </div>
-      </section>
+      </details>
 
       {/* ---- earlier stages ---- */}
       <section className="sec">

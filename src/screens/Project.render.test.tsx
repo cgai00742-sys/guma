@@ -324,6 +324,49 @@ describe('a quote can be revised after it was accepted', () => {
   })
 })
 
+describe('a long screen folds, and remembers', () => {
+  /** jsdom renders the contents of a closed <details> like any other
+   *  element, so asserting on the text would prove nothing. The open
+   *  attribute is the state that matters. */
+  const isOpen = (id: string) =>
+    (document.querySelector(`[data-fold="${id}"]`) as HTMLDetailsElement | null)?.open
+
+  it('opens everything while the project is live', async () => {
+    localStorage.clear()
+    const { ctx, jobId } = await seed({ takeIn: true })
+    await renderProject(jobId, ctx)
+    expect(isOpen('gate')).toBe(true)
+    expect(isOpen('build')).toBe(true)
+    expect(isOpen('activity')).toBe(true)
+  })
+
+  it('folds the working sections once it is delivered, and leaves the money out', async () => {
+    localStorage.clear()
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    for (const to of ['design', 'approval', 'scheduled', 'building', 'review', 'delivered'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    expect(isOpen('build')).toBe(false)
+    expect(isOpen('gate')).toBe(false)
+    expect(isOpen('money')).toBe(true)
+  })
+
+  it('remembers a section the person opened, and does not carry it to live projects', async () => {
+    localStorage.clear()
+    localStorage.setItem('guma.folds', JSON.stringify({ done: { build: true }, live: { gate: false } }))
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    for (const to of ['design', 'approval', 'scheduled', 'building', 'review', 'delivered'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    // Opened by hand on finished projects...
+    expect(isOpen('build')).toBe(true)
+    // ...and the live scope's own answer is untouched by it.
+    expect(isOpen('gate')).toBe(false)
+  })
+})
+
 describe('a project can always be got rid of', () => {
   it('arms in two steps, and names what goes with it', async () => {
     const { ctx, jobId, ref } = await seed({ takeIn: true })

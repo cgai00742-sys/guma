@@ -565,6 +565,21 @@ dialog.proj-dlg .stepper{margin:10px 0 0}
 .dlg-main{overflow-y:auto;overscroll-behavior:contain;padding:0 20px 24px}
 .sec{padding-top:4px;margin-bottom:22px}
 .sec:last-child{margin-bottom:4px}
+/* A section that folds. The header is the control, so it has to LOOK like
+   one -- the first version of this used the same sticky header and a
+   person had no way to know it could be clicked. The caret and the hover
+   are the whole signal, and native <details> does the rest. */
+.fold > summary{cursor:pointer;list-style:none;user-select:none}
+.fold > summary::-webkit-details-marker{display:none}
+.fold > summary::before{
+  content:'▸';color:var(--txt-3);font-size:10px;display:inline-block;
+  transition:transform .14s;transform-origin:50% 55%;
+}
+.fold[open] > summary::before{transform:rotate(90deg)}
+.fold > summary:hover{background:var(--panel-2)}
+.fold > summary:hover::before,.fold > summary:hover h4{color:var(--txt)}
+.fold:not([open]) > summary{border-bottom-color:transparent}
+
 .sechead{
   position:sticky;top:0;z-index:3;background:var(--panel-3);
   padding:12px 0 8px;margin-bottom:10px;border-bottom:1px solid var(--line);

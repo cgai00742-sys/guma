@@ -378,6 +378,35 @@ export default function App() {
  * a door that depends on none of them means the answer to "why can I not
  * see it" is never again "work out which condition is false".
  */
+/**
+ * One step back, wherever you are.
+ *
+ * Deliberately history-based rather than a route: a fixed "up" target is a
+ * guess about where the person came from, and it is wrong exactly when it
+ * matters -- opening a project from a search, or landing on the closeout
+ * from the project it belongs to.
+ *
+ * It hides when there is nothing sensible to go back to: on the dashboard
+ * and the projects list (both home, in different senses) it would send
+ * someone out of the app or into the loading screen they started on.
+ */
+function BackButton() {
+  const navigate = useNavigate()
+  const { pathname } = useLocation()
+  if (pathname === '/' || pathname === '/dashboard' || pathname === '/projects') return null
+  return (
+    <button
+      type="button"
+      className="btn sm ghost"
+      onClick={() => navigate(-1)}
+      title="Back to where you were"
+      style={{ whiteSpace: 'nowrap' }}
+    >
+      ← Back
+    </button>
+  )
+}
+
 function WhoMenu({
   ctx,
   onShowWelcome,
@@ -520,6 +549,15 @@ function TopBar({
               </div>
             </div>
           </Link>
+          {/* Back, everywhere. The project screen had a "← Projects" link
+              and nothing else did, so Intake, Settings and the closeout
+              were rooms with no door: the only way out was to pick a
+              destination from the tabs, which is not the same as going
+              back to what you were doing. History, not a fixed route --
+              "back" has to mean back. Hidden on the two screens that are
+              already home, where it would land on whatever came before
+              the app. */}
+          <BackButton />
           {/* Three places and one action. "New project" was a tab, which
               made a blank form the shop's home screen and put starting
               something on the same footing as looking at everything you
