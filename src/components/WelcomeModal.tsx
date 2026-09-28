@@ -44,19 +44,32 @@ export default function WelcomeModal({
   shop,
   onDismissedForever,
 }: {
-  shop: Shop
+  /**
+   * Null on a true first launch: there is no shop row yet, because the
+   * wizard has not created one. That is precisely the person this screen
+   * was written for, and for a long time it was the one person who could
+   * never see it -- App.tsx only rendered this once setup was COMPLETE.
+   *
+   * With no shop there is nowhere to persist "don't show again", so the
+   * checkbox is hidden rather than offered and silently ignored. It comes
+   * back on the next launch, by which point there is a shop and the choice
+   * can actually be kept.
+   */
+  shop: Shop | null
   onDismissedForever: () => void
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   const [dontShowAgain, setDontShowAgain] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  // No shop means a first launch, and a first launch always shows this.
+  const show = shop ? shop.show_welcome : true
   useEffect(() => {
-    if (shop.show_welcome) ref.current?.showModal()
-  }, [shop.show_welcome])
+    if (show) ref.current?.showModal()
+  }, [show])
 
   async function close() {
-    if (!dontShowAgain) {
+    if (!dontShowAgain || !shop) {
       ref.current?.close()
       return
     }
@@ -128,17 +141,23 @@ export default function WelcomeModal({
         className="dlg-foot wfoot"
         style={{ justifyContent: 'space-between', alignItems: 'center' }}
       >
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={dontShowAgain}
-            onChange={(e) => setDontShowAgain(e.target.checked)}
-            style={{ width: 'auto' }}
-          />
-          <span style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>Don’t show this again</span>
-        </label>
+        {shop ? (
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={dontShowAgain}
+              onChange={(e) => setDontShowAgain(e.target.checked)}
+              style={{ width: 'auto' }}
+            />
+            <span style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>Don’t show this again</span>
+          </label>
+        ) : (
+          <span style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>
+            Next: a few questions about your shop, so the numbers are yours.
+          </span>
+        )}
         <button type="button" className="btn primary" onClick={close} disabled={saving}>
-          {saving ? 'Saving…' : 'Get started'}
+          {saving ? 'Saving…' : shop ? 'Get started' : 'Set up my shop'}
         </button>
       </div>
     </dialog>

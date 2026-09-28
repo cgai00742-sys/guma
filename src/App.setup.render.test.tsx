@@ -57,8 +57,43 @@ function polyfillDialog() {
   }
 }
 
-async function renderApp(at = '/') {
+/**
+ * `firstRun` makes loadShopContext reject with NeedsSetup -- no shop row at
+ * all.
+ *
+ * It has to happen AFTER vi.resetModules(), and that is the whole reason
+ * this is a parameter rather than two lines in the test. App.tsx checks
+ * `e instanceof NeedsSetup`; resetModules gives every later import a fresh
+ * module instance with a fresh class object, so a NeedsSetup constructed
+ * from an import taken beforehand is a different class and the instanceof
+ * quietly fails. The app then treats a first launch as an unknown error.
+ */
+async function renderApp(at = '/', { firstRun = false } = {}) {
   vi.resetModules()
+  if (firstRun) {
+    // From './lib/data' -- the SAME specifier App.tsx imports it from, so
+    // the class object is identical. Importing it from './lib/data.types'
+    // instead yields a different class after vi.resetModules(), the app's
+    // `e instanceof NeedsSetup` is false, and a first launch is reported as
+    // "Could not load the shop" instead of opening the wizard.
+    const { NeedsSetup } = (await import('./lib/data')) as unknown as {
+      NeedsSetup: new (m: string) => Error
+    }
+    // mockImplementation, NOT mockRejectedValueOnce.
+    //
+    // A queued "once" is consumed by whichever call arrives first, and the
+    // previous test's render can still have a loadShopContext in flight
+    // when this one sets it up -- cleanup() unmounts the tree but does not
+    // cancel a promise already on its way. The rejection then lands on the
+    // wrong test and this one gets the ordinary context, which is why this
+    // passed alone and failed in sequence. A plain implementation has no
+    // queue to steal.
+    loadShopContext.mockImplementation(async () => {
+      throw new NeedsSetup('no shop yet')
+    })
+  } else {
+    loadShopContext.mockImplementation(async () => ctx)
+  }
   const { default: App } = await import('./App')
   const { MemoryRouter } = await import('react-router-dom')
   render(
@@ -67,6 +102,19 @@ async function renderApp(at = '/') {
     </MemoryRouter>,
   )
 }
+
+/**
+ * Wait for the welcome to be on screen.
+ *
+ * waitFor rather than findByText: the first launch reaches this through a
+ * rejected promise and two state updates, and findByText's observer does
+ * not reliably see the result of that inside its window -- it failed at
+ * exactly its 1s timeout while a 50ms settle made it pass every time, which
+ * is the signature of a query that is not polling rather than a render that
+ * is slow. waitFor polls, which is also what the rest of this file does.
+ */
+const welcomed = () =>
+  waitFor(() => expect(screen.getByText(/Welcome to Guma/i)).toBeDefined())
 
 /** Next when the question is answered, Skip for now when it is not. */
 const goOn = (u: ReturnType<typeof userEvent.setup>) =>
@@ -95,6 +143,18 @@ beforeEach(() => {
   cleanup()
   polyfillDialog()
   vi.clearAllMocks()
+  // clearAllMocks wipes call history but leaves implementations, so the
+  // first-run override above would otherwise persist into the next test.
+  loadShopContext.mockImplementation(async () => ctx)
+  // "Finish later" is remembered in localStorage now, and jsdom keeps that
+  // between tests in a file. Without this, the first test that defers
+  // suppresses the wizard for every test after it -- which is exactly the
+  // feature working, leaking into the harness.
+  try {
+    localStorage.clear()
+  } catch {
+    /* no storage, nothing to clear */
+  }
 })
 
 describe('launching an unfinished shop', () => {
@@ -240,5 +300,77 @@ describe('the other half of the business', () => {
 
     await user.click(await screen.findByRole('link', { name: 'Shelf' }))
     expect(await screen.findByRole('heading', { name: 'Shelf' })).toBeDefined()
+  })
+})
+
+/* ---- the front door ------------------------------------------------------ */
+
+/**
+ * The welcome has to be the FIRST thing, and it never was.
+ *
+ * App.tsx rendered it behind `plan?.done` -- only once the shop was fully
+ * configured. So the screen whose entire job is telling a new person what
+ * this program is for was shown exclusively to people who had already
+ * finished setting it up and no longer needed telling. Reported three times
+ * as "I've yet to see the animation", and correctly: it was unreachable.
+ *
+ * These assert the ORDER of a first launch, which is the thing that was
+ * wrong. No test could have caught it before, because every test rendered a
+ * fully set-up shop.
+ */
+describe('what a brand new install shows first', () => {
+  it('welcomes before it asks anything', async () => {
+    await renderApp('/', { firstRun: true })
+    await welcomed()
+    // And actually open, not merely mounted somewhere behind things.
+    expect(document.querySelector('dialog')?.open).toBe(true)
+  })
+
+  it('offers no "don\'t show again" when there is no shop to remember it', async () => {
+    await renderApp('/', { firstRun: true })
+    await welcomed()
+
+    // Offering a checkbox that silently cannot be saved is worse than not
+    // offering one. It says what happens next instead.
+    expect(screen.queryByLabelText(/don.t show this again/i)).toBeNull()
+    expect(screen.getByRole('button', { name: /set up my shop/i })).toBeDefined()
+  })
+
+  it('does NOT stack on a half-set-up shop, which is a different case', async () => {
+    // The standing decision (above): two windows on launch is one too many,
+    // and a wizard that asks for something beats a splash that describes
+    // the app. That holds for somebody returning mid-setup. It is only the
+    // true first launch, with no shop at all, that leads with the welcome.
+    ctx = halfSetUp()
+    await renderApp()
+    await screen.findByText('Setting up')
+    expect(screen.queryByText(/Price a project honestly/i)).toBeNull()
+  })
+
+  it('carries the motion classes the stylesheet animates', async () => {
+    await renderApp('/', { firstRun: true })
+    await welcomed()
+    // guma.css §8.5 staggers these. If the markup stops carrying them the
+    // animation silently stops happening and nothing else notices.
+    for (const cls of ['wmark', 'wtitle', 'wlede', 'wpoint', 'wfoot'])
+      expect(document.querySelector(`.${cls}`)).not.toBeNull()
+  })
+})
+
+describe('finishing setup later', () => {
+  it('remembers the deferral across a relaunch', async () => {
+    ctx = halfSetUp()
+    const u = userEvent.setup()
+    await renderApp()
+    await screen.findByText('Setting up')
+
+    await u.click(screen.getByRole('button', { name: /finish later/i }))
+    await waitFor(() => expect(localStorage.getItem('guma.setupDeferred')).toBe('1'))
+
+    // Relaunch. The wizard used to be the front door again, every time --
+    // "I have to answer the same questions over and over".
+    cleanup()
+    await renderApp()
+    await waitFor(() => expect(screen.queryByText('Setting up')).toBeNull())
   })
 })

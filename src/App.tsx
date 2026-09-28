@@ -47,7 +47,23 @@ export default function App() {
   /** "Finish later" on the setup guide. Session-only on purpose: the guide
    *  comes back next launch, because an unfinished shop is still reporting
    *  numbers it cannot support. */
-  const [setupDeferred, setSetupDeferred] = useState(false)
+  /**
+   * "Finish later" used to last exactly one session -- useState, reset on
+   * every launch -- so the wizard was the front door again the next time
+   * the app opened, and the next, and the next. Reported as "I have to
+   * answer the same questions over and over just to get to the projects
+   * page", which is precisely what it did.
+   *
+   * It is now remembered. The banner on Projects still carries the unfinished
+   * setup, so nothing is hidden; it just stops standing in the doorway.
+   */
+  const [setupDeferred, setSetupDeferred] = useState(() => {
+    try {
+      return localStorage.getItem('guma.setupDeferred') === '1'
+    } catch {
+      return false
+    }
+  })
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -65,6 +81,13 @@ export default function App() {
    */
   const leaveSetup = useCallback(() => {
     setSetupDeferred(true)
+    try {
+      localStorage.setItem('guma.setupDeferred', '1')
+    } catch {
+      // Storage refused. The deferral still holds for this session, which
+      // is no worse than it was before -- and better than refusing to
+      // leave the wizard because a preference could not be written.
+    }
     navigate('/projects')
   }, [navigate])
 
@@ -141,7 +164,28 @@ export default function App() {
   // rather than at the end, so closing the window after naming the shop
   // leaves a shop with that name -- see screens/Wizard.tsx.
   if (needsSetup) {
-    return <Wizard ctx={null} fullName={ownerName} onSaved={refresh} />
+    // The welcome comes FIRST, before a single question -- but ONLY here,
+    // where there is no shop at all.
+    //
+    // A half-set-up shop deliberately does not get this (see
+    // App.setup.render.test.tsx: two windows on launch is one too many, and
+    // a wizard that asks for something beats a splash that describes the
+    // app). That reasoning holds for somebody returning mid-setup. It does
+    // not hold for somebody opening the program for the very first time,
+    // who has no idea what it is yet -- and that person was the one case
+    // the old `plan?.done` condition excluded entirely.
+    //
+    // It used to render only when `plan.done` -- once the shop was fully
+    // configured -- which made it unreachable for the one person it was
+    // written for. A new install opened straight onto a questionnaire, and
+    // the "here is what this program is for" screen appeared eventually, to
+    // somebody who by then had worked it out.
+    return (
+      <>
+        <WelcomeModal shop={null} onDismissedForever={refresh} />
+        <Wizard ctx={null} fullName={ownerName} onSaved={refresh} />
+      </>
+    )
   }
 
   if (printing) {
@@ -177,6 +221,17 @@ export default function App() {
       })
     : null
 
+  // Once the shop is actually configured the deferral has no job left, and
+  // a stale flag would silently suppress the wizard for a shop that later
+  // lost a rate or a machine.
+  if (plan?.done && setupDeferred) {
+    try {
+      localStorage.removeItem('guma.setupDeferred')
+    } catch {
+      /* nothing to do */
+    }
+  }
+
   if (ctx && plan && !plan.done && !setupDeferred) {
     return (
       <>
@@ -195,7 +250,7 @@ export default function App() {
 
   return (
     <>
-      {ctx && plan?.done && <WelcomeModal shop={ctx.shop} onDismissedForever={refresh} />}
+      {ctx && <WelcomeModal shop={ctx.shop} onDismissedForever={refresh} />}
       <TopBar ctx={ctx} desktop={desktop} />
       <main className="app-main">
         {ctxError ? (
