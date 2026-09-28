@@ -417,3 +417,145 @@ describe('what a print actually costs', () => {
     expect(honest.total).toBe(naive.total) // and the client pays the same
   })
 })
+
+/* ---- one job, more than one machine ------------------------------------ */
+
+/**
+ * A hull on the H2D and a cap on the XL is one job at two hourly rates and
+ * two wear rates. A quote carrying a single machine prices whichever part
+ * is not on it at the wrong rate, and nothing on the screen looks odd --
+ * which is why this is arithmetic worth pinning rather than trusting.
+ */
+const H2D: PrinterRef = {
+  id: 'h2d',
+  name: 'Big Blue',
+  model: 'Bambu Lab H2D',
+  ratePerHour: 12,
+  wearPerHour: 4,
+  watts: null,
+}
+
+const PETG: MaterialRef = {
+  id: 'petg',
+  name: 'PETG black',
+  unit: 'g',
+  costPerUnit: 0.025, // $25/kg
+  sellOverride: null,
+  swatch: '#111111',
+}
+
+const FLEET = { materials: [PACF, PETG], printers: [XL, H2D] }
+
+const TWO_MACHINES: QuoteInputs = {
+  assetOrigin: 'ready', // no design, so the sums below are only the build
+  designBilling: 'hourly', // assetOrigin 'ready' removes the design line anyway
+  designQty: 0,
+  revisions: 0,
+  quantity: 1, // deliberately wrong-looking: builds carry their own copies
+  unitsPerPart: 999, // must be ignored entirely
+  printHrsPerPart: 999,
+  finishingHrs: 0,
+  rush: false,
+  flatEach: 0,
+  discountPct: 0,
+  builds: [
+    { key: 'hull', label: 'Hull', printerId: 'h2d', materialId: 'petg', qty: 2, unitsPerPart: 100, printHrsPerPart: 3 },
+    { key: 'cap', label: 'Cap', printerId: 'xl', materialId: 'pacf', qty: 1, unitsPerPart: 50, printHrsPerPart: 1 },
+  ],
+}
+
+describe('a quote split across machines', () => {
+  const q = priceQuote(TWO_MACHINES, RATES, null, null, FLEET)
+
+  it('charges each machine its own hourly rate, not one of them twice', () => {
+    // Hull: 2 copies x 3 h = 6 h on the H2D at $12 = $72
+    // Cap:  1 copy  x 1 h = 1 h on the XL  at $9  = $9
+    expect(round2(q.machineAmt)).toBe(81)
+    // Wear follows the same split: 6 x $4 + 1 x $3 = $27. A single-machine
+    // quote would have said 7 x $3 = $21 or 7 x $4 = $28, both wrong.
+    expect(round2(q.wearAmt)).toBe(27)
+    expect(round2(q.machineHours)).toBe(7)
+  })
+
+  it('charges each material at its own cost, and sells at its own markup', () => {
+    // Hull: 200 g PETG at $0.025 = $5 cost
+    // Cap:   50 g PA-CF at $0.095 = $4.75 cost
+    expect(round2(q.materialCost)).toBe(9.75)
+    expect(round2(q.totalUnits)).toBe(250)
+  })
+
+  it('ignores quantity, unitsPerPart and printHrsPerPart when builds are present', () => {
+    // Those three are set to absurd values above. If any of them leaked
+    // into the arithmetic the numbers asserted here could not come out.
+    const withoutDecoys = priceQuote(
+      { ...TWO_MACHINES, quantity: 1, unitsPerPart: 0, printHrsPerPart: 0 },
+      RATES,
+      null,
+      null,
+      FLEET,
+    )
+    expect(round2(withoutDecoys.total)).toBe(round2(q.total))
+  })
+
+  it('gives each machine and each material its own line, and they add up', () => {
+    const machine = q.lines.filter((l) => l.key.startsWith('machine'))
+    const material = q.lines.filter((l) => l.key.startsWith('material'))
+    expect(machine).toHaveLength(2)
+    expect(material).toHaveLength(2)
+    // The line a client reads must equal the number the client is charged.
+    expect(round2(machine.reduce((t, l) => t + l.amount, 0))).toBe(round2(q.machineAmt))
+    expect(round2(material.reduce((t, l) => t + l.amount, 0))).toBe(round2(q.materialSell))
+    // Named, so "which machine is this line?" is answerable off the page.
+    expect(machine.map((l) => l.label).sort()).toEqual([
+      'Machine time — Big Blue',
+      'Machine time — Tasa 1',
+    ])
+  })
+
+  it('keeps the old wording when everything is on one machine', () => {
+    const oneMachine = priceQuote(
+      {
+        ...TWO_MACHINES,
+        builds: [
+          { key: 'a', label: 'A', printerId: 'xl', materialId: 'pacf', qty: 2, unitsPerPart: 10, printHrsPerPart: 1 },
+        ],
+      },
+      RATES,
+      null,
+      null,
+      FLEET,
+    )
+    // A quote that happens to use one machine must read exactly as it did
+    // before this feature existed -- no "— Tasa 1" appearing on old quotes.
+    expect(oneMachine.lines.find((l) => l.key === 'machine')?.label).toBe('Machine time')
+    expect(oneMachine.lines.find((l) => l.key === 'wear')?.label).toBe('Machine wear')
+    expect(oneMachine.lines.some((l) => l.key.includes(':'))).toBe(false)
+  })
+
+  it('prices a build whose machine or material is not set, without throwing', () => {
+    // An imported file that matched nothing is a normal state, not an error.
+    const unmatched = priceQuote(
+      {
+        ...TWO_MACHINES,
+        builds: [
+          { key: 'x', label: 'X', printerId: null, materialId: null, qty: 1, unitsPerPart: 20, printHrsPerPart: 2 },
+        ],
+      },
+      RATES,
+      null,
+      null,
+      FLEET,
+    )
+    expect(unmatched.machineAmt).toBe(0)
+    expect(unmatched.materialSell).toBe(0)
+    expect(Number.isFinite(unmatched.total)).toBe(true)
+  })
+
+  it('still lets a flat per-piece price override the build entirely', () => {
+    // flatEach has always overridden the build lines; builds must not
+    // quietly reintroduce machine and material charges underneath it.
+    const flat = priceQuote({ ...TWO_MACHINES, flatEach: 50, quantity: 3 }, RATES, null, null, FLEET)
+    expect(flat.lines.some((l) => l.key.startsWith('machine'))).toBe(false)
+    expect(round2(flat.lines.find((l) => l.key === 'piece')?.amount ?? 0)).toBe(150)
+  })
+})

@@ -102,6 +102,28 @@ export interface PrinterRef {
 }
 
 /** Exactly the fields on the intake screen. */
+/**
+ * One thing being made, on one machine, in one material.
+ *
+ * `qty` is copies of THIS part, not of the job: three hulls and one cap is
+ * two builds of qty 3 and qty 1, and the quote's own `quantity` no longer
+ * multiplies anything when builds are present. Getting that wrong would
+ * multiply the whole job by itself.
+ */
+export interface QuoteBuild {
+  /** Stable within a quote. The importer uses the section label. */
+  key: string
+  label: string
+  printerId: string | null
+  materialId: string | null
+  /** copies of this part */
+  qty: number
+  /** grams or millilitres for ONE copy */
+  unitsPerPart: number
+  /** print hours for ONE copy */
+  printHrsPerPart: number
+}
+
 export interface QuoteInputs {
   assetOrigin: AssetOrigin
   designBilling: DesignBilling
@@ -109,9 +131,24 @@ export interface QuoteInputs {
   designQty: number
   revisions: number
   quantity: number
-  /** grams or millilitres, per part */
+  /** grams or millilitres, per part. Ignored when `builds` is present. */
   unitsPerPart: number
+  /** Ignored when `builds` is present. */
   printHrsPerPart: number
+  /**
+   * One line per thing being made, each on its own machine and material.
+   *
+   * A job does not always run on one printer. Slice a hull for the H2D and
+   * a cap for the XL and the two carry different hourly rates and different
+   * wear, so a single machine on the quote misprices whichever part is not
+   * on it. These lines are what a sliced-file import produces.
+   *
+   * Absent or empty means the old single-machine shape: quantity,
+   * unitsPerPart and printHrsPerPart against the material and printer
+   * passed to priceQuote. Every existing quote is that shape and must price
+   * to the cent as it did before, which is what pricing.test.ts holds.
+   */
+  builds?: QuoteBuild[]
   /** for the whole batch, not per part */
   finishingHrs: number
   rush: boolean
@@ -143,7 +180,11 @@ export interface PricedQuote {
   designAmt: number
   materialSell: number
   materialCost: number
+  /** Grams or mL across every build line. */
+  totalUnits: number
   machineAmt: number
+  /** Print hours across every build line, on every machine. */
+  machineHours: number
   wearAmt: number
   /** Actual power cost for the machine hours on this job — watts × hours ÷
    *  1000 × the shop's $/kWh. Zero when that data is not both set; see
@@ -286,11 +327,19 @@ const makeTrim = (locale: string) => {
 export const trimNum = (n: number, locale = '') => makeTrim(locale).trimNum(n)
 export const trimPct = (n: number, locale = '') => makeTrim(locale).trimPct(n)
 
+/** Everything the shop owns, needed only when `input.builds` is present so
+ *  each line can find its own machine and spool. */
+export interface Fleet {
+  materials: readonly MaterialRef[]
+  printers: readonly PrinterRef[]
+}
+
 export function priceQuote(
   input: QuoteInputs,
   rates: RateSet,
   material: MaterialRef | null,
   printer: PrinterRef | null,
+  fleet?: Fleet,
 ): PricedQuote {
   const { money, money0 } = makeMoney(rates.currency, rates.locale)
   const { trimNum, trimPct } = makeTrim(rates.locale)
@@ -304,15 +353,60 @@ export function priceQuote(
       ? input.designQty || 0
       : (input.designQty || 0) * rates.designHourly
 
-  const unitSell = material ? sellPerUnit(material, rates.materialMarkup) : 0
-  const unitCost = material ? material.costPerUnit : 0
-  const totalUnits = (input.unitsPerPart || 0) * qty
+  /**
+   * Normalise to a list of builds so there is ONE arithmetic path.
+   *
+   * No builds means the single-machine shape, which becomes a list of one
+   * against the material and printer passed in. That is not a compatibility
+   * shim bolted on the side -- it is the same code, so the old shape cannot
+   * drift away from the new one, and pricing.test.ts keeps proving the
+   * existing worked example to the cent.
+   */
+  const resolved = (
+    input.builds?.length
+      ? input.builds.map((b) => ({
+          label: b.label,
+          qty: Math.max(0, b.qty || 0),
+          unitsPerPart: b.unitsPerPart || 0,
+          printHrsPerPart: b.printHrsPerPart || 0,
+          material: fleet?.materials.find((m) => m.id === b.materialId) ?? null,
+          printer: fleet?.printers.find((p) => p.id === b.printerId) ?? null,
+        }))
+      : [
+          {
+            label: 'Parts',
+            qty,
+            unitsPerPart: input.unitsPerPart || 0,
+            printHrsPerPart: input.printHrsPerPart || 0,
+            material,
+            printer,
+          },
+        ]
+  ).map((b) => {
+    const unitSell = b.material ? sellPerUnit(b.material, rates.materialMarkup) : 0
+    const units = b.unitsPerPart * b.qty
+    const hours = b.printHrsPerPart * b.qty
+    return {
+      ...b,
+      units,
+      hours,
+      unitSell,
+      sell: units * unitSell,
+      cost: units * (b.material ? b.material.costPerUnit : 0),
+      machine: hours * (b.printer ? b.printer.ratePerHour : 0),
+      wear: hours * (b.printer ? b.printer.wearPerHour : 0),
+    }
+  })
 
-  const materialSell = totalUnits * unitSell
-  const materialCost = totalUnits * unitCost
-  const machineHours = (input.printHrsPerPart || 0) * qty
-  const machineAmt = machineHours * (printer ? printer.ratePerHour : 0)
-  const wearAmt = machineHours * (printer ? printer.wearPerHour : 0)
+  const sum = (f: (b: (typeof resolved)[number]) => number) =>
+    resolved.reduce((t, b) => t + f(b), 0)
+
+  const totalUnits = sum((b) => b.units)
+  const materialSell = sum((b) => b.sell)
+  const materialCost = sum((b) => b.cost)
+  const machineHours = sum((b) => b.hours)
+  const machineAmt = sum((b) => b.machine)
+  const wearAmt = sum((b) => b.wear)
   const finishingAmt = (input.finishingHrs || 0) * rates.finishingHourly
   const pieceAmt = (input.flatEach || 0) * qty
   const byPiece = (input.flatEach || 0) > 0
@@ -337,28 +431,60 @@ export function priceQuote(
       amount: pieceAmt,
     })
   } else {
-    const perUnitLabel =
-      material?.unit === 'g'
-        ? `${money0(unitSell * 1000)}/kg`
-        : `${money(unitSell)}/mL`
-    lines.push({
-      key: 'material',
-      label: `Material — ${material ? material.name : 'not set'}`,
-      basis: `${trimNum(totalUnits)} ${material?.unit === 'ml' ? 'mL' : 'g'} at ${perUnitLabel}`,
-      amount: materialSell,
-    })
-    lines.push({
-      key: 'machine',
-      label: 'Machine time',
-      basis: `${trimNum(machineHours)} h on ${printer ? printer.name : 'machine'} at ${money0(printer?.ratePerHour ?? 0)}/h`,
-      amount: machineAmt,
-    })
-    lines.push({
-      key: 'wear',
-      label: 'Machine wear',
-      basis: `${money0(printer?.wearPerHour ?? 0)}/h toward nozzles, belts, plates`,
-      amount: wearAmt,
-    })
+    /**
+     * Grouped by material and by machine, not one line per part.
+     *
+     * A client reading a quote wants to see what it is made of and what ran
+     * it, with the arithmetic visible. Eleven parts would be eleven lines of
+     * noise; two spools and two machines is four lines that add up. Where
+     * there is only one group the label and basis are byte-for-byte what
+     * they always were, so an existing quote's PDF does not change wording.
+     */
+    const groupBy = <K,>(key: (b: (typeof resolved)[number]) => K) => {
+      const out = new Map<K, (typeof resolved)[number][]>()
+      for (const b of resolved) {
+        const k = key(b)
+        out.set(k, [...(out.get(k) ?? []), b])
+      }
+      return [...out.entries()]
+    }
+
+    const byMaterial = groupBy((b) => b.material?.id ?? null)
+    const one = byMaterial.length === 1
+    for (const [, group] of byMaterial) {
+      const m = group[0].material
+      const unitSell = group[0].unitSell
+      const units = group.reduce((t, b) => t + b.units, 0)
+      const perUnitLabel = m?.unit === 'g' ? `${money0(unitSell * 1000)}/kg` : `${money(unitSell)}/mL`
+      lines.push({
+        key: one ? 'material' : `material:${m?.id ?? 'none'}`,
+        label: `Material — ${m ? m.name : 'not set'}`,
+        basis: `${trimNum(units)} ${m?.unit === 'ml' ? 'mL' : 'g'} at ${perUnitLabel}`,
+        amount: group.reduce((t, b) => t + b.sell, 0),
+      })
+    }
+
+    const byPrinter = groupBy((b) => b.printer?.id ?? null)
+    const onePrinter = byPrinter.length === 1
+    for (const [, group] of byPrinter) {
+      const pr = group[0].printer
+      const hours = group.reduce((t, b) => t + b.hours, 0)
+      lines.push({
+        key: onePrinter ? 'machine' : `machine:${pr?.id ?? 'none'}`,
+        label: onePrinter ? 'Machine time' : `Machine time — ${pr ? pr.name : 'not set'}`,
+        basis: `${trimNum(hours)} h on ${pr ? pr.name : 'machine'} at ${money0(pr?.ratePerHour ?? 0)}/h`,
+        amount: group.reduce((t, b) => t + b.machine, 0),
+      })
+    }
+    for (const [, group] of byPrinter) {
+      const pr = group[0].printer
+      lines.push({
+        key: onePrinter ? 'wear' : `wear:${pr?.id ?? 'none'}`,
+        label: onePrinter ? 'Machine wear' : `Machine wear — ${pr ? pr.name : 'not set'}`,
+        basis: `${money0(pr?.wearPerHour ?? 0)}/h toward nozzles, belts, plates`,
+        amount: group.reduce((t, b) => t + b.wear, 0),
+      })
+    }
     lines.push({
       key: 'finishing',
       label: 'Finishing',
@@ -506,7 +632,12 @@ export function priceQuote(
     designAmt,
     materialSell,
     materialCost,
+    /** Grams or mL across every build. Summed, so a multi-machine quote
+     *  reports the whole job rather than one line of it. */
+    totalUnits,
     machineAmt,
+    /** Print hours across every build, on every machine. */
+    machineHours,
     wearAmt,
     electricityCost,
     costsIncomplete,
