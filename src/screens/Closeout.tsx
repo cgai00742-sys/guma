@@ -256,6 +256,48 @@ export function CloseoutDocument({
         </Grid>
       </Block>
 
+      {detail.slices.length > 0 && (
+        <Block title="Printed from">
+          {/* What the slicer predicted against what the machine did, per
+              file. On the shop's side this is where a persistently
+              optimistic profile shows itself; outside, it is the evidence
+              that the numbers on this sheet were measured. */}
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr>
+                <Th align="left">File</Th>
+                <Th align="left">Machine</Th>
+                <Th align="right">Slicer said</Th>
+                <Th align="right">Actually took</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.slices.map((sl) => {
+                const runs = detail.runs.filter((r) => r.sliceImportId === sl.id)
+                const used = runs.reduce((x, r) => x + (r.unitsUsed ?? 0), 0)
+                const hrs = runs.reduce((x, r) => x + (r.hours ?? 0), 0)
+                const est = sl.estMinutes == null ? null : Math.round((sl.estMinutes / 60) * 10) / 10
+                return (
+                  <tr key={sl.id}>
+                    <Td>{sl.fileName}</Td>
+                    <Td muted>{sl.printerName ?? sl.printerModel ?? '—'}</Td>
+                    <Td align="right" mono>
+                      {sl.estGrams != null ? `${Math.round(sl.estGrams)} g` : '—'}
+                      {est != null ? ` · ${est} h` : ''}
+                    </Td>
+                    <Td align="right" mono muted={runs.length === 0}>
+                      {runs.length === 0
+                        ? 'not recorded'
+                        : `${Math.round(used)} g · ${Math.round(hrs * 10) / 10} h`}
+                    </Td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </Block>
+      )}
+
       {detail.parts.length > 0 && (
         <Block title="What was made">
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>

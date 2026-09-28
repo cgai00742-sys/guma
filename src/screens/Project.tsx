@@ -36,7 +36,6 @@ import {
 } from '../lib/sliceImport'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
-  JOB_PHASES,
   CLIENT_KIND_LABEL,
   PAYMENT_KINDS,
   PAYMENT_KIND_LABEL,
@@ -85,7 +84,6 @@ import {
 } from '../lib/data'
 import {
   GATES,
-  PHASE_LABEL,
   ladderFor,
   phaseLabel,
   flagsFor,
@@ -389,25 +387,38 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       )}
 
       <div className="stepper" style={{ marginTop: 12, opacity: facts.takenInAt ? 1 : 0.45 }}>
-        {ladder.map((p, i) => (
-          <button
-            key={p}
-            type="button"
-            className={`step ${i < here ? 'done' : ''} ${p === shown ? 'cur' : ''}`.trim()}
-            style={{ cursor: 'pointer', font: 'inherit' }}
-            onClick={() => setViewPhase(p === detail.phase ? null : p)}
-            title={
-              i < here
-                ? `${label(p)} — cleared. Click to review its gate.`
-                : i === here
-                  ? `${label(p)} — where this project is now.`
-                  : `${label(p)} — not reached yet. Click to see what it will ask for.`
-            }
-          >
-            <i />
-            {label(p)}
-          </button>
-        ))}
+        {ladder.map((p, i) => {
+          // A stage behind this one that still has items outstanding was
+          // not finished, it was left behind -- and a green tick on it
+          // would say the opposite. gateStatus is already computed for
+          // every stage on this screen, so this costs nothing.
+          const left = i < here && gateStatus(p, detail.gates[p] ?? {}, facts).blocked
+          return (
+            <button
+              key={p}
+              type="button"
+              className={`step ${i < here ? 'done' : ''} ${left ? 'open' : ''} ${
+                p === shown ? 'cur' : ''
+              }`
+                .replace(/\s+/g, ' ')
+                .trim()}
+              style={{ cursor: 'pointer' }}
+              aria-current={p === detail.phase ? 'step' : undefined}
+              title={
+                left
+                  ? `${label(p)} — advanced past with items still open. Click to see which.`
+                  : i < here
+                    ? `${label(p)} — cleared. Click to review its gate.`
+                    : i === here
+                      ? `${label(p)} — where this project is now.`
+                      : `${label(p)} — not reached yet. Click to see what it will ask for.`
+              }
+            >
+              <i aria-hidden="true" />
+              {label(p)}
+            </button>
+          )
+        })}
       </div>
 
       {flags.length > 0 && (
@@ -424,6 +435,11 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         <div className="attn crit" style={{ marginTop: 12 }}>
           <span>{error}</span>
         </div>
+      )}
+
+      {/* ---- what it came to, once it is finished ---- */}
+      {detail.phase === 'delivered' && (
+        <Closeout detail={detail} money={money} locale={rates.locale} jobId={jobId} />
       )}
 
       {/* ---- flags, spelled out ---- */}
@@ -495,7 +511,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             {phaseIndex(shown, detail.facts.kind) < here ? 'already behind you' : 'still ahead'}. Ticking here still
             records a real answer —{' '}
             <button type="button" className="linkbtn" onClick={() => setViewPhase(null)}>
-              back to {PHASE_LABEL[detail.phase]}
+              back to {label(detail.phase)}
             </button>
             .
           </div>
@@ -967,7 +983,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                   {e.kind === 'phase_change' ? ' · stage change' : ''}
                 </div>
                 {e.kind === 'phase_change'
-                  ? `Moved from ${PHASE_LABEL[e.fromPhase ?? 'intake']} to ${PHASE_LABEL[e.toPhase ?? 'intake']}.`
+                  ? `Moved from ${label(e.fromPhase ?? 'intake')} to ${label(e.toPhase ?? 'intake')}.`
                   : (e.body ?? '')}
               </div>
             ))}
@@ -982,13 +998,16 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           <span className="secstat">{here === 0 ? 'none yet' : `${here} behind this one`}</span>
         </div>
         <div className="stack">
-          {JOB_PHASES.slice(0, here).map((p) => {
+          {/* This job's OWN ladder, not the client one. A trial print
+              climbs three stages, and listing the seven client stages
+              behind it offered "Client approval" on work with no client. */}
+          {ladder.slice(0, here).map((p) => {
             const g = gateStatus(p, detail.gates[p] ?? {}, facts)
             return (
               <details key={p}>
                 <summary>
                   <span className="caret">▸</span>
-                  <b>{PHASE_LABEL[p]}</b>
+                  <b>{label(p)}</b>
                   <span className={`secstat ${g.blocked ? 'warn' : 'ok'}`}>
                     {g.done} of {g.total}
                   </span>
@@ -1072,7 +1091,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             title={liveGate.blocked ? liveGate.reason : undefined}
             onClick={() => void advance()}
           >
-            {liveGate.next ? `Advance to ${PHASE_LABEL[liveGate.next]} →` : 'Delivered'}
+            {liveGate.next
+              ? `Advance to ${label(liveGate.next)} →`
+              : label(detail.phase)}
           </button>
         ) : (
           <button
@@ -2089,6 +2110,189 @@ function StartByLine({ detail, locale }: { detail: ProjectDetail; locale: string
         {plan.assumptions.join(' · ')}.
       </div>
     </div>
+  )
+}
+
+/**
+ * What a finished project came to, on the project itself.
+ *
+ * Reported by CG: "the one project I have is at the final phase but I
+ * don't see a bunch of useful information there. I don't see the printed
+ * file either." He was right -- everything was on the page, spread through
+ * five sections each showing the CONTROLS for work that is over. A
+ * finished project is not a thing you operate, it is a thing you read, so
+ * the end of the ladder gets a summary and the controls stay below it.
+ *
+ * Nothing here is stored or recalculated: every figure is one the project
+ * already derives. The printable one-pager is the same content for
+ * somebody outside the shop, and is one click away rather than the only
+ * place this existed.
+ */
+function Closeout({
+  detail,
+  money,
+  locale,
+  jobId,
+}: {
+  detail: ProjectDetail
+  money: (n: number) => string
+  locale: string
+  jobId: string
+}) {
+  const a = detail.actuals
+  const f = detail.facts
+  const hours = Math.round((a.machineHours + a.designHours + a.finishingHours + a.adminHours) * 10) / 10
+  const days = Math.max(
+    0,
+    Math.round(
+      (new Date(f.deliveryOn ?? detail.updatedAt).getTime() - new Date(detail.createdAt).getTime()) /
+        86_400_000,
+    ),
+  )
+  const failed = detail.runs.filter((r) => r.outcome !== 'success').length
+  const mins = (m: number | null) =>
+    m == null ? '—' : m >= 60 ? `${Math.floor(m / 60)}h ${Math.round(m % 60)}m` : `${Math.round(m)}m`
+
+  return (
+    <section className="sec" style={{ marginTop: 18 }}>
+      <div className="sechead">
+        <h4>{f.kind === 'inhouse' ? 'What this trial came to' : 'What this project came to'}</h4>
+        <span className="secstat ok">finished{days ? ` · ${days} days end to end` : ''}</span>
+      </div>
+
+      <div className="pane">
+        <div className="grid3">
+          <Stat
+            label={f.kind === 'inhouse' ? 'What it cost you' : 'What it cost to make'}
+            value={f.hasActuals ? money(f.actualCost) : 'not recorded'}
+            sub={f.hasActuals ? 'material, power, wear and logged hours' : 'no runs or hours were logged'}
+            tone={f.hasActuals ? '' : 'crit'}
+          />
+          {f.kind === 'inhouse' ? (
+            <Stat
+              label="What it put on the shelf"
+              value={f.unitsMade > 0 ? `${f.unitsMade} unit${f.unitsMade === 1 ? '' : 's'}` : 'nothing sellable'}
+              sub={f.unitsMade > 0 ? 'costed from this project' : 'recorded as producing no stock'}
+            />
+          ) : (
+            <Stat
+              label="What they paid"
+              value={f.quoteTotal == null ? '—' : money(f.quoteTotal - f.balanceOwed)}
+              sub={f.balanceOwed > 0 ? `${money(f.balanceOwed)} still outstanding` : 'paid in full'}
+              tone={f.balanceOwed > 0 ? 'crit' : 'ok'}
+            />
+          )}
+          <Stat
+            label="Hours in it"
+            value={hours ? `${hours} h` : '—'}
+            sub={`${Math.round(a.machineHours * 10) / 10} machine · ${
+              Math.round((a.designHours + a.finishingHours + a.adminHours) * 10) / 10
+            } yours`}
+          />
+        </div>
+
+        <div className="grid3" style={{ marginTop: 12 }}>
+          <Stat
+            label="Material drawn"
+            value={a.materialUnits ? `${Math.round(a.materialUnits)}` : '—'}
+            sub={a.failedUnits > 0 ? `${Math.round(a.failedUnits)} of it into failed prints` : 'none of it wasted'}
+            tone={a.failedUnits > 0 ? 'crit' : ''}
+          />
+          <Stat
+            label="Runs"
+            value={a.runs ? `${a.runs}` : 'none recorded'}
+            sub={failed > 0 ? `${failed} failed` : a.runs ? 'all came off clean' : 'nothing was logged as printed'}
+            tone={failed > 0 ? 'crit' : ''}
+          />
+          <Stat
+            label="Parts"
+            value={detail.parts.length ? `${f.partsPassed} of ${f.parts} passed` : 'no build sheet'}
+            sub={f.reprintsEver > 0 ? `${f.reprintsEver} sent back along the way` : undefined}
+            tone={f.reprintsEver > 0 ? 'crit' : ''}
+          />
+        </div>
+      </div>
+
+      {/* The files it was printed from. The first thing CG went looking
+          for and could not find: a finished project that cannot show you
+          what it was made from is not a record of anything. */}
+      <div className="pane" style={{ marginTop: 10 }}>
+        <div className="sechead">
+          <h4>Printed from</h4>
+          <span className="secstat">
+            {detail.slices.length === 0
+              ? 'no sliced file was imported'
+              : `${detail.slices.length} file${detail.slices.length === 1 ? '' : 's'}`}
+          </span>
+        </div>
+        {detail.slices.length === 0 ? (
+          <div className="hint" style={{ marginTop: 0 }}>
+            Nothing was imported for this one, so its grams and hours were typed in rather than read
+            off a file. Importing the sliced file on the next project is what makes this section
+            worth reading.
+          </div>
+        ) : (
+          <div className="sheetwrap" style={{ maxHeight: 'none' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: '46%' }}>File</th>
+                  <th>Machine</th>
+                  <th className="r">Slicer said</th>
+                  <th className="r">Actually took</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.slices.map((sl) => {
+                  const runs = detail.runs.filter((r) => r.sliceImportId === sl.id)
+                  const used = runs.reduce((x, r) => x + (r.unitsUsed ?? 0), 0)
+                  const hrs = runs.reduce((x, r) => x + (r.hours ?? 0), 0)
+                  return (
+                    <tr key={sl.id}>
+                      <td>
+                        <span className="pn">{sl.fileName}</span>
+                        <div className="pmeta">
+                          {sl.sections.length} object{sl.sections.length === 1 ? '' : 's'} ·
+                          imported {sl.importedAt.slice(0, 10)}
+                        </div>
+                      </td>
+                      <td>{sl.printerName ?? sl.printerModel ?? '—'}</td>
+                      <td className="r mono">
+                        {sl.estGrams != null ? `${Math.round(sl.estGrams)} g` : '—'} ·{' '}
+                        {mins(sl.estMinutes)}
+                      </td>
+                      <td className="r mono">
+                        {runs.length === 0 ? (
+                          <span style={{ color: 'var(--warn)' }}>never recorded</span>
+                        ) : (
+                          `${Math.round(used)} g · ${Math.round(hrs * 10) / 10} h`
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="btnrow" style={{ marginTop: 10, alignItems: 'center' }}>
+        <Link
+          to={`/project/${jobId}/closeout`}
+          className="btn sm"
+          style={{ textDecoration: 'none' }}
+        >
+          Printable one-pager
+        </Link>
+        <span className="hint" style={{ marginTop: 0 }}>
+          {f.deliveryOn
+            ? `Handed over ${formatDate(f.deliveryOn, locale)}${f.deliveryHow ? ` · ${f.deliveryHow}` : ''}.`
+            : 'No handover date was recorded.'}{' '}
+          Everything below is still here — it is just no longer the point.
+        </span>
+      </div>
+    </section>
   )
 }
 

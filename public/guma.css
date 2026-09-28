@@ -286,16 +286,54 @@ footer.app,footer{
 .seg button:hover{background:var(--panel-3);color:var(--txt)}
 .seg button[aria-pressed="true"]{background:var(--ember);color:var(--ink)}
 
-.stepper{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
+/* The stage rail.
+   Three states that have to be legible at a glance and at arm's length,
+   which the first version was not: "current" was --txt on a 10%-ember
+   wash, which is a faint tint behind body-grey -- reported as "the
+   highlighted version is super hard to read". Each state now differs in
+   WEIGHT and FILL, not only in a border colour, so the rail reads without
+   anybody comparing two chips side by side.
+     cleared  green tick, green text, quiet green field
+     current  solid accent, ink text, bold -- the only filled chip
+     ahead    outline only, dim, dashed ring: not reached yet */
+.stepper{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
 .step{
-  display:flex;align-items:center;gap:5px;font-size:11px;color:var(--txt-3);
-  padding:3px 9px;border:1px solid var(--line);border-radius:20px;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:6px;font:500 11.5px/18px inherit;
+  color:var(--txt-3);padding:4px 11px;border:1px solid var(--line);border-radius:20px;
+  white-space:nowrap;background:transparent;
+  transition:background .14s,border-color .14s,color .14s;
 }
-.step i{width:6px;height:6px;border-radius:50%;background:var(--line-strong);display:inline-block}
-.step.done{color:var(--txt-2)}
-.step.done i{background:var(--ok)}
-.step.cur{color:var(--txt);border-color:var(--ember);background:var(--wash)}
-.step.cur i{background:var(--ember)}
+.step i{
+  width:14px;height:14px;border-radius:50%;display:inline-grid;place-items:center;
+  border:1px solid var(--line-strong);font-size:9px;line-height:1;flex:none;
+}
+.step:not(.done):not(.cur){border-style:dashed}
+.step:hover{color:var(--txt);border-color:var(--line-strong)}
+
+.step.done{
+  color:var(--ok);border-color:color-mix(in srgb, var(--ok) 40%, transparent);
+  background:color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.step.done i{background:var(--ok);border-color:var(--ok);color:var(--ink)}
+.step.done i::after{content:'✓';font-weight:700}
+.step.done:hover{background:color-mix(in srgb, var(--ok) 16%, transparent);color:var(--ok)}
+
+.step.cur{
+  color:var(--ink);background:var(--ember);border-color:var(--ember);
+  font-weight:700;box-shadow:0 0 0 3px var(--wash);
+}
+.step.cur i{background:var(--ink);border-color:var(--ink)}
+.step.cur i::after{content:'';width:5px;height:5px;border-radius:50%;background:var(--ember)}
+.step.cur:hover{color:var(--ink);background:var(--ember);border-color:var(--ember)}
+
+/* A cleared stage that was advanced past with items still open. Green
+   would say it was finished; it was not, it was left behind. */
+.step.done.open{
+  color:var(--warn);border-color:color-mix(in srgb, var(--warn) 40%, transparent);
+  background:color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.step.done.open i{background:var(--warn);border-color:var(--warn)}
+.step.done.open i::after{content:'!';font-weight:700}
 
 .linkbtn{
   display:block;width:100%;background:none;border:none;color:var(--txt-2);

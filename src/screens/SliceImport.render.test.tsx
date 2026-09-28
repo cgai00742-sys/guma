@@ -452,6 +452,52 @@ describe('a plate is one print, and the whole plate comes off it', () => {
   })
 })
 
+describe('a finished project reads like a record, not a control panel', () => {
+  /** CG, on his one finished project: "I don't see a bunch of useful
+   *  information there. I don't see the printed file either." */
+  it('summarises what it came to, and names the file it was printed from', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+    await screen.findByText(/Recorded — 1 run/i)
+
+    for (const to of ['review', 'delivered'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    cleanup()
+    // Not renderProject(): that waits for the import box, and a delivered
+    // project does not offer one -- which is the point of this screen.
+    const { default: Project } = await import('./Project')
+    render(
+      <MemoryRouter initialEntries={[`/project/${jobId}`]}>
+        <Routes>
+          <Route
+            path="/project/:jobId"
+            element={<Project ctx={ctx as Parameters<typeof Project>[0]['ctx']} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await screen.findByText(/What this project came to/i)
+    // The file, by name, with the slicer's numbers against the real ones.
+    const printedFrom = await screen.findByText('Printed from')
+    expect(printedFrom).toBeDefined()
+    expect(screen.getAllByText('Reef buoy_sliced.gcode').length).toBeGreaterThan(0)
+    expect(screen.getByText(/87 g · 2\.1 h/)).toBeDefined()
+    // And the money/effort line, not just the controls for work that is over.
+    expect(screen.getByText(/machine ·/)).toBeDefined()
+  })
+})
+
 describe('the import is findable, and says what it did', () => {
   /**
    * "I uploaded a gcode and nothing really happened."
