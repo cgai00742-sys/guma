@@ -87,7 +87,7 @@ function topLevelSplit(body: string): string[] {
 const NOT_A_COLUMN = /^(primary|unique|constraint|check|foreign|exclude|like)\b/i
 
 function hostedSchema(): Map<string, Set<string>> {
-  const sql = read('supabase/migrations')
+  const sql = read('cloud/supabase/migrations')
     .join('\n')
     .replace(/--[^\n]*/g, '')
   const schema = new Map<string, Set<string>>()
@@ -128,7 +128,7 @@ function hostedSchema(): Map<string, Set<string>> {
  * whole migration set and compared once at the end.
  */
 function hostedRls(): { enabled: Set<string>; policied: Set<string> } {
-  const sql = read('supabase/migrations')
+  const sql = read('cloud/supabase/migrations')
     .join('\n')
     .replace(/--[^\n]*/g, '')
   const enabled = new Set<string>()

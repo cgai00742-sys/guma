@@ -393,7 +393,7 @@ export async function saveShopQuoteTerms(shopId: string, next: ShopQuoteTermsInp
  */
 /** Type-parity stub for the desktop-only welcome dialog (data.local.ts).
  *  The hosted schema doesn't have `show_welcome` yet -- see the mirrored,
- *  not-yet-applied migration in supabase/migrations/0005_show_welcome.sql
+ *  not-yet-applied migration in cloud/supabase/migrations/0005_show_welcome.sql
  *  -- so `ctx.shop.show_welcome` reads back undefined/falsy here and this
  *  never actually gets called on the hosted build until that's applied. */
 export async function dismissWelcome(shopId: string): Promise<void> {

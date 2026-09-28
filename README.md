@@ -204,7 +204,7 @@ warning ("More info" → "Run anyway").
 **Running it in a browser instead**, self-hosted with your own Supabase
 project. One thing to know before you choose this: **the desktop app is the
 supported path for 1.0.** The browser build shares the same pricing engine and
-the same screens, and its migrations ship in `supabase/migrations/`, but the
+the same screens, and its migrations ship in `cloud/supabase/migrations/`, but the
 five migrations added in the 1.0 run (clients, payments, actuals, the build
 sheet, drafts) have not yet been applied to a live Postgres by anyone. They are
 written for parity and reviewed, not proven. If you want Guma today, download
@@ -234,7 +234,7 @@ npm install
 cp .env.example .env        # your Supabase URL and publishable key
 ```
 
-Run the files in `supabase/migrations/` in order in the Supabase SQL editor,
+Run the files in `cloud/supabase/migrations/` in order in the Supabase SQL editor,
 then:
 
 ```bash
@@ -315,7 +315,7 @@ src/screens/               Setup · Intake · Projects (board + list) · Project
                            (+ SignIn, browser build only)
 src-tauri/migrations/      the desktop schema. A shipped migration is FROZEN —
                            see src/lib/migrations.test.ts.
-supabase/migrations/       the same schema for the browser build
+cloud/supabase/migrations/ the same schema, reserved for the cloud edition
 mcp/                       the MCP server: stdio transport, the SQLite shim,
                            and where it looks for your database
 src/lib/mcp/tools.ts       the eleven tools, and the list of what none of

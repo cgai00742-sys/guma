@@ -61,7 +61,7 @@ Supabase project.
 cp .env.example .env     # point at your own Supabase project
 ```
 
-Run the files in `supabase/migrations/` in order, then:
+Run the files in `cloud/supabase/migrations/` in order, then:
 
 ```bash
 npm run dev               # http://localhost:5173, sign in to run the setup wizard
