@@ -1476,6 +1476,36 @@ tr.landed{animation:gumaland 1.5s ease-out both}
 .blockbar ol{margin:0;padding-left:18px}
 .blockbar li{font-size:12px;color:var(--txt-2);line-height:19px}
 
+/* Who you are, and the menu behind it. Was a bare <span> that looked like a
+   tab and did nothing. */
+.whowrap{position:relative;display:inline-flex}
+button.who{
+  display:inline-flex;align-items:center;gap:6px;
+  background:none;border:1px solid transparent;border-radius:8px;
+  padding:4px 8px;cursor:pointer;color:var(--txt-2);font:inherit;font-size:12px;
+  transition:background .14s ease, border-color .14s ease;
+}
+button.who:hover,button.who[aria-expanded="true"]{
+  background:var(--panel-2);border-color:var(--line);color:var(--txt);
+}
+.whomenu{
+  position:absolute;top:calc(100% + 6px);right:0;z-index:40;min-width:228px;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  box-shadow:var(--shadow-overlay);padding:6px;
+  animation:gumareveal .16s cubic-bezier(.16,.84,.3,1) both;
+}
+.whohead{padding:7px 9px 9px;border-bottom:1px solid var(--line);margin-bottom:5px;font-size:12.5px;font-weight:600;color:var(--txt)}
+.whosub{font-size:11px;font-weight:400;color:var(--txt-3);margin-top:2px}
+button.whoitem{
+  display:block;width:100%;text-align:left;background:none;border:none;
+  border-radius:7px;padding:7px 9px;cursor:pointer;color:var(--txt-2);
+  font:inherit;font-size:12.5px;
+}
+button.whoitem:hover{background:var(--panel-2);color:var(--txt)}
+/* The mark is a link home now; it should say so on hover and to a keyboard. */
+a.brand:hover .mark b{color:var(--biolum)}
+a.brand:focus-visible{outline:2px solid var(--biolum);outline-offset:3px;border-radius:8px}
+
 /* Print: the app is a screen tool, but quotes and build sheets get printed. */
 @media print{
   :root{--bg:#fff;--panel:#fff;--panel-2:#fff;--panel-3:#fff;--line:#ccc;--txt:#000;--txt-2:#333;--txt-3:#555}

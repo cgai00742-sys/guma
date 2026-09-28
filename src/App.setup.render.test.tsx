@@ -374,3 +374,68 @@ describe('finishing setup later', () => {
     await waitFor(() => expect(screen.queryByText('Setting up')).toBeNull())
   })
 })
+
+/* ---- the top bar --------------------------------------------------------- */
+
+/**
+ * Two things that looked like controls and were not.
+ *
+ * "Owner" was a <span> holding the profile name -- which on a desktop
+ * install is the literal word "Owner", since there is no account to take a
+ * name from. It sat in the row of tabs, looked exactly like one, and did
+ * nothing. The Guma mark was a <div>: the one element every program has
+ * trained people to click to get home, and it was inert.
+ */
+describe('the top bar', () => {
+  it('takes the mark home', async () => {
+    ctx = makeCtx()
+    await renderApp('/settings')
+    const home = await screen.findByLabelText(/go to Projects/i)
+    expect(home.getAttribute('href')).toBe('/projects')
+  })
+
+  it('opens a real menu behind the name, not a dead label', async () => {
+    ctx = makeCtx()
+    const u = userEvent.setup()
+    await renderApp()
+    const who = await screen.findByRole('button', { name: /account menu/i })
+    expect(who.getAttribute('aria-expanded')).toBe('false')
+
+    await u.click(who)
+    expect(who.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('menu')).toBeDefined()
+  })
+
+  it('can open the welcome on demand, whatever show_welcome says', async () => {
+    // The condition that hid it: a shop that has already dismissed it.
+    ctx = { ...makeCtx(), shop: makeShop({ show_welcome: false }) }
+    const u = userEvent.setup()
+    await renderApp()
+    await screen.findByRole('button', { name: /account menu/i })
+
+    // Not SHOWING, correctly -- it was dismissed. The markup is always in
+    // the DOM inside a closed <dialog>, so `open` is the thing to assert;
+    // queryByText finds text inside a closed dialog quite happily.
+    expect(document.querySelector('dialog')?.open).toBeFalsy()
+
+    await u.click(screen.getByRole('button', { name: /account menu/i }))
+    await u.click(screen.getByRole('button', { name: /what guma is/i }))
+
+    // And now it is, without changing that setting. This is the door that
+    // does not depend on any of the launch conditions -- the ones that have
+    // made this screen unreachable twice.
+    await waitFor(() => expect(document.querySelector('dialog')?.open).toBe(true))
+    expect(screen.getByText(/Price a project honestly/i)).toBeDefined()
+  })
+
+  it('still carries the motion classes when opened that way', async () => {
+    ctx = { ...makeCtx(), shop: makeShop({ show_welcome: false }) }
+    const u = userEvent.setup()
+    await renderApp()
+    await u.click(await screen.findByRole('button', { name: /account menu/i }))
+    await u.click(screen.getByRole('button', { name: /what guma is/i }))
+    await welcomed()
+    for (const cls of ['wmark', 'wtitle', 'wlede', 'wpoint', 'wfoot'])
+      expect(document.querySelector(`.${cls}`)).not.toBeNull()
+  })
+})

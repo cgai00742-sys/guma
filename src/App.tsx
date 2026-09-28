@@ -3,6 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-r
 import type { Session } from '@supabase/supabase-js'
 import { isTauri } from '@tauri-apps/api/core'
 import { loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
+import { isDemo } from './lib/workspace'
 import Wizard from './screens/Wizard'
 import Settings from './screens/Settings'
 import Intake from './screens/Intake'
@@ -43,6 +44,8 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [ctx, setCtx] = useState<ShopContext | null>(null)
   const [ctxError, setCtxError] = useState<string | null>(null)
+  /** Opened from the Guma menu, independent of show_welcome. */
+  const [welcomeOpen, setWelcomeOpen] = useState(false)
   const [needsSetup, setNeedsSetup] = useState(false)
   /** "Finish later" on the setup guide. Session-only on purpose: the guide
    *  comes back next launch, because an unfinished shop is still reporting
@@ -235,7 +238,7 @@ export default function App() {
   if (ctx && plan && !plan.done && !setupDeferred) {
     return (
       <>
-        <TopBar ctx={ctx} desktop={desktop} />
+        <TopBar ctx={ctx} desktop={desktop} onShowWelcome={() => setWelcomeOpen(true)} />
         <main className="app-main">
           <Wizard
             ctx={ctx}
@@ -250,8 +253,15 @@ export default function App() {
 
   return (
     <>
-      {ctx && <WelcomeModal shop={ctx.shop} onDismissedForever={refresh} />}
-      <TopBar ctx={ctx} desktop={desktop} />
+      {ctx && (
+        <WelcomeModal
+          shop={ctx.shop}
+          onDismissedForever={refresh}
+          openNow={welcomeOpen}
+          onClosed={() => setWelcomeOpen(false)}
+        />
+      )}
+      <TopBar ctx={ctx} desktop={desktop} onShowWelcome={() => setWelcomeOpen(true)} />
       <main className="app-main">
         {ctxError ? (
           <div className="wrap">
@@ -328,7 +338,94 @@ export default function App() {
   )
 }
 
-function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean }) {
+/**
+ * Who you are, and the handful of things that belong to "you" rather than
+ * to a screen.
+ *
+ * This was a <span> containing the profile name -- which on desktop is the
+ * literal word "Owner", because a local install has no account to take a
+ * name from. It looked exactly like a control and was not one, so it read
+ * as a broken tab. Either it does something or it should not look
+ * clickable; this is the first option.
+ *
+ * "What Guma is" lives here on purpose. Whether the welcome appears on
+ * launch depends on several conditions and has now been unreachable twice;
+ * a door that depends on none of them means the answer to "why can I not
+ * see it" is never again "work out which condition is false".
+ */
+function WhoMenu({ ctx, onShowWelcome }: { ctx: ShopContext | null; onShowWelcome: () => void }) {
+  const [open, setOpen] = useState(false)
+  const navigate = useNavigate()
+  const demo = isDemo()
+
+  // Click anywhere else to close. A menu that only closes by clicking its
+  // own button is a menu people leave open by accident.
+  useEffect(() => {
+    if (!open) return
+    const shut = () => setOpen(false)
+    window.addEventListener('click', shut)
+    return () => window.removeEventListener('click', shut)
+  }, [open])
+
+  const item = (label: string, onClick: () => void) => (
+    <button
+      type="button"
+      className="whoitem"
+      onClick={() => {
+        setOpen(false)
+        onClick()
+      }}
+    >
+      {label}
+    </button>
+  )
+
+  return (
+    <span className="whowrap" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="who"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        // The visible label is whoever this is, which on desktop is the
+        // word "Owner" and elsewhere a real name. The accessible name says
+        // what the control DOES, so it does not change with the fixture or
+        // with who is signed in.
+        aria-label={`${ctx?.profile.full_name ?? 'Owner'} — account menu`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <b>{ctx?.profile.full_name ?? 'Owner'}</b>
+        {demo && <span className="todo-chip">demo</span>}
+        <span aria-hidden style={{ opacity: 0.6, marginLeft: 6 }}>▾</span>
+      </button>
+      {open && (
+        <div className="whomenu" role="menu">
+          <div className="whohead">
+            {ctx?.shop.name ?? 'No shop yet'}
+            <div className="whosub">
+              {demo ? 'Demo shop — your real records are untouched' : 'Your shop'}
+            </div>
+          </div>
+          {item('What Guma is', onShowWelcome)}
+          {item('Shop settings', () => navigate('/settings'))}
+          {item(demo ? 'Back to my shop' : 'Open the demo shop', () =>
+            navigate('/settings?tab=workspace'),
+          )}
+        </div>
+      )}
+    </span>
+  )
+}
+
+function TopBar({
+  ctx,
+  desktop,
+  onShowWelcome,
+}: {
+  ctx: ShopContext | null
+  desktop: boolean
+  onShowWelcome: () => void
+}) {
   const { pathname } = useLocation()
   // A project detail page (/project/:id) belongs to the Projects tab —
   // without this, opening a project leaves the whole nav unlit, which reads
@@ -352,7 +449,15 @@ function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean })
     <header style={{ borderBottom: '1px solid var(--line)', background: 'var(--panel)' }}>
       <div className="wrap">
         <div className="topbar">
-          <div className="brand" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* The mark goes home. It was a <div>: the one thing every
+              program has trained people to click when they want to get
+              back, and it did nothing. */}
+          <Link
+            to="/projects"
+            className="brand"
+            aria-label="Guma — go to Projects"
+            style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: 'inherit' }}
+          >
             <img src="/brand/guma-mark.svg" alt="" width={26} height={24} style={{ display: 'block' }} />
             <div>
               <div className="mark">
@@ -371,7 +476,7 @@ function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean })
                 </span>
               </div>
             </div>
-          </div>
+          </Link>
           {/* Three places and one action. "New project" was a tab, which
               made a blank form the shop's home screen and put starting
               something on the same footing as looking at everything you
@@ -398,9 +503,7 @@ function TopBar({ ctx, desktop }: { ctx: ShopContext | null; desktop: boolean })
           >
             + New project
           </Link>
-          <span className="who">
-            <b>{ctx?.profile.full_name ?? ''}</b>
-          </span>
+          <WhoMenu ctx={ctx} onShowWelcome={onShowWelcome} />
           {/* No account on desktop, so nothing to sign out of. */}
           {!desktop && (
             <button

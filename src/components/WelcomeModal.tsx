@@ -43,6 +43,8 @@ const POINTS: { title: string; body: string }[] = [
 export default function WelcomeModal({
   shop,
   onDismissedForever,
+  openNow = false,
+  onClosed,
 }: {
   /**
    * Null on a true first launch: there is no shop row yet, because the
@@ -57,6 +59,17 @@ export default function WelcomeModal({
    */
   shop: Shop | null
   onDismissedForever: () => void
+  /**
+   * Open it regardless of show_welcome.
+   *
+   * Whether this screen appears on launch depends on a chain of conditions
+   * -- is there a shop, is setup finished, was "don't show again" ever
+   * ticked -- and one wrong link in that chain makes it unreachable with no
+   * way to check. It has been unreachable twice. So there is now a door
+   * that does not depend on any of it: Guma menu -> What Guma is.
+   */
+  openNow?: boolean
+  onClosed?: () => void
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   const [dontShowAgain, setDontShowAgain] = useState(false)
@@ -65,18 +78,20 @@ export default function WelcomeModal({
   // No shop means a first launch, and a first launch always shows this.
   const show = shop ? shop.show_welcome : true
   useEffect(() => {
-    if (show) ref.current?.showModal()
-  }, [show])
+    if (show || openNow) ref.current?.showModal()
+  }, [show, openNow])
 
   async function close() {
     if (!dontShowAgain || !shop) {
       ref.current?.close()
+      onClosed?.()
       return
     }
     setSaving(true)
     try {
       await dismissWelcome(shop.id)
       ref.current?.close()
+      onClosed?.()
       onDismissedForever()
     } finally {
       setSaving(false)
