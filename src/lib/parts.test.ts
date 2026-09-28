@@ -3,7 +3,17 @@ import { allowedStatuses, reprintCount, reprintReason, shouldReturnToBuilding } 
 import type { PartRow } from './data.types'
 
 function part(status: PartRow['status'], history: PartRow['history'] = []): PartRow {
-  return { id: 'p1', label: 'Buoy shell', qty: 2, status, note: null, sort: 0, history }
+  return {
+    id: 'p1',
+    label: 'Buoy shell',
+    qty: 2,
+    status,
+    note: null,
+    sort: 0,
+    history,
+    variants: [],
+    chosenSectionId: null,
+  }
 }
 
 function ev(toStatus: PartRow['status'], note: string | null, id = 1): PartRow['history'][number] {
@@ -63,5 +73,79 @@ describe('a QC failure is not still review', () => {
 
   it('does not ask in a stage that is already building', () => {
     expect(shouldReturnToBuilding('building', [part('reprint')])).toBe(false)
+  })
+})
+
+import { chosenVariant, isOnSharedPlate, timeSpreadPct } from './parts'
+import type { PartVariant } from './data.types'
+
+function variant(over: Partial<PartVariant> = {}): PartVariant {
+  return {
+    sectionId: 's1',
+    importId: 'i1',
+    fileName: 'H2S_Buoy.gcode.3mf',
+    printerModel: 'Bambu Lab H2S',
+    printerId: null,
+    printerName: null,
+    estMinutes: 371,
+    estGrams: 99,
+    material: 'PETG',
+    importedAt: '2026-09-27',
+    plateParts: 1,
+    ...over,
+  }
+}
+
+function withVariants(vs: PartVariant[], chosen: string | null = null): PartRow {
+  return { ...part('pending'), variants: vs, chosenSectionId: chosen }
+}
+
+describe('which file a part is actually printed from', () => {
+  it('has nothing to say about a part typed in by hand', () => {
+    expect(chosenVariant(part('pending'))).toEqual({ variant: null, picked: false })
+  })
+
+  it('assumes the fastest variant until somebody chooses, and says it assumed', () => {
+    const slow = variant({ sectionId: 'slow', estMinutes: 371 })
+    const fast = variant({ sectionId: 'fast', estMinutes: 309, printerModel: 'Bambu Lab H2D' })
+    const got = chosenVariant(withVariants([slow, fast]))
+    expect(got.variant?.sectionId).toBe('fast')
+    expect(got.picked).toBe(false)
+  })
+
+  it('uses the chosen one even when it is the slower machine', () => {
+    const slow = variant({ sectionId: 'slow', estMinutes: 371 })
+    const fast = variant({ sectionId: 'fast', estMinutes: 309 })
+    const got = chosenVariant(withVariants([slow, fast], 'slow'))
+    expect(got.variant?.sectionId).toBe('slow')
+    expect(got.picked).toBe(true)
+  })
+
+  it('falls back to the first variant when no file carried a time', () => {
+    const a = variant({ sectionId: 'a', estMinutes: null })
+    const b = variant({ sectionId: 'b', estMinutes: null })
+    expect(chosenVariant(withVariants([a, b])).variant?.sectionId).toBe('a')
+  })
+})
+
+describe('the spread that makes choosing matter', () => {
+  it('reports the real Voltage figure: 309.5 vs 371.8 minutes is 20%', () => {
+    const p = withVariants([
+      variant({ sectionId: 'h2d', estMinutes: 309.5 }),
+      variant({ sectionId: 'h2s', estMinutes: 371.8 }),
+    ])
+    expect(timeSpreadPct(p)).toBe(20)
+  })
+
+  it('says nothing when there is only one file to go on', () => {
+    expect(timeSpreadPct(withVariants([variant()]))).toBeNull()
+  })
+})
+
+describe('a plate is one print', () => {
+  it('flags a variant that shared its plate with other objects', () => {
+    expect(isOnSharedPlate(variant({ plateParts: 2 }))).toBe(true)
+    expect(isOnSharedPlate(variant({ plateParts: 1 }))).toBe(false)
+    expect(isOnSharedPlate(null)).toBe(false)
   })
 })

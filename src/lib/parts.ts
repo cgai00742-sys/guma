@@ -18,7 +18,7 @@
  * belongs on the row, in front of whoever prints it next. Nothing is
  * stored twice for this: it is read back out of the part's own history.
  */
-import type { JobPhase, PartRow, PartStatus } from './data.types'
+import type { JobPhase, PartRow, PartStatus, PartVariant } from './data.types'
 
 /**
  * The statuses a part may be moved to at this stage, in the order they
@@ -64,4 +64,48 @@ export function reprintCount(part: PartRow): number {
  *  parts still being checked. */
 export function shouldReturnToBuilding(phase: JobPhase, parts: PartRow[]): boolean {
   return phase === 'review' && parts.some((p) => p.status === 'reprint')
+}
+
+/**
+ * Which variant this part is being printed from, and whether anybody
+ * actually said so.
+ *
+ * Voltage's decision, kept: until someone picks, use the FASTEST variant
+ * and label it as an assumption. Fastest rather than first-imported
+ * because the first file imported is an accident of order, while fastest
+ * is at least a defensible default -- and because the screen says it is a
+ * default, nobody mistakes it for a decision.
+ */
+export function chosenVariant(part: PartRow): { variant: PartVariant | null; picked: boolean } {
+  if (!part.variants.length) return { variant: null, picked: false }
+  const picked = part.variants.find((v) => v.sectionId === part.chosenSectionId)
+  if (picked) return { variant: picked, picked: true }
+  const timed = part.variants.filter((v) => v.estMinutes != null)
+  if (!timed.length) return { variant: part.variants[0], picked: false }
+  const fastest = timed.reduce((a, b) => ((b.estMinutes ?? 0) < (a.estMinutes ?? 0) ? b : a))
+  return { variant: fastest, picked: false }
+}
+
+/**
+ * The spread in print time between this part's variants, as a percentage
+ * of the fastest. Null when there is nothing to compare.
+ *
+ * Worth showing because it is the number that justifies the feature: on
+ * Voltage's own files the same part ran 20% longer on one machine than
+ * another while weighing the same. A shop that averages them, or quotes
+ * from whichever file was imported first, is wrong by that much on every
+ * schedule -- and cannot see it.
+ */
+export function timeSpreadPct(part: PartRow): number | null {
+  const mins = part.variants.map((v) => v.estMinutes).filter((m): m is number => m != null && m > 0)
+  if (mins.length < 2) return null
+  const lo = Math.min(...mins)
+  const hi = Math.max(...mins)
+  return Math.round(((hi - lo) / lo) * 100)
+}
+
+/** True when this part came off a plate holding other objects, so its
+ *  print cannot be started or costed on its own. */
+export function isOnSharedPlate(v: PartVariant | null): boolean {
+  return !!v && v.plateParts > 1
 }

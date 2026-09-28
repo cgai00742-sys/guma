@@ -49,6 +49,7 @@ import {
   addProjectNote,
   importSlice,
   deletePart,
+  choosePartVariant,
   setPartStatus,
   deletePrintRun,
   deleteWorkEntry,
@@ -94,7 +95,15 @@ import {
   type ResolvedGateItem,
 } from '../lib/gates'
 import { useRowAnchor } from '../lib/rowAnchor'
-import { allowedStatuses, reprintCount, reprintReason, shouldReturnToBuilding } from '../lib/parts'
+import {
+  allowedStatuses,
+  chosenVariant,
+  isOnSharedPlate,
+  reprintCount,
+  reprintReason,
+  shouldReturnToBuilding,
+  timeSpreadPct,
+} from '../lib/parts'
 import { makeMoney } from '../lib/pricing'
 import { todayISO } from '../lib/dates'
 import { buildComparison, type Comparison } from '../lib/actuals'
@@ -1891,6 +1900,88 @@ function SliceRuns({
   )
 }
 
+/**
+ * A part's sliced files, one per machine, and which one it is being
+ * printed from.
+ *
+ * The reason this is on the row rather than behind a dialog: the choice
+ * changes the TIME, by up to 20% on Voltage's own measurements of the same
+ * part sliced for two Bambu machines. Weight barely moves. So a person
+ * reading the build sheet to plan a week needs to see, without clicking,
+ * whether the hours in front of them belong to the machine the part is
+ * actually going on -- and whether anybody chose, or the screen is
+ * assuming the fastest.
+ */
+function PartVariants({
+  ctx,
+  part,
+  busy,
+  onChanged,
+  setError,
+}: {
+  ctx: ShopContext
+  part: PartRow
+  busy: boolean
+  onChanged: () => Promise<void>
+  setError: (m: string | null) => void
+}) {
+  const [saving, setSaving] = useState(false)
+  if (!part.variants.length) return null
+
+  const { variant, picked } = chosenVariant(part)
+  const spread = timeSpreadPct(part)
+  const mins = (m: number | null) =>
+    m == null ? '—' : m >= 60 ? `${Math.floor(m / 60)}h ${Math.round(m % 60)}m` : `${Math.round(m)}m`
+
+  async function choose(sectionId: string) {
+    setSaving(true)
+    setError(null)
+    try {
+      // Pressing the chosen one again clears the choice rather than doing
+      // nothing: there has to be a way back to "no decision yet".
+      await choosePartVariant(ctx.shop.id, part.id, sectionId === part.chosenSectionId ? null : sectionId)
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="pvars" style={{ marginTop: 4 }}>
+      {part.variants.map((v) => {
+        const on = v.sectionId === variant?.sectionId
+        return (
+          <button
+            key={v.sectionId}
+            type="button"
+            className={`chip ${on ? 'on' : ''}`.trim()}
+            disabled={busy || saving}
+            title={`${v.fileName} · imported ${v.importedAt.slice(0, 10)}${
+              v.estGrams != null ? ` · ~${Math.round(v.estGrams)} g` : ''
+            }`}
+            onClick={() => void choose(v.sectionId)}
+          >
+            {v.printerName ?? v.printerModel ?? 'unknown machine'} · {mins(v.estMinutes)}
+          </button>
+        )
+      })}
+      {part.variants.length > 1 && !picked && (
+        <span className="pmeta" style={{ color: 'var(--warn)' }}>
+          assuming the fastest{spread != null && ` — ${spread}% between them`}
+        </span>
+      )}
+      {isOnSharedPlate(variant) && (
+        <span className="pmeta">
+          shares a plate with {(variant?.plateParts ?? 1) - 1} other object
+          {(variant?.plateParts ?? 1) - 1 === 1 ? '' : 's'} — one print, not several
+        </span>
+      )}
+    </div>
+  )
+}
+
 function BuildSheet({
   ctx,
   detail,
@@ -2056,6 +2147,13 @@ function BuildSheet({
                           {reprintCount(p) > 1 && ` · sent back ${reprintCount(p)} times`}
                         </div>
                       )}
+                      <PartVariants
+                        ctx={ctx}
+                        part={p}
+                        busy={busy || saving}
+                        onChanged={onChanged}
+                        setError={setError}
+                      />
                     </td>
                     <td className="r mono">×{p.qty}</td>
                     <td>

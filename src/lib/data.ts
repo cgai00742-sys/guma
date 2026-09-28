@@ -438,6 +438,14 @@ export async function updatePart(
   return (await backend()).updatePart(shopId, partId, input)
 }
 
+export async function choosePartVariant(
+  shopId: string,
+  partId: string,
+  sectionId: string | null,
+): Promise<void> {
+  return (await backend()).choosePartVariant(shopId, partId, sectionId)
+}
+
 export async function deletePart(shopId: string, partId: string): Promise<void> {
   return (await backend()).deletePart(shopId, partId)
 }

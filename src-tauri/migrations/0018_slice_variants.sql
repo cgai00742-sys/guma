@@ -1,0 +1,25 @@
+-- Guma: one logical part, several sliced files.
+--
+-- THE NUMBER THIS EXISTS FOR. Voltage measured the same parts sliced for
+-- two machines: weight moved about 1%, time moved up to 20% (UPPER AVIO:
+-- 309.5 min on an H2D, 371.8 min on an H2S, 98.5 g vs 99.4 g). So weight
+-- can be quoted off any variant honestly, and TIME CANNOT. Time has to
+-- come from the file for the machine the part is actually going on, or
+-- every schedule built from it is a fifth wrong.
+--
+-- WHY THERE IS NO NEW TABLE. Guma already stores every variant: each
+-- import writes one slice_sections row per object, pointing at the part it
+-- filled in, and re-importing the same part from a different machine adds
+-- another row rather than editing the old one. That is the versioned-by-
+-- insert rule the rate cards and quote snapshots follow, and it means the
+-- variants have been accumulating correctly since 0015. What was missing
+-- was a way to say WHICH ONE IS BEING PRINTED.
+--
+-- One column, then. Null means "nobody has chosen" -- the screen shows the
+-- fastest variant and says that is what it is doing, which is Voltage's
+-- decision (fastest until somebody picks) rather than an arbitrary first.
+--
+-- set null on delete, not cascade: deleting an import must not delete the
+-- part it created.
+alter table job_parts add column chosen_section_id text references slice_sections on delete set null;
+create index idx_job_parts_chosen on job_parts (chosen_section_id);

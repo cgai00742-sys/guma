@@ -65,6 +65,7 @@ import type {
   WorkEntryRow,
   WorkEntryInput,
   PartRow,
+  PartVariant,
   PartInput,
   QuoteBuildInput,
   QuoteBuildRow,
@@ -1260,9 +1261,48 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   )
 
   const partRows = await d.select<
-    { id: string; label: string; qty: number; status: PartStatus; note: string | null; sort: number }[]
+    {
+      id: string
+      label: string
+      qty: number
+      status: PartStatus
+      note: string | null
+      sort: number
+      chosen_section_id: string | null
+    }[]
   >(
-    'select id, label, qty, status, note, sort from job_parts where job_id = ? order by sort, created_at',
+    `select id, label, qty, status, note, sort, chosen_section_id
+       from job_parts where job_id = ? order by sort, created_at`,
+    [jobId],
+  )
+  // Every variant of every part on this job, in one pass. plate_parts
+  // counts the objects on the file's plate, because a plate of three is
+  // one indivisible print and the row has to say so.
+  const variantRows = await d.select<
+    {
+      section_id: string
+      part_id: string
+      import_id: string
+      file_name: string
+      printer_model: string | null
+      printer_id: string | null
+      printer_name: string | null
+      est_minutes: number | null
+      est_grams: number | null
+      material: string | null
+      imported_at: string
+      plate_parts: number
+    }[]
+  >(
+    `select s.id as section_id, s.part_id, i.id as import_id, i.file_name,
+            i.printer_model, i.printer_id, p.name as printer_name,
+            s.est_minutes, s.est_grams, s.material, i.imported_at,
+            (select count(*) from slice_sections x where x.import_id = i.id) as plate_parts
+       from slice_sections s
+       join slice_imports i on i.id = s.import_id
+       left join printers p on p.id = i.printer_id
+      where i.job_id = ? and s.part_id is not null
+      order by i.imported_at desc, s.rowid desc`,
     [jobId],
   )
   const partHistory = await d.select<
@@ -1398,6 +1438,22 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         status: x.status,
         note: x.note,
         sort: Number(x.sort),
+        chosenSectionId: x.chosen_section_id,
+        variants: variantRows
+          .filter((v) => v.part_id === x.id)
+          .map((v): PartVariant => ({
+            sectionId: v.section_id,
+            importId: v.import_id,
+            fileName: v.file_name,
+            printerModel: v.printer_model,
+            printerId: v.printer_id,
+            printerName: v.printer_name,
+            estMinutes: v.est_minutes == null ? null : Number(v.est_minutes),
+            estGrams: v.est_grams == null ? null : Number(v.est_grams),
+            material: v.material,
+            importedAt: v.imported_at,
+            plateParts: Number(v.plate_parts),
+          })),
         history: partHistory
           .filter((e) => e.part_id === x.id)
           .map((e) => ({
@@ -2161,6 +2217,36 @@ export async function setPartStatus(
     `insert into part_events (part_id, job_id, kind, from_status, to_status, note, actor_id)
      values (?, ?, 'status', ?, ?, ?, ?)`,
     [partId, part.job_id, part.status, status, note?.trim() || null, actorId],
+  )
+}
+
+/**
+ * Choose which sliced file this part is being printed from.
+ *
+ * Null clears the choice and the screen falls back to the fastest variant,
+ * saying so. The section must belong to this part: pointing a part at
+ * another part's slice would put the wrong time into every schedule built
+ * from it, silently, which is the failure mode this whole feature exists
+ * to prevent.
+ */
+export async function choosePartVariant(
+  shopId: string,
+  partId: string,
+  sectionId: string | null,
+): Promise<void> {
+  const d = await db()
+  if (sectionId) {
+    const ok = await d.select<{ n: number }[]>(
+      'select count(*) as n from slice_sections where id = ? and part_id = ?',
+      [sectionId, partId],
+    )
+    if (!(ok[0]?.n ?? 0)) throw new Error('That sliced file is not a version of this part.')
+  }
+  await d.execute(
+    `update job_parts set chosen_section_id = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      where id = ? and shop_id = ?`,
+    [sectionId, partId, shopId],
   )
 }
 

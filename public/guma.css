@@ -825,6 +825,16 @@ body:has(.board) main *:has(>.board),.wrap:has(.board){
   display:inline-block;border:1px solid var(--line);border-radius:20px;padding:1px 8px;
   font-size:11px;line-height:16px;color:var(--txt-2);background:var(--panel-2);
 }
+.chip.on{
+  border-color:var(--biolum);color:var(--txt);
+  background:color-mix(in srgb, var(--biolum) 14%, var(--panel-2));
+}
+.chip:disabled{opacity:.6}
+/* A part's sliced files, one per machine. Wraps, because a part with
+   three variants and a plate note is a normal row, not an error. */
+.pvars{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:4px}
+.pvars .chip{cursor:pointer}
+.pvars .pmeta{margin:0}
 .tag{
   display:inline-block;font-size:10px;line-height:16px;font-weight:600;border-radius:4px;
   padding:1px 6px;color:var(--ink);

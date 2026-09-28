@@ -107,6 +107,12 @@ pub fn run() {
       sql: include_str!("../migrations/0017_run_from_slice.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 18,
+      description: "slice variants: one part, several machines' files",
+      sql: include_str!("../migrations/0018_slice_variants.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

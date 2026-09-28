@@ -62,6 +62,7 @@ export type {
   WorkEntryRow,
   WorkEntryInput,
   PartRow,
+  PartVariant,
   PartInput,
   SliceImportInput,
   SliceImportResult,
@@ -114,6 +115,7 @@ import type {
   WorkEntryRow,
   WorkEntryInput,
   PartRow,
+  PartVariant,
   PartInput,
   PartStatus,
   QuoteStatus,
@@ -970,7 +972,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   const r = data as any
   if (!r) throw new Error('That project no longer exists.')
 
-  const [gates, rates, events, payments, runs, work, parts, partHistory, slices] =
+  const [gates, rates, events, payments, runs, work, parts, partHistory, slices, variantRows] =
     await Promise.all([
     loadGateAnswers([jobId]),
     currentRates(shopId),
@@ -1000,7 +1002,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .order('worked_on', { ascending: false }),
     supabase
       .from('job_parts')
-      .select('id, label, qty, status, note, sort')
+      .select('id, label, qty, status, note, sort, chosen_section_id')
       .eq('job_id', jobId)
       .order('sort'),
     supabase
@@ -1009,6 +1011,15 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .eq('job_id', jobId)
       .order('at', { ascending: false }),
     listSliceImports(shopId, jobId),
+    supabase
+      .from('slice_sections')
+      .select(
+        `id, part_id, est_minutes, est_grams, material,
+         slice_imports!inner ( id, job_id, file_name, printer_model, printer_id, imported_at,
+                               printers ( name ) )`,
+      )
+      .eq('slice_imports.job_id', jobId)
+      .order('id'),
   ])
   if (events.error) throw events.error
   if (payments.error) throw payments.error
@@ -1016,6 +1027,15 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   if (work.error) throw work.error
   if (parts.error) throw parts.error
   if (partHistory.error) throw partHistory.error
+  if (variantRows.error) throw variantRows.error
+
+  // plate size: how many objects came off the same file. Counted here
+  // rather than in SQL because the rows are already in hand.
+  const plateOf = new Map<string, number>()
+  for (const v of (variantRows.data ?? []) as any[]) {
+    const id = v.slice_imports?.id
+    if (id) plateOf.set(id, (plateOf.get(id) ?? 0) + 1)
+  }
 
   const quote = r.quotes?.[0] ?? null
   return {
@@ -1078,6 +1098,23 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         status: x.status,
         note: x.note ?? null,
         sort: Number(x.sort ?? 0),
+        chosenSectionId: x.chosen_section_id ?? null,
+        variants: ((variantRows.data ?? []) as any[])
+          .filter((v) => v.part_id === x.id)
+          .map((v): PartVariant => ({
+            sectionId: v.id,
+            importId: v.slice_imports?.id,
+            fileName: v.slice_imports?.file_name ?? '',
+            printerModel: v.slice_imports?.printer_model ?? null,
+            printerId: v.slice_imports?.printer_id ?? null,
+            printerName: v.slice_imports?.printers?.name ?? null,
+            estMinutes: v.est_minutes == null ? null : Number(v.est_minutes),
+            estGrams: v.est_grams == null ? null : Number(v.est_grams),
+            material: v.material ?? null,
+            importedAt: v.slice_imports?.imported_at ?? '',
+            plateParts: plateOf.get(v.slice_imports?.id) ?? 1,
+          }))
+          .sort((a, b) => (a.importedAt < b.importedAt ? 1 : -1)),
         history: ((partHistory.data ?? []) as any[])
           .filter((e) => e.part_id === x.id)
           .map((e) => ({
@@ -1611,6 +1648,29 @@ export async function setPartStatus(
     actor_id: actorId,
   })
   if (evErr) throw evErr
+}
+
+/** See data.local.ts's choosePartVariant. */
+export async function choosePartVariant(
+  shopId: string,
+  partId: string,
+  sectionId: string | null,
+): Promise<void> {
+  if (sectionId) {
+    const { count, error } = await supabase
+      .from('slice_sections')
+      .select('id', { count: 'exact', head: true })
+      .eq('id', sectionId)
+      .eq('part_id', partId)
+    if (error) throw error
+    if (!count) throw new Error('That sliced file is not a version of this part.')
+  }
+  const { error } = await supabase
+    .from('job_parts')
+    .update({ chosen_section_id: sectionId })
+    .eq('id', partId)
+    .eq('shop_id', shopId)
+  if (error) throw error
 }
 
 export async function updatePart(shopId: string, partId: string, input: PartInput): Promise<void> {

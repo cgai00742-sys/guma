@@ -855,6 +855,38 @@ export interface PartRow {
   sort: number
   /** Newest first. Empty until something has happened to this part. */
   history: PartEvent[]
+  /** Every sliced file this part has been read out of, one per machine.
+   *  Empty for a part typed in by hand. See 0018_slice_variants.sql. */
+  variants: PartVariant[]
+  /** Which variant is being printed. Null means nobody has chosen, and
+   *  the screen falls back to the fastest -- saying so. */
+  chosenSectionId: string | null
+}
+
+/**
+ * One part as sliced for one machine.
+ *
+ * Time is per this machine and must not be averaged across variants: the
+ * swing between two printers is up to 20%. Grams barely move (about 1%),
+ * so any variant answers "how much filament" honestly.
+ */
+export interface PartVariant {
+  /** The slice_sections row. This is what chosenSectionId points at. */
+  sectionId: string
+  importId: string
+  fileName: string
+  /** The machine as the FILE named it -- kept verbatim, matched or not.
+   *  Voltage lost a month of variant matching to a "Pursa XL" typo. */
+  printerModel: string | null
+  printerId: string | null
+  printerName: string | null
+  estMinutes: number | null
+  estGrams: number | null
+  material: string | null
+  importedAt: string
+  /** How many objects were on the plate this came off. More than one and
+   *  the print is indivisible: you cannot print half a plate. */
+  plateParts: number
 }
 
 export interface PartEvent {
