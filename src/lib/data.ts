@@ -72,6 +72,7 @@ import type {
   RunOutcome,
   PartRow,
   PartInput,
+  QuoteBuildRow,
   SliceImportInput,
   SliceImportResult,
   SliceImportRow,
@@ -512,4 +513,9 @@ export async function listSliceImports(
 
 export async function deleteSliceImport(shopId: string, importId: string): Promise<void> {
   return (await backend()).deleteSliceImport(shopId, importId)
+}
+
+/** A quote's build lines, in order. Empty for a single-machine quote. */
+export async function listQuoteBuilds(quoteId: string): Promise<QuoteBuildRow[]> {
+  return (await backend()).listQuoteBuilds(quoteId)
 }

@@ -121,6 +121,7 @@ import type {
   SliceImportResult,
   SliceImportRow,
   SliceSectionRow,
+  QuoteBuildRow,
 } from './data.types'
 
 /**
@@ -864,7 +865,56 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
     })
   }
 
+  // Build lines, when the quote has them. See 0020_quote_builds.sql -- a
+  // quote with rows here is described BY them, and the single-machine
+  // columns on it are ignored rather than mirrored.
+  if (args.builds?.length) {
+    const rows = args.builds
+      .map((b, i) => ({ b, label: b.label.trim(), i }))
+      .filter(({ label }) => !!label)
+      .map(({ b, label, i }) => ({
+        quote_id: quote.id,
+        kind: b.kind ?? 'print',
+        label,
+        printer_id: b.printerId,
+        material_id: b.materialId,
+        qty: Math.max(1, Math.floor(Number(b.qty) || 1)),
+        units_per_part: Number(b.unitsPerPart) || 0,
+        print_hrs_part: Number(b.printHrsPerPart) || 0,
+        slice_import_id: b.sliceImportId ?? null,
+        sort: i,
+      }))
+    if (rows.length) {
+      const { error } = await supabase.from('quote_builds').insert(rows)
+      if (error) throw error
+    }
+  }
+
   return { jobId: job.id, clientId: clientId!, quoteId: quote.id, ref: args.ref }
+}
+
+export async function listQuoteBuilds(quoteId: string): Promise<QuoteBuildRow[]> {
+  const { data, error } = await supabase
+    .from('quote_builds')
+    .select(
+      'id, kind, label, printer_id, material_id, qty, units_per_part, print_hrs_part, slice_import_id, sort',
+    )
+    .eq('quote_id', quoteId)
+    .order('sort', { ascending: true })
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return (data ?? []).map((r) => ({
+    id: r.id as string,
+    kind: r.kind as 'print',
+    label: r.label as string,
+    printerId: r.printer_id as string | null,
+    materialId: r.material_id as string | null,
+    qty: Number(r.qty),
+    unitsPerPart: Number(r.units_per_part),
+    printHrsPerPart: Number(r.print_hrs_part),
+    sliceImportId: r.slice_import_id as string | null,
+    sort: Number(r.sort),
+  }))
 }
 
 /** A sent quote, re-read for printing. Priced from its OWN snapshot. */

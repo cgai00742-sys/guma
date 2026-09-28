@@ -65,6 +65,8 @@ import type {
   WorkEntryInput,
   PartRow,
   PartInput,
+  QuoteBuildInput,
+  QuoteBuildRow,
   SliceImportInput,
   SliceImportResult,
   SliceImportRow,
@@ -1014,6 +1016,11 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
     ],
   )
 
+  // The build lines, when the quote has them. Written after the quote row
+  // because they hang off it; the single-machine columns above keep
+  // whatever they were given and are simply not read for such a quote.
+  await writeQuoteBuilds(d, quoteId, args.builds)
+
   if (args.send) {
     await d.execute(
       `insert into job_events (job_id, kind, body) values (?, 'quote_sent', ?)`,
@@ -1022,6 +1029,77 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
   }
 
   return { jobId, clientId, quoteId, ref: args.ref }
+}
+
+/** Replace a quote's build lines wholesale. Called on save; a quote is
+ *  versioned by insert, so there is no partial-edit case to handle. */
+async function writeQuoteBuilds(
+  d: Awaited<ReturnType<typeof db>>,
+  quoteId: string,
+  builds: QuoteBuildInput[] | undefined,
+) {
+  if (!builds?.length) return
+  let sort = 0
+  for (const b of builds) {
+    const label = b.label.trim()
+    if (!label) continue
+    await d.execute(
+      `insert into quote_builds
+         (id, quote_id, kind, label, printer_id, material_id, qty,
+          units_per_part, print_hrs_part, slice_import_id, sort)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        crypto.randomUUID(),
+        quoteId,
+        b.kind ?? 'print',
+        label,
+        b.printerId,
+        b.materialId,
+        Math.max(1, Math.floor(Number(b.qty) || 1)),
+        Number(b.unitsPerPart) || 0,
+        Number(b.printHrsPerPart) || 0,
+        b.sliceImportId ?? null,
+        sort++,
+      ],
+    )
+  }
+}
+
+/** A quote's build lines, in order. Empty for a single-machine quote,
+ *  which is every quote written before 0016. */
+export async function listQuoteBuilds(quoteId: string): Promise<QuoteBuildRow[]> {
+  const d = await db()
+  const rows = await d.select<
+    {
+      id: string
+      kind: 'print'
+      label: string
+      printer_id: string | null
+      material_id: string | null
+      qty: number
+      units_per_part: number
+      print_hrs_part: number
+      slice_import_id: string | null
+      sort: number
+    }[]
+  >(
+    `select id, kind, label, printer_id, material_id, qty, units_per_part,
+            print_hrs_part, slice_import_id, sort
+       from quote_builds where quote_id = ? order by sort, created_at, rowid`,
+    [quoteId],
+  )
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    label: r.label,
+    printerId: r.printer_id,
+    materialId: r.material_id,
+    qty: Number(r.qty),
+    unitsPerPart: Number(r.units_per_part),
+    printHrsPerPart: Number(r.print_hrs_part),
+    sliceImportId: r.slice_import_id,
+    sort: Number(r.sort),
+  }))
 }
 
 /** A sent quote, re-read for printing. Priced from its OWN snapshot — same

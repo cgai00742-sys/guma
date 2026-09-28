@@ -95,6 +95,12 @@ pub fn run() {
       sql: include_str!("../migrations/0015_slice_imports.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 16,
+      description: "quote builds: one quote, several machines",
+      sql: include_str!("../migrations/0016_quote_builds.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

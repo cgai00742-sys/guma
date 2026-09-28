@@ -210,6 +210,33 @@ export interface ShopQuoteTermsInput {
   payment_info: string
 }
 
+/** A row of quote_builds, on the way in. */
+export interface QuoteBuildInput {
+  /** 'print' is the only kind today; hardware (magnets, dowels, inserts)
+   *  lands here later as its own kind. */
+  kind?: 'print'
+  label: string
+  printerId: string | null
+  materialId: string | null
+  /** copies of THIS line, not of the job */
+  qty: number
+  /** grams or mL for ONE copy */
+  unitsPerPart: number
+  /** print hours for ONE copy */
+  printHrsPerPart: number
+  /** the sliced file this came off, so a read figure is distinguishable
+   *  from a typed one. Null means typed by hand. */
+  sliceImportId?: string | null
+}
+
+/** A row of quote_builds, on the way back out. */
+export interface QuoteBuildRow extends QuoteBuildInput {
+  id: string
+  kind: 'print'
+  sliceImportId: string | null
+  sort: number
+}
+
 export interface SaveQuoteArgs {
   shopId: string
   ref: string
@@ -229,6 +256,16 @@ export interface SaveQuoteArgs {
     flat_each: number
     discount_pct: number
   }
+  /**
+   * One line per thing being made, each on its own machine and material.
+   *
+   * When present, these DESCRIBE the quote and the single-machine fields
+   * above (quantity, material_id, printer_id, units_per_part,
+   * print_hrs_part) are ignored rather than mirrored. Two copies of one
+   * fact are free to disagree, and the one that disagrees silently is the
+   * one that bills a client. See 0016_quote_builds.sql.
+   */
+  builds?: QuoteBuildInput[]
   /** set only when sending — a draft carries no snapshot and no frozen total */
   send?: {
     rates_snapshot: unknown

@@ -43,6 +43,12 @@ function freshDb() {
 
 let currentDb: ReturnType<typeof freshDb>
 vi.mock('@tauri-apps/plugin-sql', () => ({ default: { load: async () => currentDb } }))
+// The quote-build tests below go through the DISPATCHER (./data) rather than
+// data.local directly, because saveQuote is what a screen calls. Without
+// this the dispatcher decides it is not in Tauri, loads data.supabase and
+// tries to reach the network -- which fails as "fetch failed", naming
+// nothing useful.
+vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => true }))
 
 const SHOP = 'shop-1'
 const JOB = 'job-1'
@@ -255,5 +261,199 @@ describe('refusals', () => {
     await expect(importSlice(SHOP, JOB, ACTOR, { ...BUOY, sections: [] })).rejects.toThrow(
       /nothing on the plate/,
     )
+  })
+})
+
+/* ---- quote build lines -------------------------------------------------- */
+
+/**
+ * A quote that spans two machines, saved and read back against real SQLite.
+ *
+ * The arithmetic is pricing.test.ts's job. This is the other half: does the
+ * SQL run, does the order survive, and -- the one that matters -- does a
+ * quote with build lines leave the old single-machine columns alone rather
+ * than mirroring them. Two copies of one fact are free to disagree, and the
+ * one that disagrees silently is the one that bills a client.
+ */
+describe('a quote saved across two machines', () => {
+  async function saveTwoMachineQuote() {
+    const data = await import('./data')
+    currentDb.sqlite.exec(`
+      insert into printers (id, shop_id, name, model, tech, rate_hourly, wear_hourly)
+        values ('printer-2', '${SHOP}', 'Big Blue', 'Bambu Lab H2D', 'fdm', 12, 4);
+      insert into materials (id, shop_id, name, kind, unit, cost_per_unit)
+        values ('material-2', '${SHOP}', 'PLA white', 'filament', 'g', 0.02);
+    `)
+    return data.saveQuote({
+      shopId: SHOP,
+      ref: 'J-002',
+      client: { name: 'Reef Watch', contact: '', email: '', phone: '', source: '' },
+      job: { title: 'Markers', brief: '', neededBy: null, assetOrigin: 'model' },
+      quote: {
+        design_billing: 'hourly',
+        design_qty: 0,
+        revisions_incl: 0,
+        quantity: 1,
+        material_id: null,
+        printer_id: null,
+        units_per_part: 0,
+        print_hrs_part: 0,
+        finishing_hrs: 0,
+        rush: false,
+        flat_each: 0,
+        discount_pct: 0,
+      },
+      builds: [
+        {
+          label: 'Hull',
+          printerId: 'printer-2',
+          materialId: 'material-1',
+          qty: 2,
+          unitsPerPart: 100,
+          printHrsPerPart: 3,
+        },
+        {
+          label: 'Cap',
+          printerId: 'printer-1',
+          materialId: 'material-2',
+          qty: 1,
+          unitsPerPart: 50,
+          printHrsPerPart: 1,
+        },
+      ],
+    })
+  }
+
+  it('reads back every line, in the order it was given', async () => {
+    const { listQuoteBuilds } = await import('./data')
+    const saved = await saveTwoMachineQuote()
+    const builds = await listQuoteBuilds(saved.quoteId)
+
+    expect(builds.map((b) => [b.label, b.qty, b.printerId, b.materialId])).toEqual([
+      ['Hull', 2, 'printer-2', 'material-1'],
+      ['Cap', 1, 'printer-1', 'material-2'],
+    ])
+    expect(builds.map((b) => b.unitsPerPart)).toEqual([100, 50])
+    expect(builds.map((b) => b.printHrsPerPart)).toEqual([3, 1])
+    expect(builds.every((b) => b.kind === 'print')).toBe(true)
+  })
+
+  it('leaves the old single-machine columns exactly as passed, not mirrored', async () => {
+    const saved = await saveTwoMachineQuote()
+    const q = currentDb.sqlite
+      .prepare('select quantity, printer_id, material_id, units_per_part, print_hrs_part from quotes where id = ?')
+      .get(saved.quoteId) as Record<string, unknown>
+    // If a future change starts writing the first build into these, the
+    // quote would have two descriptions of itself and pricing would have a
+    // choice to make. It must not.
+    expect(q).toEqual({
+      quantity: 1,
+      printer_id: null,
+      material_id: null,
+      units_per_part: 0,
+      print_hrs_part: 0,
+    })
+  })
+
+  it('prices from the build lines, at each machine its own rate', async () => {
+    const { priceQuote } = await import('./pricing')
+    const { listQuoteBuilds } = await import('./data')
+    const saved = await saveTwoMachineQuote()
+    const builds = await listQuoteBuilds(saved.quoteId)
+
+    // The fleet as seeded above, rather than loadShopContext -- this test is
+    // about whether persisted build lines price correctly, and dragging a
+    // rate card into the fixture would only add a way for it to fail for an
+    // unrelated reason.
+    const fleet = {
+      materials: [
+        { id: 'material-1', name: 'PETG black', unit: 'g' as const, costPerUnit: 0.025, sellOverride: null, swatch: '#000' },
+        { id: 'material-2', name: 'PLA white', unit: 'g' as const, costPerUnit: 0.02, sellOverride: null, swatch: '#fff' },
+      ],
+      printers: [
+        { id: 'printer-1', name: 'Sakman', model: 'Prusa XL', ratePerHour: 9, wearPerHour: 3, watts: null },
+        { id: 'printer-2', name: 'Big Blue', model: 'Bambu Lab H2D', ratePerHour: 12, wearPerHour: 4, watts: null },
+      ],
+    }
+    const rates = {
+      currency: 'USD',
+      locale: 'en-US',
+      taxLabel: 'GET',
+      taxPct: 0,
+      designHourly: 0,
+      finishingHourly: 0,
+      rushPct: 0,
+      minimumOrder: 0,
+      depositPct: 0,
+      depositWhen: 'design' as const,
+      depositWaiveBelow: 0,
+      materialMarkup: 1,
+      revisionsIncl: 0,
+      revisionHourly: null,
+      electricityRateKwh: null,
+      // The true-cost trio. Null means "not supplied", which is what a shop
+      // that has not filled them in has -- and it must not change the
+      // machine and wear arithmetic this test is about.
+      overheadMonthly: null,
+      productiveHoursMonth: null,
+      failurePct: null,
+    }
+
+    const q = priceQuote(
+      {
+        assetOrigin: 'ready',
+        designBilling: 'hourly',
+        designQty: 0,
+        revisions: 0,
+        quantity: 1,
+        unitsPerPart: 0,
+        printHrsPerPart: 0,
+        finishingHrs: 0,
+        rush: false,
+        flatEach: 0,
+        discountPct: 0,
+        builds: builds.map((b) => ({ ...b, key: b.id })),
+      },
+      rates,
+      null,
+      null,
+      fleet,
+    )
+    // Hull: 2 x 3 h = 6 h on Big Blue at $12 = $72
+    // Cap:  1 x 1 h = 1 h on Sakman   at $9  = $9
+    expect(Math.round(q.machineAmt * 100) / 100).toBe(81)
+    expect(q.machineHours).toBe(7)
+    // Wear splits the same way: 6 x $4 + 1 x $3.
+    expect(Math.round(q.wearAmt * 100) / 100).toBe(27)
+  })
+
+  it('writes no build rows for a plain single-machine quote', async () => {
+    const data = await import('./data')
+    await data.saveQuote({
+      shopId: SHOP,
+      ref: 'J-003',
+      client: { name: 'Reef Watch', contact: '', email: '', phone: '', source: '' },
+      job: { title: 'Plain', brief: '', neededBy: null, assetOrigin: 'model' },
+      quote: {
+        design_billing: 'hourly',
+        design_qty: 0,
+        revisions_incl: 0,
+        quantity: 3,
+        material_id: 'material-1',
+        printer_id: 'printer-1',
+        units_per_part: 40,
+        print_hrs_part: 2,
+        finishing_hrs: 0,
+        rush: false,
+        flat_each: 0,
+        discount_pct: 0,
+      },
+    })
+    const n = currentDb.sqlite.prepare('select count(*) as n from quote_builds').get() as {
+      n: number
+    }
+    // Absent builds must mean "the old shape", not "an empty build list",
+    // or every existing quote would price to zero.
+    expect(n).toEqual({ n: 0 })
   })
 })
