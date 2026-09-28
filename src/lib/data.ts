@@ -83,6 +83,7 @@ import type {
   WorkEntryRow,
   WorkEntryInput,
   QuoteStatus,
+  RelatedProject,
   ChangeCause,
   QuoteChange,
 } from './data.types'
@@ -109,6 +110,7 @@ export {
   validateRevision,
 } from './data.types'
 export type {
+  RelatedProject,
   ChangeCause,
   QuoteChange,
   Shop,
@@ -533,6 +535,23 @@ export async function listSliceImports(
   jobId: string,
 ): Promise<SliceImportRow[]> {
   return (await backend()).listSliceImports(shopId, jobId)
+}
+
+export async function archiveProject(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  archived: boolean,
+): Promise<void> {
+  return (await backend()).archiveProject(shopId, jobId, actorId, archived)
+}
+
+export async function setRelatedProject(
+  shopId: string,
+  jobId: string,
+  relatedTo: string | null,
+): Promise<void> {
+  return (await backend()).setRelatedProject(shopId, jobId, relatedTo)
 }
 
 export async function deleteSliceImport(shopId: string, importId: string): Promise<void> {

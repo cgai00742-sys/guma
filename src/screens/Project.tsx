@@ -49,6 +49,10 @@ import {
   importSlice,
   deleteSliceImport,
   sliceFileContent,
+  archiveProject,
+  setRelatedProject,
+  listJobs,
+  type JobListRow,
   deletePart,
   choosePartVariant,
   setPartStatus,
@@ -466,6 +470,20 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           <span>{error}</span>
         </div>
       )}
+
+      {facts.archivedAt && (
+        <div className="attn" style={{ marginBottom: 10 }}>
+          <b>Archived</b>
+          <div style={{ marginTop: 4, fontSize: 12 }}>
+            Filed off the board on {facts.archivedAt.slice(0, 10)}. Nothing was deleted and nothing
+            stopped counting — it is still in the dashboard, in what this shop has earned, and in
+            what its materials have cost.
+          </div>
+        </div>
+      )}
+
+      {/* ---- the family ---- */}
+      <Family ctx={ctx} detail={detail} busy={busy} onChanged={reload} setError={setError} />
 
       {/* ---- what it came to, once it is finished ---- */}
       {detail.phase === 'delivered' && (
@@ -1136,6 +1154,37 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         >
           Closeout sheet
         </Link>
+        {/* Archiving, only once it is finished. The board is a list of what
+            needs attention; a delivered project from March needs none, and
+            leaving it there is how a board stops being read. Nothing is
+            deleted and nothing stops counting. */}
+        {detail.phase === 'delivered' && (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            title={
+              facts.archivedAt
+                ? 'Puts it back on the board.'
+                : 'Files it off the board. Every figure it contributes still counts — the dashboard, the shop’s own history, what a material has cost on average.'
+            }
+            onClick={() =>
+              void (async () => {
+                setBusy(true)
+                try {
+                  await archiveProject(ctx.shop.id, jobId, ctx.profile.id, !facts.archivedAt)
+                  await reload()
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e))
+                } finally {
+                  setBusy(false)
+                }
+              })()
+            }
+          >
+            {facts.archivedAt ? 'Unarchive' : 'Archive'}
+          </button>
+        )}
         <button
           type="button"
           className="btn"
@@ -2496,6 +2545,179 @@ function Closeout({
         </span>
       </div>
     </section>
+  )
+}
+
+/**
+ * Which project paid for the design, and what else came off it.
+ *
+ * Asked for directly: "this project needs a way to be linked to a new
+ * project that is related to the same design hours put in. For example if
+ * I print multiple other files for this project, or use a different set of
+ * files for this project then they need to link to this one."
+ *
+ * The shape that matters is what it does NOT do. It does not copy the
+ * design hours onto the follow-on and it does not re-charge them. The
+ * hours were spent once, on one project, and every other member of the
+ * family can see that without paying for it again -- which is why a shop's
+ * second run of the same part earns more than its first, and the thing
+ * that gets lost when the two are separate projects with no thread
+ * between them.
+ */
+function Family({
+  ctx,
+  detail,
+  busy,
+  onChanged,
+  setError,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  busy: boolean
+  onChanged: () => Promise<void>
+  setError: (m: string | null) => void
+}) {
+  const [picking, setPicking] = useState(false)
+  const [options, setOptions] = useState<JobListRow[] | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const parent = detail.relatedTo
+  const kids = detail.related
+  const familyDesign =
+    (parent?.designHours ?? 0) +
+    detail.actuals.designHours +
+    kids.reduce((a, k) => a + k.designHours, 0)
+
+  async function openPicker() {
+    setPicking(true)
+    setError(null)
+    if (options) return
+    try {
+      const rows = await listJobs(ctx.shop.id)
+      setOptions(rows.filter((r) => r.jobId !== detail.jobId))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function link(to: string | null) {
+    setSaving(true)
+    setError(null)
+    try {
+      await setRelatedProject(ctx.shop.id, detail.jobId, to)
+      setPicking(false)
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const row = (
+    r: { jobId: string; ref: string; title: string; designHours: number },
+    what: string,
+  ) => (
+    <div className="flagrow" key={r.jobId}>
+      <Link to={`/project/${r.jobId}`} className="pn" style={{ textDecoration: 'none' }}>
+        {r.ref} · {r.title}
+      </Link>
+      <span className="pmeta" style={{ marginLeft: 'auto' }}>
+        {what}
+        {r.designHours > 0 && ` · ${Math.round(r.designHours * 10) / 10} h of design`}
+      </span>
+    </div>
+  )
+
+  return (
+    <details className="sec fold" data-fold="family" style={{ marginTop: 18 }}>
+      <summary className="sechead">
+        <h4>Related work</h4>
+        <span className="secstat">
+          {parent
+            ? `continues ${parent.ref}`
+            : kids.length
+              ? `${kids.length} follow-on${kids.length === 1 ? '' : 's'}`
+              : 'stands alone'}
+        </span>
+      </summary>
+
+      {parent && row(parent, 'the original')}
+      {kids.map((k) => row(k, 'came off this one'))}
+
+      {(parent || kids.length > 0) && (
+        <div className="hint" style={{ marginTop: 8 }}>
+          {Math.round(familyDesign * 10) / 10} hours of design across this family, logged once on
+          the project that did the work. A follow-on does not pay for it again — which is exactly
+          why a second run of a part earns more than the first, and why that has to be visible
+          rather than inferred.
+        </div>
+      )}
+
+      <div className="btnrow" style={{ marginTop: 10 }}>
+        {parent ? (
+          <button
+            type="button"
+            className="btn sm"
+            disabled={busy || saving}
+            onClick={() => void link(null)}
+          >
+            Unlink from {parent.ref}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn sm"
+            disabled={busy || saving}
+            onClick={() => void openPicker()}
+          >
+            Link to the project that did the design
+          </button>
+        )}
+        <span className="hint" style={{ marginTop: 0 }}>
+          {kids.length > 0
+            ? 'Projects that continue from this one link themselves to it from their own page.'
+            : 'For a reprint, a second run, or the same design sliced for another machine.'}
+        </span>
+      </div>
+
+      {picking && (
+        <div className="pane" style={{ marginTop: 10 }}>
+          {!options ? (
+            <div className="hint" style={{ marginTop: 0 }}>
+              Loading…
+            </div>
+          ) : options.length === 0 ? (
+            <div className="hint" style={{ marginTop: 0 }}>
+              Nothing else to link to yet.
+            </div>
+          ) : (
+            <div className="stack">
+              {options.slice(0, 12).map((o) => (
+                <button
+                  key={o.jobId}
+                  type="button"
+                  className="btn sm"
+                  disabled={saving}
+                  style={{ justifyContent: 'flex-start' }}
+                  onClick={() => void link(o.jobId)}
+                >
+                  {o.ref} · {o.title}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            className="btn sm ghost"
+            style={{ marginTop: 8 }}
+            onClick={() => setPicking(false)}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </details>
   )
 }
 

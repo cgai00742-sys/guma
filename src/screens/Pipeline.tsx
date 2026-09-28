@@ -86,6 +86,10 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
   const [overPhase, setOverPhase] = useState<JobPhase | null>(null)
   const [query, setQuery] = useState('')
   const [flaggedOnly, setFlaggedOnly] = useState(false)
+  /** Archived work is off the board by default and one toggle away. The
+   *  board answers "what needs attention"; a project delivered in March
+   *  needs none, and a board nobody can read is a board nobody reads. */
+  const [showArchived, setShowArchived] = useState(false)
   /**
    * Which half of the business this board is showing.
    *
@@ -142,11 +146,12 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
     () =>
       (jobs ?? [])
         .filter((j) => j.facts.takenInAt)
+        .filter((j) => showArchived || !j.facts.archivedAt)
         .map((j) => {
           const gate = gateStatus(j.phase, j.gateAnswers, j.facts)
           return { ...j, flags: flagsFor(j.facts), gateDone: gate.done, gateTotal: gate.total }
         }),
-    [jobs],
+    [jobs, showArchived],
   )
 
   const stats = useMemo(() => {
@@ -301,6 +306,17 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
               For clients
             </button>
           </div>
+        )}
+        {(jobs ?? []).some((j) => j.facts.archivedAt) && (
+          <button
+            type="button"
+            className={`btn sm ${showArchived ? 'primary' : ''}`.trim()}
+            aria-pressed={showArchived}
+            onClick={() => setShowArchived((v) => !v)}
+            title="Archived projects are still counted everywhere — they are just off the board."
+          >
+            {showArchived ? 'Hide archived' : 'Show archived'}
+          </button>
         )}
         <input
           value={query}

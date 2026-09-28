@@ -216,3 +216,82 @@ describe('a trial print, all the way through', () => {
     expect(detail.facts.hasActuals).toBe(true)
   })
 })
+
+describe('what happens to a project after it is finished', () => {
+  async function finished() {
+    const data = await import('./data')
+    const shopId = await data.setupShop(SETUP)
+    const ctx = await data.loadShopContext()
+    const jobId = await data.createInHouseJob(shopId, { title: 'Keychain run' })
+    await data.logWork(shopId, jobId, ctx.profile.id, {
+      kind: 'design',
+      hours: 4,
+      workedOn: '2026-09-20',
+      note: 'The keychain itself',
+    })
+    for (const to of ['review', 'delivered'] as const) {
+      await data.updateJobPhase(shopId, jobId, ctx.profile.id, to)
+    }
+    return { data, shopId, ctx, jobId }
+  }
+
+  it('files it off the board without deleting anything or stopping any figure', async () => {
+    const { data, shopId, ctx, jobId } = await finished()
+    await data.archiveProject(shopId, jobId, ctx.profile.id, true)
+
+    const detail = await data.loadProjectDetail(shopId, jobId)
+    expect(detail.facts.archivedAt).not.toBeNull()
+    // Still in the shop's own list, still carrying its hours: archiving is
+    // a board decision, not an accounting one.
+    const rows = await data.listJobs(shopId)
+    expect(rows.find((r) => r.jobId === jobId)?.facts.archivedAt).not.toBeNull()
+    expect(detail.actuals.designHours).toBe(4)
+
+    await data.archiveProject(shopId, jobId, ctx.profile.id, false)
+    expect((await data.loadProjectDetail(shopId, jobId)).facts.archivedAt).toBeNull()
+  })
+
+  it('refuses to archive work that is still live', async () => {
+    const data = await import('./data')
+    const shopId = await data.setupShop(SETUP)
+    const ctx = await data.loadShopContext()
+    const jobId = await data.createInHouseJob(shopId, { title: 'Still going' })
+    await expect(data.archiveProject(shopId, jobId, ctx.profile.id, true)).rejects.toThrow(
+      /still live/i,
+    )
+  })
+
+  it('links a follow-on to the project that paid for the design, without copying the hours', async () => {
+    const { data, shopId, jobId } = await finished()
+    const second = await data.createInHouseJob(shopId, { title: 'Keychain run — second batch' })
+    await data.setRelatedProject(shopId, second, jobId)
+
+    const follow = await data.loadProjectDetail(shopId, second)
+    expect(follow.relatedTo?.jobId).toBe(jobId)
+    expect(follow.relatedTo?.designHours).toBe(4)
+    // The hours stayed where they were spent. A follow-on that inherited
+    // them would report a cost it never paid.
+    expect(follow.actuals.designHours).toBe(0)
+
+    const original = await data.loadProjectDetail(shopId, jobId)
+    expect(original.related.map((r) => r.jobId)).toEqual([second])
+  })
+
+  it('keeps families one level deep — linking to a follow-on attaches to its original', async () => {
+    const { data, shopId, jobId } = await finished()
+    const second = await data.createInHouseJob(shopId, { title: 'Second' })
+    const third = await data.createInHouseJob(shopId, { title: 'Third' })
+    await data.setRelatedProject(shopId, second, jobId)
+    await data.setRelatedProject(shopId, third, second)
+
+    const t = await data.loadProjectDetail(shopId, third)
+    expect(t.relatedTo?.jobId).toBe(jobId)
+    const original = await data.loadProjectDetail(shopId, jobId)
+    expect(original.related).toHaveLength(2)
+  })
+
+  it('will not let a project continue from itself', async () => {
+    const { data, shopId, jobId } = await finished()
+    await expect(data.setRelatedProject(shopId, jobId, jobId)).rejects.toThrow(/itself/i)
+  })
+})

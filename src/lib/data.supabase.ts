@@ -63,6 +63,7 @@ export type {
   WorkEntryInput,
   PartRow,
   PartVariant,
+  RelatedProject,
   PartInput,
   SliceImportInput,
   SliceImportResult,
@@ -116,6 +117,7 @@ import type {
   WorkEntryInput,
   PartRow,
   PartVariant,
+  RelatedProject,
   PartInput,
   PartStatus,
   QuoteStatus,
@@ -598,7 +600,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
 }
 
 const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_in_at, phase, priority,
-   asset_origin, poc, needed_by, window_from, window_locked, at_risk,
+   asset_origin, poc, needed_by, window_from, window_locked, at_risk, archived_at, related_to,
    delivery_on, delivery_how,
    clients!inner ( id, name, kind, contact, email, phone ),
    quotes ( id, status, total, design_billing, design_qty, revisions_incl, quantity,
@@ -690,6 +692,7 @@ function factsFrom(
     partsPassed: Number(r.job_parts_summary?.[0]?.passed ?? 0),
     partsReprint: Number(r.job_parts_summary?.[0]?.reprint ?? 0),
     reprintsEver: Number(r.job_parts_summary?.[0]?.reprints_ever ?? 0),
+    archivedAt: r.archived_at ?? null,
     unitsMade: ((r.batches ?? []) as { units_made: number }[]).reduce(
       (a, b) => a + Number(b.units_made ?? 0),
       0,
@@ -1079,7 +1082,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   const r = data as any
   if (!r) throw new Error('That project no longer exists.')
 
-  const [gates, rates, events, payments, runs, work, parts, partHistory, slices, variantRows] =
+  const [gates, rates, events, payments, runs, work, parts, partHistory, slices, family, variantRows] =
     await Promise.all([
     loadGateAnswers([jobId]),
     currentRates(shopId),
@@ -1119,6 +1122,11 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .order('at', { ascending: false }),
     listSliceImports(shopId, jobId),
     supabase
+      .from('jobs')
+      .select('id, ref, title, phase, kind, archived_at, related_to, job_actuals ( design_hours )')
+      .eq('shop_id', shopId)
+      .or(`related_to.eq.${jobId},id.eq.${jobId}`),
+    supabase
       .from('slice_sections')
       .select(
         `id, part_id, est_minutes, est_grams, material,
@@ -1135,6 +1143,31 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   if (parts.error) throw parts.error
   if (partHistory.error) throw partHistory.error
   if (variantRows.error) throw variantRows.error
+  if (family.error) throw family.error
+
+  const toRelated = (x: any): RelatedProject => ({
+    jobId: x.id,
+    ref: x.ref,
+    title: x.title,
+    phase: x.phase,
+    kind: x.kind,
+    designHours: Number(x.job_actuals?.[0]?.design_hours ?? 0),
+    archivedAt: x.archived_at ?? null,
+  })
+  const kin = (family.data ?? []) as any[]
+  // The parent needs its own fetch only when it is not already in hand --
+  // which it is not, since the or() above reaches children and self.
+  let parent: RelatedProject | null = null
+  if (r.related_to) {
+    const { data: p, error: pErr } = await supabase
+      .from('jobs')
+      .select('id, ref, title, phase, kind, archived_at, job_actuals ( design_hours )')
+      .eq('shop_id', shopId)
+      .eq('id', r.related_to)
+      .maybeSingle()
+    if (pErr) throw pErr
+    parent = p ? toRelated(p) : null
+  }
 
   // plate size: how many objects came off the same file. Counted here
   // rather than in SQL because the rows are already in hand.
@@ -1187,6 +1220,8 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       }),
     ),
     slices,
+    relatedTo: parent,
+    related: kin.filter((x) => x.id !== jobId).map(toRelated),
     work: ((work.data ?? []) as any[]).map(
       (x): WorkEntryRow => ({
         id: x.id,
@@ -2327,6 +2362,70 @@ export async function sliceFileContent(
     .maybeSingle()
   if (error) throw error
   return data ? { content: data.content as string, byteSize: Number(data.byte_size) } : null
+}
+
+/** See data.local.ts's archiveProject. */
+export async function archiveProject(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  archived: boolean,
+): Promise<void> {
+  const { data: job, error } = await supabase
+    .from('jobs')
+    .select('phase, archived_at')
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+    .single()
+  if (error) throw error
+  if (archived && job.phase !== 'delivered') {
+    throw new Error('Only a finished project can be archived — this one is still live.')
+  }
+  if (!!job.archived_at === archived) return
+
+  const { error: upErr } = await supabase
+    .from('jobs')
+    .update({ archived_at: archived ? new Date().toISOString() : null })
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+  if (upErr) throw upErr
+
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: jobId,
+    actor_id: actorId,
+    kind: 'note',
+    body: archived
+      ? 'Archived — filed off the board. Every figure it contributes still counts.'
+      : 'Unarchived — back on the board.',
+  })
+  if (evErr) throw evErr
+}
+
+/** See data.local.ts's setRelatedProject. */
+export async function setRelatedProject(
+  shopId: string,
+  jobId: string,
+  relatedTo: string | null,
+): Promise<void> {
+  if (relatedTo === jobId) throw new Error('A project cannot continue from itself.')
+  let target = relatedTo
+  if (target) {
+    const { data, error } = await supabase
+      .from('jobs')
+      .select('id, related_to')
+      .eq('id', target)
+      .eq('shop_id', shopId)
+      .single()
+    if (error) throw error
+    if (data?.related_to) target = data.related_to as string
+    if (target === jobId) throw new Error('Those two projects already point at each other.')
+  }
+  const { error } = await supabase
+    .from('jobs')
+    .update({ related_to: target })
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+  if (error) throw error
 }
 
 export async function deleteSliceImport(shopId: string, importId: string): Promise<void> {

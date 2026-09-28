@@ -74,6 +74,8 @@ import type {
   WorkEntryInput,
   PartRow,
   PartVariant,
+  RelatedProject,
+  JobKind,
   PartInput,
   QuoteBuildInput,
   QuoteBuildRow,
@@ -767,6 +769,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
  *  about what a project's facts are. */
 const JOB_LIST_SQL = `
   select j.id as job_id, j.ref, j.title, j.brief, j.created_at, j.updated_at,
+         j.archived_at, j.related_to,
          j.taken_in_at,
          j.phase, j.kind, j.priority, j.asset_origin, j.poc,
          j.needed_by, j.window_from, j.window_locked, j.at_risk,
@@ -865,6 +868,8 @@ interface JobListSqlRow {
   parts_reprint: number
   reprints_ever: number
   units_made: number
+  archived_at: string | null
+  related_to: string | null
 }
 
 function factsFrom(r: JobListSqlRow): ProjectFacts {
@@ -907,6 +912,7 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     partsReprint: Number(r.parts_reprint ?? 0),
     reprintsEver: Number(r.reprints_ever ?? 0),
     unitsMade: Number(r.units_made ?? 0),
+    archivedAt: r.archived_at ?? null,
   }
 }
 
@@ -1335,6 +1341,21 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
 
   const gatesByPhase = (await loadGateAnswers(d, [jobId]))[jobId] ?? {}
   const slices = await listSliceImports(shopId, jobId)
+  // The family: the project this one continues from, and the ones that
+  // continue from it. Design hours come along per project rather than
+  // summed, because the point is that they were spent once.
+  const FAMILY_SQL = `select j.id as job_id, j.ref, j.title, j.phase, j.kind, j.archived_at,
+            coalesce(a.design_hours, 0) as design_hours
+       from jobs j
+       left join job_actuals a on a.job_id = j.id
+      where j.shop_id = ?`
+  const parentRows = r.related_to
+    ? await d.select<FamilySqlRow[]>(`${FAMILY_SQL} and j.id = ?`, [shopId, r.related_to])
+    : []
+  const childRows = await d.select<FamilySqlRow[]>(
+    `${FAMILY_SQL} and j.related_to = ? order by j.created_at`,
+    [shopId, jobId],
+  )
 
   const actualsRow = await d.select<Record<string, number>[]>(
     'select * from job_actuals where job_id = ?',
@@ -1589,6 +1610,8 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       }),
     ),
     slices,
+    relatedTo: parentRows[0] ? toRelated(parentRows[0]) : null,
+    related: childRows.map(toRelated),
     gates: gatesByPhase,
     payments: payments.map(
       (p): PaymentRow => ({
@@ -2881,6 +2904,113 @@ export async function importSlice(
   }
 
   return { importId, partsAdded, partsMatched }
+}
+
+interface FamilySqlRow {
+  job_id: string
+  ref: string
+  title: string
+  phase: JobPhase
+  kind: JobKind
+  archived_at: string | null
+  design_hours: number | null
+}
+
+function toRelated(r: FamilySqlRow): RelatedProject {
+  return {
+    jobId: r.job_id,
+    ref: r.ref,
+    title: r.title,
+    phase: r.phase,
+    kind: r.kind,
+    designHours: Number(r.design_hours ?? 0),
+    archivedAt: r.archived_at,
+  }
+}
+
+/**
+ * File a finished project off the working board, or put it back.
+ *
+ * Only a delivered project can go. The board is a list of what needs
+ * attention and archiving is the act of saying this one no longer does --
+ * doing that to a project still being built would hide live work, which is
+ * the one thing a board must never do.
+ *
+ * Nothing is deleted and nothing stops counting. Voltage's rule, and the
+ * reason it holds: a completed project is the system of record for what
+ * the shop earned and what it cost, so it stays in the dashboard, in the
+ * shop's own history, and in what a material has cost on average.
+ */
+export async function archiveProject(
+  shopId: string,
+  jobId: string,
+  actorId: string,
+  archived: boolean,
+): Promise<void> {
+  const d = await db()
+  const rows = await d.select<{ phase: JobPhase; archived_at: string | null }[]>(
+    'select phase, archived_at from jobs where id = ? and shop_id = ?',
+    [jobId, shopId],
+  )
+  const job = rows[0]
+  if (!job) throw new Error('That project no longer exists.')
+  if (archived && job.phase !== 'delivered') {
+    throw new Error('Only a finished project can be archived — this one is still live.')
+  }
+  if (!!job.archived_at === archived) return
+
+  await d.execute(
+    `update jobs set archived_at = ${archived ? "strftime('%Y-%m-%dT%H:%M:%fZ','now')" : 'null'},
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      where id = ? and shop_id = ?`,
+    [jobId, shopId],
+  )
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'note', ?)`, [
+    jobId,
+    actorId,
+    archived
+      ? 'Archived — filed off the board. Every figure it contributes still counts.'
+      : 'Unarchived — back on the board.',
+  ])
+}
+
+/**
+ * Say which project this one continues from.
+ *
+ * Families are one level deep on purpose: linking to a project that is
+ * itself a follow-on attaches to ITS original instead. A chain would make
+ * "where were the design hours spent" a graph walk, and the question a
+ * shop actually asks is the flat one -- what else came off this design.
+ *
+ * Nothing is copied. The original keeps its design hours; the follow-on
+ * keeps its own print time and material. The family view adds them up for
+ * reading, which is the opposite of charging them twice.
+ */
+export async function setRelatedProject(
+  shopId: string,
+  jobId: string,
+  relatedTo: string | null,
+): Promise<void> {
+  const d = await db()
+  if (relatedTo === jobId) throw new Error('A project cannot continue from itself.')
+
+  let target = relatedTo
+  if (target) {
+    const rows = await d.select<{ id: string; related_to: string | null }[]>(
+      'select id, related_to from jobs where id = ? and shop_id = ?',
+      [target, shopId],
+    )
+    const t = rows[0]
+    if (!t) throw new Error('That project no longer exists.')
+    if (t.related_to) target = t.related_to
+    if (target === jobId) throw new Error('Those two projects already point at each other.')
+  }
+
+  await d.execute(
+    `update jobs set related_to = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      where id = ? and shop_id = ?`,
+    [target, jobId, shopId],
+  )
 }
 
 /** Every file imported against a project, newest first. */

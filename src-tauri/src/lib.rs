@@ -125,6 +125,12 @@ pub fn run() {
       sql: include_str!("../migrations/0020_slice_files.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 21,
+      description: "archive finished work; link a project to the one that paid for the design",
+      sql: include_str!("../migrations/0021_archive_and_family.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

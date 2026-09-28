@@ -522,6 +522,9 @@ export interface ProjectFacts {
    *  twice and then passed costs the shop twice and would otherwise leave
    *  no trace. */
   reprintsEver: number
+  /** Filed off the working board, keeping every figure it contributes.
+   *  Only a delivered project can be. Null means it is still on the board. */
+  archivedAt: string | null
   /** Units this project put on the shelf, across every batch made from it.
    *  Zero is a real answer -- a trial that produced nothing sellable still
    *  cost money -- which is why the gate that reads this can still be
@@ -592,6 +595,11 @@ export interface ProjectDetail {
    *  frozen snapshot and compare line by line against the actuals. Null
    *  when the project has never been quoted. */
   quoteInputs: QuoteInputsRow | null
+  /** The project this one continues from -- the one that paid for the
+   *  design. Null when this is the original, or stands alone. */
+  relatedTo: RelatedProject | null
+  /** Projects that point at this one. */
+  related: RelatedProject[]
   runs: PrintRunRow[]
   work: WorkEntryRow[]
   parts: PartRow[]
@@ -980,6 +988,24 @@ export interface PartVariant {
   /** How many objects were on the plate this came off. More than one and
    *  the print is indivisible: you cannot print half a plate. */
   plateParts: number
+}
+
+/**
+ * One member of a project family, as the other members need to see it.
+ *
+ * Design hours travel with the row rather than being summed into it: the
+ * point of the family is that the hours were spent ONCE, on one project,
+ * and the others can see that without either copying them or paying for
+ * them again.
+ */
+export interface RelatedProject {
+  jobId: string
+  ref: string
+  title: string
+  phase: JobPhase
+  kind: JobKind
+  designHours: number
+  archivedAt: string | null
 }
 
 export interface PartEvent {
