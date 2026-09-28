@@ -58,8 +58,17 @@ export interface SliceFile {
   notes: string[]
 }
 
-/** What the file input should accept. `.bgcode` is deliberately absent. */
-export const SLICE_ACCEPT = '.3mf,.gcode,.gco,.g'
+/**
+ * What the file input accepts.
+ *
+ * `.bgcode` is in the list even though parseSliceFile REFUSES it, and that
+ * is deliberate. Left out, the browser greys the file out in the picker and
+ * says nothing: someone with binary G-code on sees their file, cannot select
+ * it, and has no idea why. Accepted, they pick it and get a sentence naming
+ * the exact PrusaSlicer setting to turn off. A refusal that explains itself
+ * beats a file that is merely unselectable.
+ */
+export const SLICE_ACCEPT = '.3mf,.gcode,.gco,.g,.bgcode'
 
 /** The minimum of a File this module needs, so tests need no File polyfill. */
 export interface SliceFileLike {
@@ -556,4 +565,87 @@ export async function parseSliceFile(file: SliceFileLike): Promise<SliceFile> {
   throw new Error(
     'Unsupported file. Import a sliced .gcode.3mf or .3mf (Bambu, Orca) or .gcode (Prusa).',
   )
+}
+
+// ---------- matching what the file said to what the shop owns ----------
+
+/**
+ * A slicer names a MODEL ("Bambu Lab H2S"); a shop names a MACHINE
+ * ("Sakman"). Matching one to the other is a suggestion, never a decision:
+ * every caller shows what was matched and lets it be changed, because
+ * Voltage already learned what silent matching costs -- a typo ("Pursa XL")
+ * broke slice-variant matching there and nothing said so.
+ *
+ * Exported separately from the parser so it can be tested without a file.
+ */
+
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+/**
+ * Best machine for a detected model string, or null.
+ *
+ * Tried in order: the shop's model field matching exactly, then either
+ * string containing the other (so "H2S" finds "Bambu Lab H2S" and the
+ * reverse), then the same two against the machine's NAME, since a shop that
+ * calls its printer "H2D" has effectively named the model.
+ *
+ * Null when nothing matches or when two machines match equally well. A
+ * wrong guess costs more than no guess: the run would be costed at another
+ * machine's hourly rate and wear, and nothing on the screen would look odd.
+ */
+export function matchPrinter<T extends { id: string; name: string; model: string }>(
+  printers: readonly T[],
+  detected: string | null,
+): T | null {
+  if (!detected) return null
+  const d = norm(detected)
+  if (!d) return null
+
+  // Every tier reads ONE field, and skips a printer whose field is empty.
+  // The empty string is a substring of everything, so a machine with no
+  // model set otherwise matches every query -- which it did, and which is
+  // why "Creality K1" found a Prusa in the test before this comment.
+  const overlap = (a: string, b: string) => !!a && !!b && (a.includes(b) || b.includes(a))
+  const tiers: ((p: T) => boolean)[] = [
+    (p) => !!norm(p.model) && norm(p.model) === d,
+    (p) => overlap(norm(p.model), d),
+    (p) => !!norm(p.name) && norm(p.name) === d,
+    (p) => overlap(norm(p.name), d),
+  ]
+  for (const test of tiers) {
+    const hits = printers.filter(test)
+    if (hits.length === 1) return hits[0]
+    // Two machines matching equally is exactly when a guess is worth least.
+    if (hits.length > 1) return null
+  }
+  return null
+}
+
+/**
+ * Best material for a detected filament type, or null.
+ *
+ * The file says a TYPE ("PETG"); a shop stocks a spool ("PETG black",
+ * "PETG translucent"). A type that matches two spools returns null on
+ * purpose -- which black is a question only the person at the printer can
+ * answer, and guessing puts a wrong purchase cost into the job.
+ *
+ * A multi-material file gives "PETG, PLA"; only the first type is tried,
+ * because a single material_id cannot represent two spools. The import
+ * still records the full string, so nothing is lost.
+ */
+export function matchMaterial<T extends { id: string; name: string }>(
+  materials: readonly T[],
+  detected: string | null,
+): T | null {
+  if (!detected) return null
+  const first = detected.split(',')[0]?.trim()
+  const d = norm(first ?? '')
+  if (!d) return null
+
+  const exact = materials.filter((m) => norm(m.name) === d)
+  if (exact.length === 1) return exact[0]
+  if (exact.length > 1) return null
+
+  const partial = materials.filter((m) => norm(m.name).includes(d))
+  return partial.length === 1 ? partial[0] : null
 }

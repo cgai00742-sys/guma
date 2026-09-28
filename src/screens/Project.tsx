@@ -26,7 +26,14 @@
  * facts the data layer already loaded, so this file holds no rules of its
  * own about what "ready to advance" means.
  */
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  matchMaterial,
+  matchPrinter,
+  parseSliceFile,
+  SLICE_ACCEPT,
+  type SliceFile,
+} from '../lib/sliceImport'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   JOB_PHASES,
@@ -41,6 +48,7 @@ import {
   WORK_KIND_LABEL,
   addPart,
   addProjectNote,
+  importSlice,
   deletePart,
   setPartStatus,
   deletePrintRun,
@@ -1283,6 +1291,226 @@ function Variance({ comparison, money }: { comparison: Comparison; money: (n: nu
  * items that read this return null with no parts on file and fall back to
  * a manual tick. A feature nobody opted into must never become a blocker.
  */
+/**
+ * Import a sliced file into the build sheet.
+ *
+ * The shape of this is the point. A slicer file is EVIDENCE, not an
+ * instruction: it is read, shown in full, and only written once somebody
+ * has looked at it and pressed a button. Nothing here saves on file
+ * selection, because the one thing worse than typing the build set by hand
+ * is a build set that appeared by itself and is subtly wrong.
+ *
+ * What it will not do:
+ *   - It does not record a print. An import writes no print_run, so the
+ *     project's actual cost does not move. See 0015_slice_imports.sql.
+ *   - It does not guess between two machines or two spools of one type.
+ *     matchPrinter and matchMaterial return null instead, and the selects
+ *     below open on "not matched" so the omission is visible rather than
+ *     quietly wrong.
+ */
+function SliceImport({
+  ctx,
+  detail,
+  busy,
+  onChanged,
+  setError,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  busy: boolean
+  onChanged: () => Promise<void>
+  setError: (m: string | null) => void
+}) {
+  const [read, setRead] = useState<SliceFile | null>(null)
+  const [printerId, setPrinterId] = useState('')
+  const [materialId, setMaterialId] = useState('')
+  const [saving, setSaving] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  async function pick(file: File | undefined) {
+    if (!file) return
+    setError(null)
+    try {
+      const parsed = await parseSliceFile(file)
+      setRead(parsed)
+      setPrinterId(matchPrinter(ctx.printerRows, parsed.printerModel)?.id ?? '')
+      setMaterialId(matchMaterial(ctx.materials, parsed.totals.material)?.id ?? '')
+    } catch (e) {
+      setRead(null)
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  function clear() {
+    setRead(null)
+    setPrinterId('')
+    setMaterialId('')
+    // Without this the same file cannot be picked twice in a row: the input
+    // fires change only when the value differs.
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  async function confirm() {
+    if (!read) return
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
+        fileName: read.fileName,
+        kind: read.kind,
+        printerModel: read.printerModel,
+        printerId: printerId || null,
+        materialText: read.totals.material,
+        materialId: materialId || null,
+        estMinutes: read.totals.estMinutes,
+        estGrams: read.totals.estGrams,
+        notes: read.notes,
+        sections: read.sections.map((sec) => ({
+          label: sec.label,
+          qty: sec.qty,
+          estMinutes: sec.estMinutes,
+          estGrams: sec.estGrams,
+          material: sec.material,
+        })),
+      })
+      clear()
+      await onChanged()
+      if (res.partsMatched && !res.partsAdded)
+        setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const hrs = (m: number | null) =>
+    m == null ? null : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="btnrow" style={{ alignItems: 'flex-end' }}>
+        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
+          <label className="lbl" htmlFor="slice-file">
+            Import a sliced file
+          </label>
+          <input
+            id="slice-file"
+            ref={fileRef}
+            type="file"
+            accept={SLICE_ACCEPT}
+            disabled={busy || saving}
+            onChange={(e) => void pick(e.target.files?.[0])}
+          />
+        </div>
+      </div>
+      <div className="hint" style={{ marginTop: 6 }}>
+        A sliced <code>.gcode.3mf</code> from Bambu Studio or Orca, or a <code>.gcode</code> from
+        PrusaSlicer. Guma reads the objects on the plate, the machine and the filament, and shows
+        you before writing anything. Nothing is recorded as printed — an estimate is not an actual.
+      </div>
+
+      {read && (
+        <div className="pane" style={{ marginTop: 10 }}>
+          <div className="sechead">
+            <h4>{read.fileName}</h4>
+            <span className="sub">
+              {read.totals.sections} section{read.totals.sections === 1 ? '' : 's'} ·{' '}
+              {read.totals.units} cop{read.totals.units === 1 ? 'y' : 'ies'}
+              {read.totals.estGrams != null && ` · ~${read.totals.estGrams} g`}
+              {read.totals.estMinutes != null && ` · ~${hrs(read.totals.estMinutes)}`}
+            </span>
+          </div>
+
+          <div className="sheetwrap" style={{ maxHeight: 260 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: '50%' }}>Part</th>
+                  <th className="r">Copies</th>
+                  <th className="r">Est. grams</th>
+                  <th className="r">Est. time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {read.sections.map((sec) => (
+                  <tr key={sec.label}>
+                    <td>
+                      <span className="pn">{sec.label}</span>
+                    </td>
+                    <td className="r">{sec.qty}</td>
+                    <td className="r">{sec.estGrams ?? '—'}</td>
+                    <td className="r">{hrs(sec.estMinutes) ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="btnrow" style={{ marginTop: 10, alignItems: 'flex-end' }}>
+            <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
+              <label className="lbl" htmlFor="slice-printer">
+                Machine{read.printerModel ? ` — file says “${read.printerModel}”` : ''}
+              </label>
+              <select
+                id="slice-printer"
+                value={printerId}
+                onChange={(e) => setPrinterId(e.target.value)}
+              >
+                <option value="">Not matched</option>
+                {ctx.printerRows.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.model ? ` · ${p.model}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
+              <label className="lbl" htmlFor="slice-material">
+                Material{read.totals.material ? ` — file says “${read.totals.material}”` : ''}
+              </label>
+              <select
+                id="slice-material"
+                value={materialId}
+                onChange={(e) => setMaterialId(e.target.value)}
+              >
+                <option value="">Not matched</option>
+                {ctx.materials.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {read.notes.map((n) => (
+            <div className="hint" key={n} style={{ marginTop: 6 }}>
+              {n}
+            </div>
+          ))}
+
+          <div className="btnrow" style={{ marginTop: 10 }}>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={busy || saving}
+              onClick={() => void confirm()}
+            >
+              Add {read.totals.sections} section{read.totals.sections === 1 ? '' : 's'} to the build
+              sheet
+            </button>
+            <button type="button" className="btn sm" disabled={saving} onClick={clear}>
+              Discard
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function BuildSheet({
   ctx,
   detail,
@@ -1576,6 +1804,16 @@ function BuildSheet({
             Add
           </button>
         </div>
+      )}
+
+      {!locked && (
+        <SliceImport
+          ctx={ctx}
+          detail={detail}
+          busy={busy || saving}
+          onChanged={onChanged}
+          setError={setError}
+        />
       )}
     </div>
   )

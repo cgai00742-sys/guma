@@ -10,7 +10,13 @@
  * inflate branch, which is DecompressionStream's job, not ours.
  */
 import { describe, expect, it } from 'vitest'
-import { parseSliceFile, SLICE_ACCEPT, type SliceFileLike } from './sliceImport'
+import {
+  matchMaterial,
+  matchPrinter,
+  parseSliceFile,
+  SLICE_ACCEPT,
+  type SliceFileLike,
+} from './sliceImport'
 
 /** A File-like over a string, which is all parseSliceFile needs. */
 function gcodeFile(name: string, body: string): SliceFileLike {
@@ -318,8 +324,79 @@ describe('files it refuses', () => {
   })
 })
 
-it('the file input accepts what the parser handles, and not .bgcode', () => {
+it('the file input accepts .bgcode so the refusal can explain itself', () => {
   expect(SLICE_ACCEPT).toContain('.gcode')
   expect(SLICE_ACCEPT).toContain('.3mf')
-  expect(SLICE_ACCEPT).not.toContain('bgcode')
+  // Left out of accept, the browser greys it out and says nothing. In it,
+  // the person gets told which PrusaSlicer setting to change.
+  expect(SLICE_ACCEPT).toContain('.bgcode')
+})
+
+describe('matching the file to what the shop owns', () => {
+  const printers = [
+    { id: 'p1', name: 'Sakman', model: 'Prusa XL' },
+    { id: 'p2', name: 'Big Blue', model: 'Bambu Lab H2S' },
+    { id: 'p3', name: 'H2D', model: '' },
+  ]
+
+  it('matches a model the shop typed the same way', () => {
+    expect(matchPrinter(printers, 'Bambu Lab H2S')?.id).toBe('p2')
+  })
+
+  it('matches a short model against a longer one, and the reverse', () => {
+    expect(matchPrinter(printers, 'H2S')?.id).toBe('p2')
+    expect(matchPrinter(printers, 'Prusa XL 2T')?.id).toBe('p1')
+  })
+
+  it('falls back to the machine name when the shop left model blank', () => {
+    expect(matchPrinter(printers, 'Bambu Lab H2D')?.id).toBe('p3')
+  })
+
+  it('ignores punctuation and case', () => {
+    expect(matchPrinter(printers, 'prusa-xl')?.id).toBe('p1')
+  })
+
+  it('returns null rather than guessing between two machines', () => {
+    const twins = [
+      { id: 'a', name: 'Left', model: 'Bambu Lab H2S' },
+      { id: 'b', name: 'Right', model: 'Bambu Lab H2S' },
+    ]
+    // Costing a run against the wrong machine's rate is invisible once
+    // saved, so no match beats a coin flip.
+    expect(matchPrinter(twins, 'Bambu Lab H2S')).toBeNull()
+  })
+
+  it('returns null when the file said nothing, or nothing matches', () => {
+    expect(matchPrinter(printers, null)).toBeNull()
+    expect(matchPrinter(printers, 'Creality K1')).toBeNull()
+  })
+
+  const materials = [
+    { id: 'm1', name: 'PETG black' },
+    { id: 'm2', name: 'PLA matte white' },
+    { id: 'm3', name: 'PA-CF black' },
+  ]
+
+  it('matches a filament type to the one spool of that type', () => {
+    expect(matchMaterial(materials, 'PETG')?.id).toBe('m1')
+  })
+
+  it('will not choose between two spools of the same type', () => {
+    const two = [
+      { id: 'a', name: 'PETG black' },
+      { id: 'b', name: 'PETG translucent' },
+    ]
+    expect(matchMaterial(two, 'PETG')).toBeNull()
+  })
+
+  it('tries only the first type of a multi-material file', () => {
+    // One material_id cannot hold two spools; the full string is still
+    // recorded on the import.
+    expect(matchMaterial(materials, 'PETG, PLA')?.id).toBe('m1')
+  })
+
+  it('returns null on no detection', () => {
+    expect(matchMaterial(materials, null)).toBeNull()
+    expect(matchMaterial(materials, 'ABS')).toBeNull()
+  })
 })
