@@ -7,6 +7,7 @@ import { isDemo } from './lib/workspace'
 import Wizard from './screens/Wizard'
 import Settings from './screens/Settings'
 import Intake from './screens/Intake'
+import Dashboard from './screens/Dashboard'
 import Projects from './screens/Projects'
 import Project from './screens/Project'
 import Clients from './screens/Clients'
@@ -82,7 +83,7 @@ export default function App() {
    *
    * So leaving does both: stop blocking, and go to the work.
    */
-  const leaveSetup = useCallback(() => {
+  const leaveSetup = useCallback((to = '/projects') => {
     setSetupDeferred(true)
     try {
       localStorage.setItem('guma.setupDeferred', '1')
@@ -91,7 +92,7 @@ export default function App() {
       // is no worse than it was before -- and better than refusing to
       // leave the wizard because a preference could not be written.
     }
-    navigate('/projects')
+    navigate(to)
   }, [navigate])
 
   useEffect(() => {
@@ -238,13 +239,27 @@ export default function App() {
   if (ctx && plan && !plan.done && !setupDeferred) {
     return (
       <>
-        <TopBar ctx={ctx} desktop={desktop} onShowWelcome={() => setWelcomeOpen(true)} />
+        <WelcomeModal
+          shop={ctx.shop}
+          onDismissedForever={refresh}
+          openNow={welcomeOpen}
+          onClosed={() => setWelcomeOpen(false)}
+          // Mounted but not opened: the wizard is the one window here.
+          autoOpen={false}
+        />
+        <TopBar
+          ctx={ctx}
+          desktop={desktop}
+          onShowWelcome={() => setWelcomeOpen(true)}
+          // Leaving for a screen means leaving the wizard, or nothing moves.
+          onGo={(to) => leaveSetup(to)}
+        />
         <main className="app-main">
           <Wizard
             ctx={ctx}
             fullName={ownerName}
             onSaved={refresh}
-            onDefer={leaveSetup}
+            onDefer={() => leaveSetup()}
           />
         </main>
       </>
@@ -261,7 +276,12 @@ export default function App() {
           onClosed={() => setWelcomeOpen(false)}
         />
       )}
-      <TopBar ctx={ctx} desktop={desktop} onShowWelcome={() => setWelcomeOpen(true)} />
+      <TopBar
+        ctx={ctx}
+        desktop={desktop}
+        onShowWelcome={() => setWelcomeOpen(true)}
+        onGo={(to) => navigate(to)}
+      />
       <main className="app-main">
         {ctxError ? (
           <div className="wrap">
@@ -305,7 +325,12 @@ export default function App() {
           <Routes>
             {/* Home is the work. A project-management tool that opens on an
                 empty form is telling you its real subject is quoting. */}
-            <Route path="/" element={<Navigate to="/projects" replace />} />
+            {/* Home is the dashboard: what the shop looks like right now,
+                with every number linking to the screen that explains it.
+                The board is one click away and is still where work gets
+                moved -- this is the glance, not the workspace. */}
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<Dashboard ctx={ctx} />} />
             <Route path="/intake" element={<Intake ctx={ctx} />} />
             <Route path="/projects" element={<Projects ctx={ctx} />} />
             {/* The two screens Projects absorbed. Kept as redirects so any
@@ -326,7 +351,7 @@ export default function App() {
                   onSaved={refresh}
                   // Reached on purpose from the banner, so leaving means
                   // going back to the work rather than falling through.
-                  onDefer={leaveSetup}
+                  onDefer={() => leaveSetup()}
                 />
               }
             />
@@ -353,9 +378,16 @@ export default function App() {
  * a door that depends on none of them means the answer to "why can I not
  * see it" is never again "work out which condition is false".
  */
-function WhoMenu({ ctx, onShowWelcome }: { ctx: ShopContext | null; onShowWelcome: () => void }) {
+function WhoMenu({
+  ctx,
+  onShowWelcome,
+  onGo,
+}: {
+  ctx: ShopContext | null
+  onShowWelcome: () => void
+  onGo: (to: string) => void
+}) {
   const [open, setOpen] = useState(false)
-  const navigate = useNavigate()
   const demo = isDemo()
 
   // Click anywhere else to close. A menu that only closes by clicking its
@@ -407,9 +439,9 @@ function WhoMenu({ ctx, onShowWelcome }: { ctx: ShopContext | null; onShowWelcom
             </div>
           </div>
           {item('What Guma is', onShowWelcome)}
-          {item('Shop settings', () => navigate('/settings'))}
+          {item('Shop settings', () => onGo('/settings'))}
           {item(demo ? 'Back to my shop' : 'Open the demo shop', () =>
-            navigate('/settings?tab=workspace'),
+            onGo('/settings?tab=workspace'),
           )}
         </div>
       )}
@@ -421,10 +453,21 @@ function TopBar({
   ctx,
   desktop,
   onShowWelcome,
+  onGo,
 }: {
   ctx: ShopContext | null
   desktop: boolean
   onShowWelcome: () => void
+  /**
+   * How to leave for another screen.
+   *
+   * In the main app this is plain navigation. Inside the wizard it has to
+   * ALSO leave the wizard: that branch renders the wizard in place of the
+   * routes, so navigating changed the URL and nothing on screen moved --
+   * the menu opened, the item was clicked, and the wizard sat there. That
+   * is the "options don't work" report.
+   */
+  onGo: (to: string) => void
 }) {
   const { pathname } = useLocation()
   // A project detail page (/project/:id) belongs to the Projects tab —
@@ -453,9 +496,9 @@ function TopBar({
               program has trained people to click when they want to get
               back, and it did nothing. */}
           <Link
-            to="/projects"
+            to="/dashboard"
             className="brand"
-            aria-label="Guma — go to Projects"
+            aria-label="Guma — go to the dashboard"
             style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: 'inherit' }}
           >
             <img src="/brand/guma-mark.svg" alt="" width={26} height={24} style={{ display: 'block' }} />
@@ -484,6 +527,7 @@ function TopBar({
               button now, and it is always one click away from wherever you
               are. */}
           <div className="tabs" style={{ border: 'none' }}>
+            {tab('/dashboard', 'Dashboard')}
             {tab('/projects', 'Projects')}
             {tab('/clients', 'Clients')}
             {/* The other half of the business. A shop selling at a market or
@@ -503,7 +547,7 @@ function TopBar({
           >
             + New project
           </Link>
-          <WhoMenu ctx={ctx} onShowWelcome={onShowWelcome} />
+          <WhoMenu ctx={ctx} onShowWelcome={onShowWelcome} onGo={onGo} />
           {/* No account on desktop, so nothing to sign out of. */}
           {!desktop && (
             <button

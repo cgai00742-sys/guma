@@ -99,7 +99,22 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
    * control for a thing the shop has never done is clutter with a promise
    * attached.
    */
-  const [kind, setKind] = useState<JobKind>('client')
+  /**
+   * In-house first.
+   *
+   * A shop's own work -- prototypes, test plates, the things it designs and
+   * sells itself -- was behind the second tab and called "Mine", which says
+   * whose it is rather than what it is. For a shop whose own work is most
+   * of the work, the board opened on the half that was usually empty.
+   *
+   * It falls back to client work when the shop HAS no in-house projects, so
+   * a purely commission shop does not open on an empty board. Decided once,
+   * when the jobs first load, rather than on every change -- otherwise
+   * finishing your last in-house project would yank the board out from
+   * under you.
+   */
+  const [kind, setKind] = useState<JobKind>('inhouse')
+  const [kindSettled, setKindSettled] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -186,6 +201,13 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
     [decorated],
   )
 
+  /** Settle the opening tab once, from the data, then leave it alone. */
+  useEffect(() => {
+    if (kindSettled || jobs === null) return
+    if (mineCount === 0) setKind('client')
+    setKindSettled(true)
+  }, [jobs, mineCount, kindSettled])
+
   async function move(jobId: string, toPhase: JobPhase) {
     setDragId(null)
     setOverPhase(null)
@@ -266,17 +288,17 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
           <div className="seg" role="group" aria-label="Whose work to show">
             <button
               type="button"
+              aria-pressed={kind === 'inhouse'}
+              onClick={() => setKind('inhouse')}
+            >
+              In-house
+            </button>
+            <button
+              type="button"
               aria-pressed={kind === 'client'}
               onClick={() => setKind('client')}
             >
               For clients
-            </button>
-            <button
-              type="button"
-              aria-pressed={kind === 'inhouse'}
-              onClick={() => setKind('inhouse')}
-            >
-              Mine
             </button>
           </div>
         )}

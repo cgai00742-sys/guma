@@ -45,6 +45,7 @@ export default function WelcomeModal({
   onDismissedForever,
   openNow = false,
   onClosed,
+  autoOpen = true,
 }: {
   /**
    * Null on a true first launch: there is no shop row yet, because the
@@ -70,13 +71,22 @@ export default function WelcomeModal({
    */
   openNow?: boolean
   onClosed?: () => void
+  /**
+   * Whether it opens by itself on mount.
+   *
+   * False inside the wizard: the standing decision is that two windows on
+   * launch is one too many and the wizard wins. But it still has to be
+   * MOUNTED there, or the account menu's "What Guma is" sets a flag with
+   * nothing listening to it -- which is exactly what it did.
+   */
+  autoOpen?: boolean
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   const [dontShowAgain, setDontShowAgain] = useState(false)
   const [saving, setSaving] = useState(false)
 
   // No shop means a first launch, and a first launch always shows this.
-  const show = shop ? shop.show_welcome : true
+  const show = autoOpen && (shop ? shop.show_welcome : true)
   useEffect(() => {
     if (show || openNow) ref.current?.showModal()
   }, [show, openNow])

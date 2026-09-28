@@ -36,6 +36,9 @@ vi.mock('./lib/data', async () => {
     savePrinter: vi.fn(async () => {}),
     saveMaterial: vi.fn(async () => {}),
     listShelf: vi.fn(async () => []),
+    // The dashboard is the home route now, so every render of App loads
+    // these too.
+    listMaterials: vi.fn(async () => []),
     listChannels: vi.fn(async () => []),
     listSales: vi.fn(async () => []),
   }
@@ -174,7 +177,10 @@ describe('launching an unfinished shop', () => {
     ctx = halfSetUp()
     await renderApp()
     await screen.findByText('Setting up')
-    expect(screen.queryByText(/Price a project honestly/i)).toBeNull()
+    // The markup is mounted (the account menu can open it) but the dialog
+    // must not be OPEN -- and a closed <dialog> still answers queryByText,
+    // so `open` is the only honest assertion here.
+    expect(document.querySelector('dialog')?.open).toBeFalsy()
   })
 
   it('resumes on the first question that is not answered', async () => {
@@ -344,7 +350,7 @@ describe('what a brand new install shows first', () => {
     ctx = halfSetUp()
     await renderApp()
     await screen.findByText('Setting up')
-    expect(screen.queryByText(/Price a project honestly/i)).toBeNull()
+    expect(document.querySelector('dialog')?.open).toBeFalsy()
   })
 
   it('carries the motion classes the stylesheet animates', async () => {
@@ -390,8 +396,8 @@ describe('the top bar', () => {
   it('takes the mark home', async () => {
     ctx = makeCtx()
     await renderApp('/settings')
-    const home = await screen.findByLabelText(/go to Projects/i)
-    expect(home.getAttribute('href')).toBe('/projects')
+    const home = await screen.findByLabelText(/go to the dashboard/i)
+    expect(home.getAttribute('href')).toBe('/dashboard')
   })
 
   it('opens a real menu behind the name, not a dead label', async () => {
@@ -437,5 +443,65 @@ describe('the top bar', () => {
     await welcomed()
     for (const cls of ['wmark', 'wtitle', 'wlede', 'wpoint', 'wfoot'])
       expect(document.querySelector(`.${cls}`)).not.toBeNull()
+  })
+})
+
+/**
+ * The menu items, not just the menu.
+ *
+ * Reported as "the Owner tab semi works but when you click on the options
+ * given it doesn't work" -- which is what happens when the button opens
+ * something and the things inside it lead nowhere. The previous tests
+ * asserted the menu OPENS. That is not the same as the items doing
+ * anything, and the difference is the whole complaint.
+ */
+describe('what the account menu actually does', () => {
+  const openMenu = async (u: ReturnType<typeof userEvent.setup>) => {
+    await u.click(await screen.findByRole('button', { name: /account menu/i }))
+  }
+
+  it('goes to settings from the main app', async () => {
+    ctx = makeCtx()
+    const u = userEvent.setup()
+    await renderApp()
+    await openMenu(u)
+    await u.click(screen.getByRole('button', { name: /shop settings/i }))
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /shop settings/i })).toBeDefined(),
+    )
+  })
+
+  it('goes to settings from INSIDE the wizard, which is where it did nothing', async () => {
+    // A shop that is not finished renders the wizard instead of the routes,
+    // so navigating did not change what was on screen: the menu opened, the
+    // item was clicked, and the wizard stayed exactly where it was.
+    ctx = halfSetUp()
+    const u = userEvent.setup()
+    await renderApp()
+    await screen.findByText('Setting up')
+    await openMenu(u)
+    await u.click(screen.getByRole('button', { name: /shop settings/i }))
+    await waitFor(() => expect(screen.queryByText('Setting up')).toBeNull())
+  })
+
+  it('opens the welcome from INSIDE the wizard too', async () => {
+    // Same shape: the wizard branch had no WelcomeModal in its tree, so the
+    // menu item set a flag nothing was listening to.
+    ctx = halfSetUp()
+    const u = userEvent.setup()
+    await renderApp()
+    await screen.findByText('Setting up')
+    await openMenu(u)
+    await u.click(screen.getByRole('button', { name: /what guma is/i }))
+    await waitFor(() => expect(document.querySelector('dialog')?.open).toBe(true))
+  })
+
+  it('closes itself after an item is chosen', async () => {
+    ctx = makeCtx()
+    const u = userEvent.setup()
+    await renderApp()
+    await openMenu(u)
+    await u.click(screen.getByRole('button', { name: /shop settings/i }))
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
   })
 })
