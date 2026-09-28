@@ -1,0 +1,67 @@
+/**
+ * What a build sheet lets you do, and what it has to tell you, at each
+ * stage of a project.
+ *
+ * Both rules come straight from how Voltage ran: a part's options are
+ * stage-aware, and a reprint carries its reason.
+ *
+ * STAGE-AWARE OPTIONS. Offering every status at every stage looks
+ * flexible and is actually noise: "Pass QC" on a part nobody has printed
+ * yet is not a shortcut, it is a way to mark a project delivered that was
+ * never made. Voltage narrowed the options per stage and the build sheet
+ * became readable. Same here.
+ *
+ * A REPRINT CARRIES ITS REASON. setPartStatus already refuses a reprint
+ * without a note -- but the note then lived only inside the part's history
+ * drawer, one click away, which is the same as not existing while you are
+ * standing at the machine deciding what to do differently. The reason
+ * belongs on the row, in front of whoever prints it next. Nothing is
+ * stored twice for this: it is read back out of the part's own history.
+ */
+import type { JobPhase, PartRow, PartStatus } from './data.types'
+
+/**
+ * The statuses a part may be moved to at this stage, in the order they
+ * should be offered.
+ *
+ * Before building, a part is a plan: it has no status to change. While
+ * building it comes off the machine or goes back on. In review it passes
+ * QC or goes back. Once delivered the sheet is history and nothing moves.
+ */
+export function allowedStatuses(phase: JobPhase): PartStatus[] {
+  switch (phase) {
+    case 'building':
+      return ['printed', 'reprint']
+    case 'review':
+      return ['passed', 'reprint']
+    default:
+      return []
+  }
+}
+
+/** Why this part is going back, if it is. Null in every other case --
+ *  including a part that has since been reprinted and passed, because the
+ *  point of the line is to tell the person at the machine what to do now. */
+export function reprintReason(part: PartRow): string | null {
+  if (part.status !== 'reprint') return null
+  // history arrives newest first from both backends. The newest reprint
+  // event is the live one; older ones stay in the drawer where the pattern
+  // ("same reason three times") is the interesting thing.
+  const ev = part.history.find((h) => h.kind === 'status' && h.toStatus === 'reprint')
+  return ev?.note?.trim() || null
+}
+
+/** How many times this part has been sent back, ever. Two is bad luck;
+ *  four is a design problem, and the number is the only way to see that
+ *  without reading the whole drawer. */
+export function reprintCount(part: PartRow): number {
+  return part.history.filter((h) => h.kind === 'status' && h.toStatus === 'reprint').length
+}
+
+/** A project in review with a part sent back is not in review any more --
+ *  someone has to print it again. Voltage offered the move rather than
+ *  making it, and that is the right call: the shop may have three other
+ *  parts still being checked. */
+export function shouldReturnToBuilding(phase: JobPhase, parts: PartRow[]): boolean {
+  return phase === 'review' && parts.some((p) => p.status === 'reprint')
+}

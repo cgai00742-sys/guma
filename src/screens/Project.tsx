@@ -42,7 +42,6 @@ import {
   PAYMENT_KIND_LABEL,
   PAYMENT_METHODS,
   PAYMENT_METHOD_LABEL,
-  PART_STATUSES,
   PART_STATUS_LABEL,
   WORK_KINDS,
   WORK_KIND_LABEL,
@@ -95,6 +94,7 @@ import {
   type ResolvedGateItem,
 } from '../lib/gates'
 import { useRowAnchor } from '../lib/rowAnchor'
+import { allowedStatuses, reprintCount, reprintReason, shouldReturnToBuilding } from '../lib/parts'
 import { makeMoney } from '../lib/pricing'
 import { todayISO } from '../lib/dates'
 import { buildComparison, type Comparison } from '../lib/actuals'
@@ -1971,6 +1971,33 @@ function BuildSheet({
         />
       )}
 
+      {/* A QC failure means the project is not in review any anymore --
+          something has to go back on a machine. Voltage offered the move
+          rather than making it, because three other parts may still be
+          being checked, and that is the behaviour kept here. */}
+      {shouldReturnToBuilding(detail.phase, detail.parts) && (
+        <div className="attn warn" style={{ marginBottom: 10 }}>
+          <b>A part was sent back.</b>
+          <div style={{ marginTop: 4, fontSize: 12 }}>
+            {detail.parts.filter((p) => p.status === 'reprint').length} part
+            {detail.parts.filter((p) => p.status === 'reprint').length === 1 ? '' : 's'} need
+            reprinting, which is building work, not checking work. Move the project back and the
+            reasons travel with the parts.
+          </div>
+          <button
+            type="button"
+            className="btn sm primary"
+            style={{ marginTop: 8 }}
+            disabled={busy || saving}
+            onClick={() =>
+              void guard(() => updateJobPhase(ctx.shop.id, detail.jobId, ctx.profile.id, 'building'))
+            }
+          >
+            Put it back in building
+          </button>
+        </div>
+      )}
+
       <SliceRuns
         ctx={ctx}
         detail={detail}
@@ -2018,6 +2045,17 @@ function BuildSheet({
                         </button>
                       )}
                       {p.note && <div className="pmeta">{p.note}</div>}
+                      {/* The reason a part is going back belongs HERE, not
+                          one click away in its history drawer: whoever
+                          prints it next is reading this row, not the
+                          drawer. Voltage's rule, and the reason it made
+                          reprints stop repeating. */}
+                      {reprintReason(p) && (
+                        <div className="pmeta" style={{ color: 'var(--red)' }}>
+                          ↩ {reprintReason(p)}
+                          {reprintCount(p) > 1 && ` · sent back ${reprintCount(p)} times`}
+                        </div>
+                      )}
                     </td>
                     <td className="r mono">×{p.qty}</td>
                     <td>
@@ -2051,8 +2089,9 @@ function BuildSheet({
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-                        {PART_STATUSES.filter((st) => st !== p.status && st !== 'pending').map(
-                          (st) => (
+                        {allowedStatuses(detail.phase)
+                          .filter((st) => st !== p.status)
+                          .map((st) => (
                             <button
                               key={st}
                               type="button"
@@ -2063,8 +2102,7 @@ function BuildSheet({
                             >
                               {st === 'printed' ? 'Printed' : st === 'passed' ? 'Pass' : 'Send back'}
                             </button>
-                          ),
-                        )}
+                          ))}
                         {!locked && (
                           <button
                             type="button"

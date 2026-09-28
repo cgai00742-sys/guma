@@ -243,6 +243,52 @@ describe('the money on the project page', () => {
   })
 })
 
+describe('the build sheet at each stage', () => {
+  /** Two Voltage rules, checked on the rendered row rather than in the
+   *  helper: the options narrow to the stage, and a reprint's reason is on
+   *  the row where the person at the machine will read it. */
+  async function withPart(phase: 'scheduled' | 'building' | 'review') {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    const partId = await data.addPart(ctx.shop.id, jobId, ctx.profile.id, {
+      label: 'Bearing ring',
+      qty: 2,
+    })
+    for (const to of ['design', 'approval', 'scheduled', 'building', 'review'] as const) {
+      if (phase === 'scheduled' && to === 'building') break
+      if (phase === 'building' && to === 'review') break
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    return { ctx, jobId, data, partId }
+  }
+
+  it('offers nothing to press before building — a part is still a plan', async () => {
+    const { ctx, jobId } = await withPart('scheduled')
+    await renderProject(jobId, ctx)
+    await screen.findByText('Bearing ring')
+    expect(screen.queryByRole('button', { name: /^printed$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^pass$/i })).toBeNull()
+  })
+
+  it('offers printed or send-back while building, and never a QC pass', async () => {
+    const { ctx, jobId } = await withPart('building')
+    await renderProject(jobId, ctx)
+    await screen.findByText('Bearing ring')
+    expect(screen.getByRole('button', { name: /^printed$/i })).toBeDefined()
+    expect(screen.getByRole('button', { name: /send back/i })).toBeDefined()
+    expect(screen.queryByRole('button', { name: /^pass$/i })).toBeNull()
+  })
+
+  it('puts the reprint reason on the row, and offers to go back to building', async () => {
+    const { ctx, jobId, data, partId } = await withPart('review')
+    await data.setPartStatus(ctx.shop.id, partId, ctx.profile.id, 'reprint', 'Layer shift at 40mm')
+    await renderProject(jobId, ctx)
+
+    // Not in a drawer somebody has to open.
+    await screen.findByText(/Layer shift at 40mm/)
+    expect(screen.getByRole('button', { name: /put it back in building/i })).toBeDefined()
+  })
+})
+
 describe('a project can always be got rid of', () => {
   it('arms in two steps, and names what goes with it', async () => {
     const { ctx, jobId, ref } = await seed({ takeIn: true })
