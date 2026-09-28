@@ -394,6 +394,64 @@ describe("the shop's own work", () => {
   })
 })
 
+describe('a plate is one print, and the whole plate comes off it', () => {
+  /** The Voltage failure this prevents: the tool reserved and marked parts
+   *  one at a time, so a plate of two objects looked like two half-jobs and
+   *  the rows sat at "pending" long after the objects were in a box. */
+  it('marks every part on the plate printed when the plate is recorded', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    // The offer names the plate, and is on by default.
+    const box = (await screen.findByLabelText(/mark the 2 parts on this plate/i)) as HTMLInputElement
+    expect(box.checked).toBe(true)
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+
+    await waitFor(() => {
+      const parts = currentDb.sqlite
+        .prepare('select label, status from job_parts order by sort')
+        .all() as { label: string; status: string }[]
+      expect(parts).toEqual([
+        { label: 'Buoy shell', status: 'printed' },
+        { label: 'Cap', status: 'printed' },
+      ])
+    })
+  })
+
+  it('leaves the parts alone when the plate failed', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
+    // The offer goes away: a failed plate produced nothing to check.
+    expect(screen.queryByLabelText(/mark the 2 parts on this plate/i)).toBeNull()
+    await user.type(await screen.findByLabelText(/what went wrong/i), 'Clog')
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+
+    await waitFor(() => {
+      const n = currentDb.sqlite
+        .prepare("select count(*) as n from job_parts where status = 'pending'")
+        .get() as { n: number }
+      expect(n.n).toBe(2)
+    })
+  })
+})
+
 describe('the import is findable, and says what it did', () => {
   /**
    * "I uploaded a gcode and nothing really happened."

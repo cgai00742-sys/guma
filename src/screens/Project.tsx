@@ -1656,6 +1656,17 @@ function SliceRuns({
   const [openId, setOpenId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState<PrintRunInput | null>(null)
+  /**
+   * Plate dispatch. A plate holding four objects is ONE print that
+   * produces four parts, so the four rows on the build sheet move
+   * together. Voltage learned this the other way round -- it reserved and
+   * marked parts one at a time, which understated every plate job and
+   * left rows sitting at "pending" long after the object was in a box.
+   *
+   * Default on, because that is what happened. Turned off for the case
+   * where you lifted one object off the plate and left the rest.
+   */
+  const [markParts, setMarkParts] = useState(true)
 
   if (detail.slices.length === 0) return null
 
@@ -1684,12 +1695,29 @@ function SliceRuns({
     })
   }
 
+  /** The parts this file produced that the build sheet still calls
+   *  pending, and that this stage allows to be marked printed. */
+  function pendingPartsOf(importId: string): string[] {
+    if (!allowedStatuses(detail.phase).includes('printed')) return []
+    const slice = detail.slices.find((x) => x.id === importId)
+    if (!slice) return []
+    const ids = new Set(slice.sections.map((sec) => sec.partId).filter((x): x is string => !!x))
+    return detail.parts.filter((p) => ids.has(p.id) && p.status === 'pending').map((p) => p.id)
+  }
+
   async function record() {
     if (!form) return
     setSaving(true)
     setError(null)
     try {
       await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, form)
+      // The plate came off, so every object on it came off. Only on a
+      // successful run: a failed plate produced nothing to check.
+      if (markParts && form.outcome === 'success' && form.sliceImportId) {
+        for (const partId of pendingPartsOf(form.sliceImportId)) {
+          await setPartStatus(ctx.shop.id, partId, ctx.profile.id, 'printed', null)
+        }
+      }
       setOpenId(null)
       setForm(null)
       await onChanged()
@@ -1865,6 +1893,21 @@ function SliceRuns({
                       }
                     />
                   </div>
+                )}
+                {form.outcome === 'success' && pendingPartsOf(s.id).length > 0 && (
+                  <label
+                    className="hint"
+                    style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={markParts}
+                      onChange={(e) => setMarkParts(e.target.checked)}
+                    />
+                    Mark the {pendingPartsOf(s.id).length} part
+                    {pendingPartsOf(s.id).length === 1 ? '' : 's'} on this plate as printed — one
+                    plate is one print, and they all came off together
+                  </label>
                 )}
                 <div className="btnrow" style={{ alignItems: 'center' }}>
                   <button
