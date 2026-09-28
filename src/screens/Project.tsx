@@ -499,6 +499,37 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           </div>
         ) : (
           <div className="gatebox">
+            {/* What is actually stopping this, named and counted, BEFORE the
+                list. The list was already correct -- every unticked item was
+                on it -- but a list of eight where three matter is a list you
+                read once and stop reading. This says which three. */}
+            {(() => {
+              const outstanding = gate.items.filter((i) => !i.checked)
+              if (!outstanding.length) return null
+              return (
+                <div className="blockbar">
+                  <h5>
+                    {outstanding.length} thing{outstanding.length === 1 ? '' : 's'} left before{' '}
+                    {gate.next ? label(gate.next) : 'this can advance'}
+                  </h5>
+                  <ol>
+                    {outstanding.map((i) => (
+                      <li key={i.key}>
+                        {i.label}
+                        {i.automatic && (
+                          <>
+                            {' — '}
+                            <span style={{ color: 'var(--txt-3)' }}>
+                              {i.fix ?? `clears on its own ${i.autoFrom ?? ''}`.trim()}
+                            </span>
+                          </>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )
+            })()}
             <div className="ggroup">Required before advancing</div>
             {gate.items.map((item) => (
               <GateRow
@@ -1325,23 +1356,32 @@ function SliceImport({
   detail,
   busy,
   onChanged,
+  onImported,
   setError,
 }: {
   ctx: ShopContext
   detail: ProjectDetail
   busy: boolean
   onChanged: () => Promise<void>
+  /** Tells the build sheet to mark the rows that just arrived. */
+  onImported: (n: number) => void
   setError: (m: string | null) => void
 }) {
   const [read, setRead] = useState<SliceFile | null>(null)
   const [printerId, setPrinterId] = useState('')
   const [materialId, setMaterialId] = useState('')
   const [saving, setSaving] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  /** What the last import did, in a sentence. Without this an import is
+   *  silent: the rows appear somewhere below and nothing says the file was
+   *  read, which reads as "nothing happened". */
+  const [done, setDone] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function pick(file: File | undefined) {
     if (!file) return
     setError(null)
+    setDone(null)
     try {
       const parsed = await parseSliceFile(file)
       setRead(parsed)
@@ -1355,6 +1395,7 @@ function SliceImport({
 
   function clear() {
     setRead(null)
+    setDragging(false)
     setPrinterId('')
     setMaterialId('')
     // Without this the same file cannot be picked twice in a row: the input
@@ -1385,10 +1426,16 @@ function SliceImport({
           material: sec.material,
         })),
       })
+      const bits: string[] = []
+      if (res.partsAdded) bits.push(`${res.partsAdded} part${res.partsAdded === 1 ? '' : 's'} added`)
+      if (res.partsMatched)
+        bits.push(
+          `${res.partsMatched} already on the sheet, estimate updated`,
+        )
+      setDone(`${read.fileName} — ${bits.join(' · ') || 'read, nothing to add'}.`)
+      onImported(res.partsAdded + res.partsMatched)
       clear()
       await onChanged()
-      if (res.partsMatched && !res.partsAdded)
-        setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -1401,25 +1448,60 @@ function SliceImport({
 
   return (
     <div style={{ marginTop: 12 }}>
-      <div className="btnrow" style={{ alignItems: 'flex-end' }}>
-        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
-          <label className="lbl" htmlFor="slice-file">
-            Import a sliced file
-          </label>
-          <input
-            id="slice-file"
-            ref={fileRef}
-            type="file"
-            accept={SLICE_ACCEPT}
-            disabled={busy || saving}
-            onChange={(e) => void pick(e.target.files?.[0])}
-          />
+      {done && (
+        <div className="landed-note hint" style={{ marginTop: 0, marginBottom: 10, color: 'var(--ok)' }}>
+          {done}
         </div>
-      </div>
+      )}
+
+      {/* A label wrapping a visually-hidden input, so the whole box is the
+          control: clickable, focusable, and announced as a file input. A
+          div with an onClick would be none of those. */}
+      <label
+        className={`drop ${dragging ? 'over' : ''}`}
+        htmlFor="slice-file"
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragging(true)
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragging(false)
+          void pick(e.dataTransfer.files?.[0])
+        }}
+      >
+        <span className="dropicon" style={{ fontSize: 22, display: 'block', marginBottom: 6 }}>
+          ⤓
+        </span>
+        <span className="drop-title">
+          {dragging ? 'Drop it' : 'Drop a sliced file here, or click to choose one'}
+        </span>
+        <span className="drop-sub">
+          .gcode.3mf from Bambu Studio or Orca · .gcode from PrusaSlicer
+        </span>
+        <input
+          id="slice-file"
+          ref={fileRef}
+          type="file"
+          // The visible label changes while a file is over the box ("Drop
+          // it"), which would make the accessible name change mid-drag. A
+          // fixed aria-label keeps the control's name stable for anyone
+          // using a screen reader, and for the tests.
+          aria-label="Import a sliced file"
+          accept={SLICE_ACCEPT}
+          disabled={busy || saving}
+          onChange={(e) => void pick(e.target.files?.[0])}
+          // Visually hidden, NOT disabled for the pointer. pointer-events:
+          // none here stops the input being clicked or dropped on at all,
+          // which breaks both the control and every test that drives it.
+          // The wrapping label is what the person actually clicks.
+          style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }}
+        />
+      </label>
       <div className="hint" style={{ marginTop: 6 }}>
-        A sliced <code>.gcode.3mf</code> from Bambu Studio or Orca, or a <code>.gcode</code> from
-        PrusaSlicer. Guma reads the objects on the plate, the machine and the filament, and shows
-        you before writing anything. Nothing is recorded as printed — an estimate is not an actual.
+        Guma reads the objects on the plate, the machine and the filament, and shows you before
+        writing anything. Nothing is recorded as printed — an estimate is not an actual.
       </div>
 
       {read && (
@@ -1542,6 +1624,19 @@ function BuildSheet({
   const [qty, setQty] = useState('1')
   const [saving, setSaving] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
+  /**
+   * How many rows arrived from the last import, so the build sheet can say
+   * which ones they are. Counted rather than keyed by id because the parts
+   * are re-fetched after the import and the new ones sort last -- and a
+   * count is enough for one pass of colour that then goes away forever.
+   */
+  const [landed, setLanded] = useState(0)
+  const markLanded = (n: number) => {
+    setLanded(n)
+    // One pass, then an ordinary row. A highlight that persists becomes
+    // another thing on screen that means nothing.
+    window.setTimeout(() => setLanded(0), 2200)
+  }
   const [reprintFor, setReprintFor] = useState<string | null>(null)
   // A part's history drawer changes the height of the build sheet above
   // whatever you click next. See rowAnchor.ts.
@@ -1572,9 +1667,28 @@ function BuildSheet({
 
   return (
     <div className="pane" style={{ marginBottom: 0 }}>
+      {/* The import comes FIRST.
+          It used to sit at the very bottom, under the empty-state paragraph
+          and the manual Part/Copies row, which meant the fastest way to fill
+          a build sheet was the last thing you saw and looked like a
+          footnote. Reported as "I uploaded a gcode and nothing happened".
+          Reading a file is the primary action here; typing parts by hand is
+          the fallback, and is now ordered that way. */}
+      {!locked && (
+        <SliceImport
+          ctx={ctx}
+          detail={detail}
+          busy={busy || saving}
+          onChanged={onChanged}
+          onImported={markLanded}
+          setError={setError}
+        />
+      )}
+
       {detail.parts.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
-          Nothing listed. A build sheet is worth keeping when a project is more than one object —
+        <div style={{ fontSize: 12, color: 'var(--txt-2)', marginTop: 14 }}>
+          Nothing listed yet — import a sliced file above, or add parts by hand below. A build
+          sheet is worth keeping when a project is more than one object —
           it is what turns &ldquo;is it done?&rdquo; into a countable answer, and it is where a part
           that keeps coming back stops looking like bad luck. Projects that do not need one are not
           penalised: the gate items that read this step aside when it is empty.
@@ -1591,9 +1705,9 @@ function BuildSheet({
               </tr>
             </thead>
             <tbody>
-              {detail.parts.map((p) => (
+              {detail.parts.map((p, i) => (
                 <Fragment key={p.id}>
-                  <tr>
+                  <tr className={landed > 0 && i >= detail.parts.length - landed ? 'landed' : ''}>
                     <td>
                       <span className="pn">{p.label}</span>
                       {p.history.length > 1 && (
@@ -1818,15 +1932,6 @@ function BuildSheet({
         </div>
       )}
 
-      {!locked && (
-        <SliceImport
-          ctx={ctx}
-          detail={detail}
-          busy={busy || saving}
-          onChanged={onChanged}
-          setError={setError}
-        />
-      )}
     </div>
   )
 }
@@ -2285,8 +2390,12 @@ function GateRow({
   onNote: (text: string) => void
 }) {
   const id = `g-${item.key}`
+  // An unticked item is the only thing on this row that matters, so it is
+  // the only thing given weight. Ticked items stay legible and quiet --
+  // they are evidence, not a to-do list.
+  const todo = !item.checked
   return (
-    <div className="gwrap">
+    <div className={`gwrap ${todo ? 'todo' : ''}`}>
       <div className="gitem">
         <input
           id={id}
@@ -2298,6 +2407,9 @@ function GateRow({
         <label className="lab" htmlFor={id}>
           {item.label}
           {item.needsNote && <span className="req"> *</span>}
+          {todo && (
+            <span className="todo-chip">{item.automatic ? 'waiting on' : 'to do'}</span>
+          )}
         </label>
         <span className="gwho">{item.automatic ? item.autoFrom : item.checked ? 'ticked' : ''}</span>
       </div>

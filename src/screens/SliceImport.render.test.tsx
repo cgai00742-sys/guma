@@ -393,3 +393,85 @@ describe("the shop's own work", () => {
     expect(a[0]).toMatchObject({ material_cost: 0, machine_hours: 0, runs: 0 })
   })
 })
+
+describe('the import is findable, and says what it did', () => {
+  /**
+   * "I uploaded a gcode and nothing really happened."
+   *
+   * The import worked. It was the LAST thing in the build sheet, under the
+   * empty-state paragraph and the manual Part/Copies row, and it said
+   * nothing after a successful import -- the rows appeared somewhere below
+   * the fold and no sentence confirmed the file had been read. Correct
+   * behaviour is not the same as visible behaviour, and no test could see
+   * the difference because every test queried by label rather than looking
+   * at order or feedback.
+   */
+  it('puts the drop zone before the manual add row, not after it', async () => {
+    const { ctx, jobId } = await seedShop()
+    await renderProject(jobId, ctx)
+
+    const drop = screen.getByLabelText(/import a sliced file/i)
+    const manual = screen.getByLabelText(/^part$/i)
+    // Node.compareDocumentPosition: 4 means `manual` follows `drop`.
+    expect(drop.compareDocumentPosition(manual) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('offers a drop target, not just a file button', async () => {
+    const { ctx, jobId } = await seedShop()
+    await renderProject(jobId, ctx)
+    expect(screen.getByText(/drop a sliced file here/i)).toBeDefined()
+  })
+
+  it('says what it did after importing, in a sentence', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+
+    // The thing whose absence read as "nothing happened".
+    await screen.findByText(/Reef buoy_sliced\.gcode — 2 parts added\./i)
+  })
+
+  it('says when a re-import updated parts rather than adding them', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await screen.findByText('Buoy shell')
+
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile('fixed_v2.gcode'))
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+
+    // Nothing was added, and saying "2 parts added" would be a lie that
+    // sends someone looking for rows that are not there.
+    await screen.findByText(/2 already on the sheet, estimate updated/i)
+  })
+})
+
+describe('what is blocking the stage', () => {
+  it('names the outstanding items and counts them, above the list', async () => {
+    const { ctx, jobId } = await seedShop()
+    await renderProject(jobId, ctx)
+
+    // A fresh project has not cleared its gate, so there is something to say.
+    const bar = await screen.findByText(/thing(s)? left before/i)
+    expect(bar).toBeDefined()
+    const list = bar.closest('.blockbar')?.querySelectorAll('li') ?? []
+    expect(list.length).toBeGreaterThan(0)
+  })
+
+  it('marks each unticked item and leaves the ticked ones quiet', async () => {
+    const { ctx, jobId } = await seedShop()
+    await renderProject(jobId, ctx)
+
+    const todo = document.querySelectorAll('.gwrap.todo')
+    expect(todo.length).toBeGreaterThan(0)
+    // Every marked row carries a chip saying which kind of outstanding it
+    // is -- something to do, or something to wait on.
+    for (const row of todo) expect(row.querySelector('.todo-chip')).not.toBeNull()
+  })
+})
