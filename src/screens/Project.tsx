@@ -105,7 +105,8 @@ import {
   timeSpreadPct,
 } from '../lib/parts'
 import { makeMoney } from '../lib/pricing'
-import { todayISO } from '../lib/dates'
+import { todayISO, formatDate } from '../lib/dates'
+import { startBy } from '../lib/schedule'
 import { buildComparison, type Comparison } from '../lib/actuals'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
@@ -824,6 +825,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                 (facts.partsReprint > 0 ? ` · ${facts.partsReprint} going back` : '')}
           </span>
         </div>
+        <StartByLine detail={detail} locale={rates.locale} />
         <BuildSheet
           ctx={ctx}
           detail={detail}
@@ -2021,6 +2023,56 @@ function PartVariants({
           {(variant?.plateParts ?? 1) - 1 === 1 ? '' : 's'} — one print, not several
         </span>
       )}
+    </div>
+  )
+}
+
+/**
+ * "Start printing by the 17th." The most actionable sentence on the page.
+ *
+ * A due date is not something you can act on today: everything before the
+ * start date is slack and everything after it is a late delivery nobody
+ * has noticed yet. This is Voltage's must-start-by, computed from THIS
+ * project's own remaining work, with every assumption printed underneath
+ * so the date can be argued with rather than believed.
+ */
+function StartByLine({ detail, locale }: { detail: ProjectDetail; locale: string }) {
+  const plan = startBy({
+    neededBy: detail.facts.neededBy,
+    deliveryHow: detail.facts.deliveryHow,
+    parts: detail.parts,
+    quote: detail.quoteInputs,
+  })
+
+  if (plan.status === 'unknown' || plan.status === 'done' || !plan.date) {
+    // Say why there is no date rather than showing nothing: a missing
+    // delivery date is a thing the shop can fix in ten seconds.
+    if (plan.status === 'unknown' && !detail.facts.neededBy && plan.printHours > 0) {
+      return (
+        <div className="hint" style={{ marginBottom: 10 }}>
+          {Math.round(plan.printHours)} machine hours of work here. Set a delivery date and Guma
+          will say when printing has to start.
+        </div>
+      )
+    }
+    return null
+  }
+
+  const tone = plan.status === 'late' ? 'crit' : plan.status === 'soon' ? 'warn' : ''
+  return (
+    <div className={`attn ${tone}`.trim()} style={{ marginBottom: 10 }}>
+      <b>
+        {plan.status === 'late'
+          ? `Printing should have started ${Math.abs(plan.daysLeft ?? 0)} day${
+              Math.abs(plan.daysLeft ?? 0) === 1 ? '' : 's'
+            } ago`
+          : `Start printing by ${formatDate(plan.date, locale)}`}
+      </b>
+      <div style={{ marginTop: 4, fontSize: 12 }}>
+        {Math.round(plan.printHours)} machine hours still to print
+        {plan.source === 'quote' ? ', estimated from the quote' : ', from the sliced files'} ·{' '}
+        {plan.assumptions.join(' · ')}.
+      </div>
     </div>
   )
 }

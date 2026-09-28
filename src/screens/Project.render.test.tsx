@@ -289,6 +289,32 @@ describe('the build sheet at each stage', () => {
   })
 })
 
+describe('when printing has to start', () => {
+  /** A due date nobody can act on becomes a date they can. The number is
+   *  unit-tested in schedule.test.ts; what matters here is that it reaches
+   *  the screen at all, which is the failure this repo keeps repeating. */
+  it('puts the start date on the project, with what it assumed', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    // 1.75 h a part x 12 = 21 machine hours, collected in person.
+    await data.updateProjectFields(ctx.shop.id, jobId, {
+      neededBy: '2099-01-20',
+      deliveryHow: 'Collected in person',
+    })
+    await renderProject(jobId, ctx)
+
+    await screen.findByText(/^Start printing by /)
+    expect(screen.getByText(/21 machine hours still to print/)).toBeDefined()
+    // The assumptions are printed, not hidden behind the number.
+    expect(screen.getByText(/12 machine hours a day/)).toBeDefined()
+  })
+
+  it('asks for a delivery date instead of inventing one', async () => {
+    const { ctx, jobId } = await seed({ takeIn: true })
+    await renderProject(jobId, ctx)
+    await screen.findByText(/Set a delivery date and Guma will say when printing has to start/)
+  })
+})
+
 describe('a project can always be got rid of', () => {
   it('arms in two steps, and names what goes with it', async () => {
     const { ctx, jobId, ref } = await seed({ takeIn: true })
