@@ -606,6 +606,7 @@ const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_i
             rush, flat_each, discount_pct, rates_snapshot ),
    job_money ( deposit_due, deposit_owed, balance_owed ),
    job_parts_summary ( parts, printed, passed, reprint, reprints_ever ),
+   batches ( units_made ),
    job_actuals ( material_cost, machine_cost, power_cost, wear_cost, runs,
                  design_hours, finishing_hours, admin_hours, material_units,
                  failed_units, machine_hours, failed_runs ),
@@ -689,6 +690,10 @@ function factsFrom(
     partsPassed: Number(r.job_parts_summary?.[0]?.passed ?? 0),
     partsReprint: Number(r.job_parts_summary?.[0]?.reprint ?? 0),
     reprintsEver: Number(r.job_parts_summary?.[0]?.reprints_ever ?? 0),
+    unitsMade: ((r.batches ?? []) as { units_made: number }[]).reduce(
+      (a, b) => a + Number(b.units_made ?? 0),
+      0,
+    ),
   }
 }
 

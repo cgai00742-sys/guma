@@ -239,6 +239,12 @@ const IN_HOUSE_GATES: Partial<Record<JobPhase, GateItem[]>> = {
       key: 'made',
       label: 'What came out of it is recorded — units on the shelf, or nothing',
       why: 'A trial that made nothing still cost you, and a trial that made forty keychains turned that cost into stock. Both are answers. Leaving it blank is how the money just vanishes.',
+      // Units on the shelf answer this item by existing. Returning null
+      // rather than false when there are none is the difference between
+      // "not yet" and "no": a trial that produced nothing sellable is a
+      // real answer, and it stays a tick the person makes by hand.
+      auto: (f) => (f.unitsMade > 0 ? true : null),
+      autoFrom: 'from the batch on the shelf',
       fix: 'Put the units on the shelf under What this made, or tick this to say it produced nothing sellable.',
     },
   ],

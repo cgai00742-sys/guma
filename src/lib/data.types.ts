@@ -522,6 +522,11 @@ export interface ProjectFacts {
    *  twice and then passed costs the shop twice and would otherwise leave
    *  no trace. */
   reprintsEver: number
+  /** Units this project put on the shelf, across every batch made from it.
+   *  Zero is a real answer -- a trial that produced nothing sellable still
+   *  cost money -- which is why the gate that reads this can still be
+   *  ticked by hand to say exactly that. */
+  unitsMade: number
 }
 
 export interface JobListRow {

@@ -76,6 +76,7 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     partsPassed: 0,
     partsReprint: 0,
     reprintsEver: 0,
+    unitsMade: 0,
     ...over,
   }
 }

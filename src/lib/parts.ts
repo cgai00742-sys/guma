@@ -18,7 +18,7 @@
  * belongs on the row, in front of whoever prints it next. Nothing is
  * stored twice for this: it is read back out of the part's own history.
  */
-import type { JobPhase, PartRow, PartStatus, PartVariant } from './data.types'
+import type { JobKind, JobPhase, PartRow, PartStatus, PartVariant } from './data.types'
 
 /**
  * The statuses a part may be moved to at this stage, in the order they
@@ -27,8 +27,29 @@ import type { JobPhase, PartRow, PartStatus, PartVariant } from './data.types'
  * Before building, a part is a plan: it has no status to change. While
  * building it comes off the machine or goes back on. In review it passes
  * QC or goes back. Once delivered the sheet is history and nothing moves.
+ *
+ * THE KIND MATTERS, and forgetting it broke the shop's own work. In-house
+ * jobs climb a three-stage ladder -- Working, Made, Done -- stored as
+ * design/review/delivered, and they never pass through 'building' at all.
+ * Reading the phase alone therefore offered NOTHING on a trial print: the
+ * parts could be imported and never marked printed, so the build sheet
+ * could not be finished on the work most likely to be sliced and
+ * re-sliced. Found by walking the whole ladder (inHouseWalkthrough.test).
+ *
+ * For in-house work 'design' IS the machine stage and 'review' is where
+ * the thing gets looked at, so they map onto the same two answers.
  */
-export function allowedStatuses(phase: JobPhase): PartStatus[] {
+export function allowedStatuses(phase: JobPhase, kind: JobKind = 'client'): PartStatus[] {
+  if (kind === 'inhouse') {
+    switch (phase) {
+      case 'design':
+        return ['printed', 'reprint']
+      case 'review':
+        return ['passed', 'reprint']
+      default:
+        return []
+    }
+  }
   switch (phase) {
     case 'building':
       return ['printed', 'reprint']
@@ -37,6 +58,12 @@ export function allowedStatuses(phase: JobPhase): PartStatus[] {
     default:
       return []
   }
+}
+
+/** Where a part goes back TO when it fails QC: the stage that runs the
+ *  machines on this job's own ladder. */
+export function buildingPhase(kind: JobKind = 'client'): JobPhase {
+  return kind === 'inhouse' ? 'design' : 'building'
 }
 
 /** Why this part is going back, if it is. Null in every other case --

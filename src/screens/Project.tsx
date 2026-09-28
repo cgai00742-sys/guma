@@ -97,6 +97,7 @@ import {
 import { useRowAnchor } from '../lib/rowAnchor'
 import {
   allowedStatuses,
+  buildingPhase,
   chosenVariant,
   isOnSharedPlate,
   reprintCount,
@@ -1714,7 +1715,7 @@ function SliceRuns({
   /** The parts this file produced that the build sheet still calls
    *  pending, and that this stage allows to be marked printed. */
   function pendingPartsOf(importId: string): string[] {
-    if (!allowedStatuses(detail.phase).includes('printed')) return []
+    if (!allowedStatuses(detail.phase, detail.facts.kind).includes('printed')) return []
     const slice = detail.slices.find((x) => x.id === importId)
     if (!slice) return []
     const ids = new Set(slice.sections.map((sec) => sec.partId).filter((x): x is string => !!x))
@@ -2190,7 +2191,14 @@ function BuildSheet({
             style={{ marginTop: 8 }}
             disabled={busy || saving}
             onClick={() =>
-              void guard(() => updateJobPhase(ctx.shop.id, detail.jobId, ctx.profile.id, 'building'))
+              void guard(() =>
+                updateJobPhase(
+                  ctx.shop.id,
+                  detail.jobId,
+                  ctx.profile.id,
+                  buildingPhase(detail.facts.kind),
+                ),
+              )
             }
           >
             Put it back in building
@@ -2296,7 +2304,7 @@ function BuildSheet({
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-                        {allowedStatuses(detail.phase)
+                        {allowedStatuses(detail.phase, detail.facts.kind)
                           .filter((st) => st !== p.status)
                           .map((st) => (
                             <button

@@ -795,6 +795,10 @@ const JOB_LIST_SQL = `
          coalesce(ps.passed, 0) as parts_passed,
          coalesce(ps.reprint, 0) as parts_reprint,
          coalesce(ps.reprints_ever, 0) as reprints_ever,
+         -- What this project put on the shelf. A correlated count rather
+         -- than a stored flag: a batch deleted later has to take its units
+         -- with it, and a second copy of the fact would not.
+         coalesce((select sum(units_made) from batches b where b.job_id = j.id), 0) as units_made,
          coalesce(a.runs, 0) as actual_runs,
          coalesce(a.machine_hours, 0) as machine_hours,
          coalesce(a.material_units, 0) as material_units,
@@ -860,6 +864,7 @@ interface JobListSqlRow {
   parts_passed: number
   parts_reprint: number
   reprints_ever: number
+  units_made: number
 }
 
 function factsFrom(r: JobListSqlRow): ProjectFacts {
@@ -901,6 +906,7 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     partsPassed: Number(r.parts_passed ?? 0),
     partsReprint: Number(r.parts_reprint ?? 0),
     reprintsEver: Number(r.reprints_ever ?? 0),
+    unitsMade: Number(r.units_made ?? 0),
   }
 }
 

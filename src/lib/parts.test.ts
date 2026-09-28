@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allowedStatuses, reprintCount, reprintReason, shouldReturnToBuilding } from './parts'
+import { allowedStatuses, buildingPhase, reprintCount, reprintReason, shouldReturnToBuilding } from './parts'
 import type { PartRow } from './data.types'
 
 function part(status: PartRow['status'], history: PartRow['history'] = []): PartRow {
@@ -37,6 +37,25 @@ describe('what a stage lets you do', () => {
 
   it('offers nothing once delivered', () => {
     expect(allowedStatuses('delivered')).toEqual([])
+  })
+
+  /** The shop's own work climbs Working → Made → Done, stored as
+   *  design/review/delivered, and never passes through 'building'. Reading
+   *  the phase without the kind offered nothing at all on a trial print,
+   *  so an imported build sheet could never be finished. */
+  it('treats Working as the machine stage on the shop\'s own work', () => {
+    expect(allowedStatuses('design', 'inhouse')).toEqual(['printed', 'reprint'])
+    expect(allowedStatuses('review', 'inhouse')).toEqual(['passed', 'reprint'])
+    expect(allowedStatuses('delivered', 'inhouse')).toEqual([])
+  })
+
+  it('still offers nothing in Working on CLIENT work, where design is design', () => {
+    expect(allowedStatuses('design')).toEqual([])
+  })
+
+  it('sends a failed part back to the stage that runs the machines', () => {
+    expect(buildingPhase()).toBe('building')
+    expect(buildingPhase('inhouse')).toBe('design')
   })
 })
 
