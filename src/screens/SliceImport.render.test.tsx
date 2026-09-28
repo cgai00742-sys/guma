@@ -66,7 +66,7 @@ vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => true }))
 
 /** A shop with one machine whose MODEL matches what the fixture file says,
  *  and one spool of the type it names, so the matcher has something to hit. */
-async function seedShop() {
+async function seedShop(kind: 'client' | 'inhouse' = 'client') {
   currentDb = freshDb()
   vi.resetModules()
   const data = await import('../lib/data')
@@ -107,10 +107,6 @@ async function seedShop() {
     fullName: 'CG',
   })
   const ctx = await data.loadShopContext()
-  // A CLIENT job, not an in-house one: Project.tsx hides the whole build
-  // sheet behind `!mine`, so in-house work has no build sheet and therefore
-  // no import. That is a real gap -- a shop's own R&D prints have parts too
-  // -- but it predates this feature and is not fixed here.
   const ref = await data.nextJobRef(ctx.shop.id)
   const saved = await data.saveQuote({
     shopId: ctx.shop.id,
@@ -133,6 +129,10 @@ async function seedShop() {
     },
   })
   await data.takeProjectIn(ctx.shop.id, saved.jobId, ctx.profile.id)
+  if (kind === 'inhouse') {
+    const id = await data.createInHouseJob(ctx.shop.id, { title: 'PETG calibration tower' })
+    return { ctx, data, jobId: id }
+  }
   return { ctx, data, jobId: saved.jobId }
 }
 
@@ -326,5 +326,70 @@ describe('a shop that has not set up its machines', () => {
       // The file's own word is kept even though nothing matched it.
       expect(row[0].printer_model).toBe('Creality K1')
     })
+  })
+})
+
+describe("the shop's own work", () => {
+  /**
+   * The build sheet used to sit inside Project.tsx's `!mine` block, next to
+   * money, the promised window and the handover. Those three genuinely do
+   * not apply to a trial print. The build sheet does: a prototype has
+   * parts, and an R&D print that fails twice has spent material and machine
+   * hours exactly as a client's would.
+   *
+   * The cost of getting that wrong was bigger than a hidden table --
+   * slicer import lives on the build sheet, so it was unreachable on
+   * precisely the work most likely to be sliced and re-sliced. No test saw
+   * it, because every test that touched the build sheet used a client job.
+   */
+  it('has a build sheet at all', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    await renderProject(jobId, ctx)
+    expect(screen.getByRole('heading', { name: /build sheet/i })).toBeDefined()
+  })
+
+  it('still hides money and the handover, which really do not apply', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    await renderProject(jobId, ctx)
+    // The reason the !mine block exists in the first place -- this change
+    // must not have widened it into "show everything".
+    expect(screen.queryByRole('heading', { name: /^Money$/ })).toBeNull()
+    expect(screen.queryByRole('heading', { name: /^Handover$/ })).toBeNull()
+  })
+
+  it('imports a sliced file onto a trial print, same as any other project', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+
+    await waitFor(() => {
+      const parts = currentDb.sqlite
+        .prepare('select label, qty from job_parts where job_id = ? order by sort')
+        .all(jobId) as { label: string; qty: number }[]
+      expect(parts).toEqual([
+        { label: 'Buoy shell', qty: 2 },
+        { label: 'Cap', qty: 1 },
+      ])
+    })
+  })
+
+  it('keeps an imported estimate out of what the trial print actually cost', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await screen.findByText('Buoy shell')
+
+    // In-house work has no quote to compare against, so its actual cost is
+    // the only number it has. Polluting that would be worse here, not less
+    // bad.
+    const a = currentDb.sqlite
+      .prepare('select material_cost, machine_hours, runs from job_actuals where job_id = ?')
+      .all(jobId) as Record<string, number>[]
+    expect(a[0]).toMatchObject({ material_cost: 0, machine_hours: 0, runs: 0 })
   })
 })

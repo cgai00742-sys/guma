@@ -748,7 +748,22 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         </div>
       </section>
 
-      {/* ---- the build sheet ---- */}
+        </>
+      )}
+
+      {/*
+        The build sheet is NOT inside the !mine block above, and the reason
+        is worth stating because it was inside it until now.
+
+        Money, a promised window and a handover genuinely do not apply to a
+        shop's own trial print -- that is the whole point of that block. The
+        build sheet is different: a prototype has parts, a test plate has
+        parts, and an R&D print that fails twice has cost the shop material
+        and machine time exactly as a client's would. It was hidden only
+        because it happened to sit inside the same fragment, which also
+        meant slicer import was unreachable on in-house work -- the work
+        most likely to be sliced and re-sliced.
+      */}
       <section className="sec">
         <div className="sechead">
           <h4>Build sheet</h4>
@@ -778,9 +793,6 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           setError={setError}
         />
       </section>
-
-        </>
-      )}
 
       {/* ---- what it actually took ---- */}
       <section className="sec">
