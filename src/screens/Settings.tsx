@@ -305,7 +305,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
       {tab === 'terms' && <QuoteTermsPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'machines' && <MachinesPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'materials' && <MaterialsPane ctx={ctx} onSaved={onSaved} />}
-      {tab === 'workspace' && <WorkspacePane />}
+      {tab === 'workspace' && <WorkspacePane ctx={ctx} />}
 
       {tab === 'rates' && error && (
         <div className="alert">
@@ -2222,11 +2222,33 @@ function CostsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) 
  * not a mode flag on one set of records; nothing done in the demo can reach
  * the real shop, because they are different files.
  */
-function WorkspacePane() {
+function WorkspacePane({ ctx }: { ctx: ShopContext }) {
   const demo = isDemo()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
+  const [seeded, setSeeded] = useState<string | null>(null)
+
+  /**
+   * Fill the demo with a worked example.
+   *
+   * Only offered inside the demo, and seedSample refuses anywhere else --
+   * sample records in a real shop's books are indistinguishable from work
+   * and move every figure the shop decides from.
+   */
+  async function fill() {
+    setBusy(true)
+    setError(null)
+    try {
+      const { seedSample } = await import('../lib/sample')
+      const res = await seedSample(ctx)
+      setSeeded(res.note)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function reset() {
     setBusy(true)
@@ -2277,6 +2299,9 @@ function WorkspacePane() {
             >
               Back to my shop
             </button>
+            <button type="button" className="btn sm" disabled={busy} onClick={() => void fill()}>
+              {busy ? 'Filling…' : 'Fill it with a worked example'}
+            </button>
             {confirming ? (
               <>
                 <button type="button" className="btn sm danger" disabled={busy} onClick={reset}>
@@ -2298,6 +2323,12 @@ function WorkspacePane() {
           </button>
         )}
       </div>
+
+      {seeded && (
+        <div className="hint" style={{ marginTop: 8, color: 'var(--ok)' }}>
+          {seeded} Open Projects → In-house to walk them.
+        </div>
+      )}
 
       {confirming && demo && (
         <div className="hint" style={{ marginTop: 8 }}>
