@@ -315,6 +315,15 @@ describe('when printing has to start', () => {
   })
 })
 
+describe('a quote can be revised after it was accepted', () => {
+  it('offers the revision from the project, pointed at this job', async () => {
+    const { ctx, jobId } = await seed({ takeIn: true })
+    await renderProject(jobId, ctx)
+    const link = (await screen.findByRole('link', { name: /revise the quote/i })) as HTMLAnchorElement
+    expect(link.getAttribute('href')).toContain(`revise=${jobId}`)
+  })
+})
+
 describe('a project can always be got rid of', () => {
   it('arms in two steps, and names what goes with it', async () => {
     const { ctx, jobId, ref } = await seed({ takeIn: true })

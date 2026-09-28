@@ -14,7 +14,7 @@ import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
-import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
+import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, validateRevision, CHANGE_CAUSE_LABEL, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
   toRateSet,
@@ -787,7 +787,129 @@ export async function updateJobPriority(
  * in this shop rather than creating a duplicate every time a repeat customer
  * walks in.
  */
+/** The build lines of one quote. Shared by a first quote and a revision,
+ *  so the two cannot write them differently. */
+async function writeQuoteBuilds(quoteId: string, builds: SaveQuoteArgs['builds']): Promise<void> {
+  if (!builds?.length) return
+  const rows = builds
+    .map((b, i) => ({ b, label: b.label.trim(), i }))
+    .filter(({ label }) => !!label)
+    .map(({ b, label, i }) => ({
+      quote_id: quoteId,
+      kind: b.kind ?? 'print',
+      label,
+      printer_id: b.printerId,
+      material_id: b.materialId,
+      qty: Math.max(1, Math.floor(Number(b.qty) || 1)),
+      units_per_part: Number(b.unitsPerPart) || 0,
+      print_hrs_part: Number(b.printHrsPerPart) || 0,
+      slice_import_id: b.sliceImportId ?? null,
+      sort: i,
+    }))
+  if (!rows.length) return
+  const { error } = await supabase.from('quote_builds').insert(rows)
+  if (error) throw error
+}
+
+/** See data.local.ts's reviseQuote. */
+async function reviseQuote(args: SaveQuoteArgs, jobId: string): Promise<SavedQuote> {
+  const { data: job, error: jErr } = await supabase
+    .from('jobs')
+    .select('id, ref, client_id')
+    .eq('id', jobId)
+    .eq('shop_id', args.shopId)
+    .single()
+  if (jErr) throw jErr
+  if (!job) throw new Error('That project no longer exists.')
+
+  const { data: accepted } = await supabase
+    .from('quotes')
+    .select('total')
+    .eq('job_id', jobId)
+    .eq('status', 'accepted')
+    .order('version', { ascending: false })
+    .limit(1)
+  const change = validateRevision(
+    accepted?.[0]?.total == null ? null : Number(accepted[0].total),
+    args.send?.total ?? null,
+    args.change,
+  )
+
+  const { data: top } = await supabase
+    .from('quotes')
+    .select('version')
+    .eq('job_id', jobId)
+    .order('version', { ascending: false })
+    .limit(1)
+  const version = Number(top?.[0]?.version ?? 0) + 1
+
+  const { data: quote, error: qErr } = await supabase
+    .from('quotes')
+    .insert({
+      shop_id: args.shopId,
+      job_id: jobId,
+      version,
+      status: args.send ? 'sent' : 'draft',
+      design_billing: args.quote.design_billing,
+      design_qty: args.quote.design_qty,
+      revisions_incl: args.quote.revisions_incl,
+      quantity: args.quote.quantity,
+      material_id: args.quote.material_id,
+      printer_id: args.quote.printer_id,
+      units_per_part: args.quote.units_per_part,
+      print_hrs_part: args.quote.print_hrs_part,
+      finishing_hrs: args.quote.finishing_hrs,
+      rush: args.quote.rush,
+      flat_each: args.quote.flat_each,
+      discount_pct: args.quote.discount_pct,
+      rates_snapshot: args.send ? args.send.rates_snapshot : null,
+      total: args.send?.total ?? null,
+      deposit_due: args.send?.deposit_due ?? null,
+      valid_until: args.send?.valid_until ?? null,
+      sent_at: args.send ? new Date().toISOString() : null,
+      change_cause: change?.cause ?? null,
+      change_reason: change?.reason ?? null,
+    })
+    .select('id')
+    .single()
+  if (qErr) throw qErr
+
+  await writeQuoteBuilds(quote.id as string, args.builds)
+
+  const { error: upErr } = await supabase
+    .from('jobs')
+    .update({
+      title: args.job.title,
+      brief: args.job.brief || null,
+      needed_by: args.job.neededBy,
+      asset_origin: args.job.assetOrigin,
+    })
+    .eq('id', jobId)
+    .eq('shop_id', args.shopId)
+  if (upErr) throw upErr
+
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: jobId,
+    kind: 'quote_sent',
+    body: change
+      ? `Quote revised to v${version} · ${(args.send?.total ?? 0).toFixed(2)} — above the accepted price: ${CHANGE_CAUSE_LABEL[change.cause]} (${change.reason})`
+      : `Quote revised to v${version}${args.send ? ` · ${args.send.total.toFixed(2)}` : ' (draft)'}`,
+  })
+  if (evErr) throw evErr
+
+  return {
+    jobId,
+    clientId: job.client_id as string,
+    quoteId: quote.id as string,
+    ref: job.ref as string,
+  }
+}
+
 export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
+  // See data.local.ts's reviseQuote: same project, same client, next
+  // version, and the accepted row left exactly as the client saw it.
+  if (args.reviseJobId) return reviseQuote(args, args.reviseJobId)
+
   const { data: existing } = await supabase
     .from('clients')
     .select('id')
@@ -870,27 +992,7 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
   // Build lines, when the quote has them. See 0020_quote_builds.sql -- a
   // quote with rows here is described BY them, and the single-machine
   // columns on it are ignored rather than mirrored.
-  if (args.builds?.length) {
-    const rows = args.builds
-      .map((b, i) => ({ b, label: b.label.trim(), i }))
-      .filter(({ label }) => !!label)
-      .map(({ b, label, i }) => ({
-        quote_id: quote.id,
-        kind: b.kind ?? 'print',
-        label,
-        printer_id: b.printerId,
-        material_id: b.materialId,
-        qty: Math.max(1, Math.floor(Number(b.qty) || 1)),
-        units_per_part: Number(b.unitsPerPart) || 0,
-        print_hrs_part: Number(b.printHrsPerPart) || 0,
-        slice_import_id: b.sliceImportId ?? null,
-        sort: i,
-      }))
-    if (rows.length) {
-      const { error } = await supabase.from('quote_builds').insert(rows)
-      if (error) throw error
-    }
-  }
+  await writeQuoteBuilds(quote.id as string, args.builds)
 
   return { jobId: job.id, clientId: clientId!, quoteId: quote.id, ref: args.ref }
 }

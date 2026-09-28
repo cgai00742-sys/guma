@@ -266,6 +266,15 @@ export interface SaveQuoteArgs {
    * one that bills a client. See 0016_quote_builds.sql.
    */
   builds?: QuoteBuildInput[]
+  /**
+   * Re-quoting an existing project: this saves a NEW VERSION against that
+   * job and its client rather than creating another project. Versioned by
+   * insert, like everything else priced here -- the accepted version stays
+   * exactly as the client saw it.
+   */
+  reviseJobId?: string
+  /** Required when the new total lands above the accepted ceiling. */
+  change?: QuoteChange
   /** set only when sending — a draft carries no snapshot and no frozen total */
   send?: {
     rates_snapshot: unknown
@@ -273,6 +282,85 @@ export interface SaveQuoteArgs {
     deposit_due: number
     valid_until: string
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* The accepted quote is a ceiling                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How far above an accepted total a revision may go before it needs a
+ * change order. The shop's own rule, not an industry one.
+ */
+export const CEILING_PCT = 10
+
+/**
+ * The only reasons a revision may go over. Every one of them is something
+ * the CLIENT did -- which is the whole point. A shop that under-quoted its
+ * own print time has made a mistake, and charging the client for it is how
+ * a shop loses the client. Recording it as a shop-caused overrun instead
+ * is what makes the same mistake visible the third time it happens.
+ */
+export const CHANGE_CAUSES = [
+  'added_work',
+  'design_change',
+  'material_change',
+  'rush',
+  'scope_clarified',
+] as const
+export type ChangeCause = (typeof CHANGE_CAUSES)[number]
+
+export const CHANGE_CAUSE_LABEL: Record<ChangeCause, string> = {
+  added_work: 'They added parts or copies',
+  design_change: 'They changed the design after acceptance',
+  material_change: 'They asked for a different material or finish',
+  rush: 'They moved the deadline in',
+  scope_clarified: 'What they wanted turned out to be more than what was described',
+}
+
+export interface QuoteChange {
+  cause: ChangeCause
+  reason: string
+}
+
+/** What a revision does to the accepted price, in numbers a screen can
+ *  print before anybody presses anything. */
+export function ceilingCheck(
+  acceptedTotal: number | null,
+  newTotal: number | null,
+): { ceiling: number | null; over: boolean; overPct: number } {
+  if (acceptedTotal == null || acceptedTotal <= 0 || newTotal == null) {
+    return { ceiling: null, over: false, overPct: 0 }
+  }
+  const ceiling = Math.round(acceptedTotal * (1 + CEILING_PCT / 100) * 100) / 100
+  const overPct = Math.round(((newTotal - acceptedTotal) / acceptedTotal) * 1000) / 10
+  return { ceiling, over: newTotal > ceiling, overPct }
+}
+
+/**
+ * Shared by both backends so the two cannot disagree about when a change
+ * order is required.
+ *
+ * Warn, don't block, was the decision -- so this refuses ONLY the case
+ * where the shop has not said why. An unexplained rise above a price the
+ * client agreed to is the one thing that must not be possible to record,
+ * because six months later nobody can tell it from a billing error.
+ */
+export function validateRevision(
+  acceptedTotal: number | null,
+  newTotal: number | null,
+  change: QuoteChange | undefined,
+): QuoteChange | null {
+  const { over } = ceilingCheck(acceptedTotal, newTotal)
+  if (!over) return null
+  const reason = (change?.reason ?? '').trim()
+  if (!change || !CHANGE_CAUSES.includes(change.cause) || !reason) {
+    throw new Error(
+      `This is more than ${CEILING_PCT}% above the price they accepted. Say what the client ` +
+        'changed before saving it.',
+    )
+  }
+  return { cause: change.cause, reason }
 }
 
 export interface SavedQuote {

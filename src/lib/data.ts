@@ -83,6 +83,8 @@ import type {
   WorkEntryRow,
   WorkEntryInput,
   QuoteStatus,
+  ChangeCause,
+  QuoteChange,
 } from './data.types'
 
 export {
@@ -100,8 +102,15 @@ export {
   WORK_KIND_LABEL,
   PART_STATUSES,
   PART_STATUS_LABEL,
+  CEILING_PCT,
+  CHANGE_CAUSES,
+  CHANGE_CAUSE_LABEL,
+  ceilingCheck,
+  validateRevision,
 } from './data.types'
 export type {
+  ChangeCause,
+  QuoteChange,
   Shop,
   RateCardRow,
   PrinterRow,

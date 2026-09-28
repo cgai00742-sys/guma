@@ -25,7 +25,15 @@
 import Database from '@tauri-apps/plugin-sql'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
-import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody } from './data.types'
+import {
+  NeedsSetup,
+  asClientKind,
+  validateRun,
+  validateHours,
+  runEventBody,
+  validateRevision,
+  CHANGE_CAUSE_LABEL,
+} from './data.types'
 import { osCurrency, osLocale } from './locale'
 import { LATEST_RATE_CARD } from './rateCards'
 import { activeDbUrl, isDemo } from './workspace'
@@ -980,6 +988,10 @@ export async function updateJobPriority(
 export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
   const d = await db()
 
+  // A revision: same project, same client, next version. The accepted
+  // version is never touched -- it is what the client agreed to.
+  if (args.reviseJobId) return reviseQuote(d, args, args.reviseJobId)
+
   const existing = await d.select<{ id: string }[]>(
     'select id from clients where shop_id = ? and system = 0 and name like ? limit 1',
     [args.shopId, args.client.name],
@@ -1069,6 +1081,109 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
   }
 
   return { jobId, clientId, quoteId, ref: args.ref }
+}
+
+/**
+ * A new version of an existing project's quote.
+ *
+ * Everything the client already holds stays where it is: the accepted row
+ * keeps its status, its frozen rate snapshot and its total, and this
+ * writes the next version alongside it. The only new rule is the ceiling
+ * -- above accepted + 10% the revision has to say what the client changed,
+ * and it is allowed once it has.
+ */
+async function reviseQuote(
+  d: Awaited<ReturnType<typeof db>>,
+  args: SaveQuoteArgs,
+  jobId: string,
+): Promise<SavedQuote> {
+  const job = (
+    await d.select<{ id: string; ref: string; client_id: string }[]>(
+      'select id, ref, client_id from jobs where id = ? and shop_id = ?',
+      [jobId, args.shopId],
+    )
+  )[0]
+  if (!job) throw new Error('That project no longer exists.')
+
+  const accepted = (
+    await d.select<{ total: number | null }[]>(
+      `select total from quotes
+        where job_id = ? and status = 'accepted'
+        order by version desc limit 1`,
+      [jobId],
+    )
+  )[0]
+  const change = validateRevision(
+    accepted?.total == null ? null : Number(accepted.total),
+    args.send?.total ?? null,
+    args.change,
+  )
+
+  const top = (
+    await d.select<{ v: number }[]>(
+      'select coalesce(max(version), 0) as v from quotes where job_id = ?',
+      [jobId],
+    )
+  )[0]
+  const version = (top?.v ?? 0) + 1
+
+  const quoteId = uuid()
+  await d.execute(
+    `insert into quotes
+      (id, shop_id, job_id, version, status, design_billing, design_qty, revisions_incl,
+       quantity, material_id, printer_id, units_per_part, print_hrs_part, finishing_hrs,
+       rush, flat_each, discount_pct, rates_snapshot, total, deposit_due, valid_until, sent_at,
+       change_cause, change_reason)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      quoteId,
+      args.shopId,
+      jobId,
+      version,
+      args.send ? 'sent' : 'draft',
+      args.quote.design_billing,
+      args.quote.design_qty,
+      args.quote.revisions_incl,
+      args.quote.quantity,
+      args.quote.material_id,
+      args.quote.printer_id,
+      args.quote.units_per_part,
+      args.quote.print_hrs_part,
+      args.quote.finishing_hrs,
+      args.quote.rush ? 1 : 0,
+      args.quote.flat_each,
+      args.quote.discount_pct,
+      args.send ? JSON.stringify(args.send.rates_snapshot) : null,
+      args.send?.total ?? null,
+      args.send?.deposit_due ?? null,
+      args.send?.valid_until ?? null,
+      args.send ? new Date().toISOString() : null,
+      change?.cause ?? null,
+      change?.reason ?? null,
+    ],
+  )
+  await writeQuoteBuilds(d, quoteId, args.builds)
+
+  // The project's own facts move with the revision: a client who added
+  // parts usually moved the date too.
+  await d.execute(
+    `update jobs set title = ?, brief = ?, needed_by = ?, asset_origin = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      where id = ? and shop_id = ?`,
+    [args.job.title, args.job.brief || null, args.job.neededBy, args.job.assetOrigin, jobId, args.shopId],
+  )
+
+  await d.execute(
+    `insert into job_events (job_id, kind, body) values (?, 'quote_sent', ?)`,
+    [
+      jobId,
+      change
+        ? `Quote revised to v${version} · ${(args.send?.total ?? 0).toFixed(2)} — above the accepted price: ${CHANGE_CAUSE_LABEL[change.cause]} (${change.reason})`
+        : `Quote revised to v${version}${args.send ? ` · ${args.send.total.toFixed(2)}` : ' (draft)'}`,
+    ],
+  )
+
+  return { jobId, clientId: job.client_id, quoteId, ref: job.ref }
 }
 
 /** Replace a quote's build lines wholesale. Called on save; a quote is

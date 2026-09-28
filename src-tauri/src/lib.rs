@@ -113,6 +113,12 @@ pub fn run() {
       sql: include_str!("../migrations/0018_slice_variants.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 19,
+      description: "quote revisions: why this version is above the accepted one",
+      sql: include_str!("../migrations/0019_quote_revisions.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

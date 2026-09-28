@@ -629,6 +629,20 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                     <option value="expired">expired</option>
                   </select>
                 </label>
+                {detail.quote && (
+                  <Link
+                    to={`/intake?revise=${detail.jobId}`}
+                    className="btn sm"
+                    style={{ textDecoration: 'none' }}
+                    title={
+                      detail.quote.status === 'accepted'
+                        ? 'Prices a new version against this project. The accepted one stays exactly as the client saw it, and above 10% over it you will be asked what the client changed.'
+                        : 'Prices a new version against this project.'
+                    }
+                  >
+                    Revise the quote
+                  </Link>
+                )}
                 <span className="hint" style={{ marginTop: 0 }}>
                   The client-approval gate reads this. Move it when the quote actually moves — a
                   quote marked accepted that nobody agreed to is worse than no record at all.

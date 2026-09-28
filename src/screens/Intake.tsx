@@ -25,7 +25,7 @@
  * No arithmetic lives in this file. Every figure comes from priceQuote().
  */
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   buildRatesSnapshot,
   makeMoney,
@@ -37,12 +37,18 @@ import {
   type QuoteInputs,
 } from '../lib/pricing'
 import {
+  ceilingCheck,
   createInHouseJob,
   listClients,
+  loadProjectDetail,
   nextJobRef,
   saveQuote,
   takeProjectIn,
   toRateSet,
+  CHANGE_CAUSES,
+  CHANGE_CAUSE_LABEL,
+  CEILING_PCT,
+  type ChangeCause,
   type ClientRow,
   type ShopContext,
 } from '../lib/data'
@@ -96,9 +102,26 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   }, [ctx.shop.id])
 
   const [ref, setRef] = useState<string>('…')
+  /**
+   * Revising an existing project's quote rather than opening a new one.
+   *
+   * Scope changes after a client has said yes, and a shop with no way to
+   * record that keeps the new number somewhere the tool cannot see -- which
+   * is how quoted-versus-actual quietly stops meaning anything. A revision
+   * is a NEW VERSION against the same job: the accepted one stays exactly
+   * as the client saw it, and above accepted + 10% this screen makes you
+   * say what the client changed.
+   */
+  const [params] = useSearchParams()
+  const reviseJobId = params.get('revise')
+  const [acceptedTotal, setAcceptedTotal] = useState<number | null>(null)
+  const [cause, setCause] = useState<ChangeCause>('added_work')
+  const [why, setWhy] = useState('')
+
   useEffect(() => {
+    if (reviseJobId) return
     nextJobRef(ctx.shop.id).then(setRef).catch(() => setRef('GUMA-DRAFT'))
-  }, [ctx.shop.id])
+  }, [ctx.shop.id, reviseJobId])
 
   // Who it's for
   const [client, setClient] = useState('')
@@ -126,6 +149,53 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   })
   const [materialId, setMaterialId] = useState(ctx.materials[0]?.id ?? '')
   const [printerId, setPrinterId] = useState(ctx.printers[0]?.id ?? '')
+
+  // Load the project being revised: its client, its details and the exact
+  // inputs of its newest quote, so a revision starts from what was priced
+  // rather than from an empty form somebody has to reconstruct.
+  useEffect(() => {
+    if (!reviseJobId) return
+    let live = true
+    loadProjectDetail(ctx.shop.id, reviseJobId)
+      .then((d) => {
+        if (!live) return
+        setRef(d.ref)
+        setClient(d.client.name)
+        setContact(d.client.contact ?? '')
+        setEmail(d.client.email ?? '')
+        setPhone(d.client.phone ?? '')
+        setTitle(d.title)
+        setBrief(d.brief ?? '')
+        setNeededBy(d.facts.neededBy ?? '')
+        setAcceptedTotal(d.quote?.status === 'accepted' ? d.quote.total : null)
+        const q = d.quoteInputs
+        if (q) {
+          setInput({
+            assetOrigin: d.assetOrigin,
+            // 'none' is not an input here: it is what the form SAYS when
+            // the asset origin is "ready to print", and persist() writes it
+            // back. Keeping the last billable choice means flipping the
+            // origin back does not silently zero the design line.
+            designBilling: q.designBilling === 'none' ? 'hourly' : q.designBilling,
+            designQty: q.designQty,
+            revisions: q.revisionsIncl,
+            quantity: q.quantity,
+            unitsPerPart: q.unitsPerPart,
+            printHrsPerPart: q.printHrsPart,
+            finishingHrs: q.finishingHrs,
+            rush: q.rush,
+            flatEach: q.flatEach,
+            discountPct: q.discountPct,
+          })
+          if (q.materialId) setMaterialId(q.materialId)
+          if (q.printerId) setPrinterId(q.printerId)
+        }
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+    return () => {
+      live = false
+    }
+  }, [ctx.shop.id, reviseJobId])
 
   /**
    * Who this job is for, asked before anything else.
@@ -222,6 +292,8 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
       const saved = await saveQuote({
         shopId: ctx.shop.id,
         ref,
+        reviseJobId: reviseJobId ?? undefined,
+        change: reviseJobId ? { cause, reason: why.trim() } : undefined,
         client: { name: client.trim(), contact, email, phone, source },
         job: {
           title: title.trim(),
@@ -327,7 +399,9 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
     <div className="wrap" style={{ paddingTop: 20, paddingBottom: 40 }}>
       <div className="section-head">
         <div>
-          <h2>{inHouse ? 'Something of my own' : 'New project'}</h2>
+          <h2>
+            {reviseJobId ? 'Revising the quote' : inHouse ? 'Something of my own' : 'New project'}
+          </h2>
           <div
             style={{
               display: 'flex',
@@ -362,7 +436,28 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {inHouse ? (
+          {reviseJobId ? (
+            <>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => persist('draft')}
+                disabled={saving !== 'idle' || !canSave}
+                title="Saves the new price as the next version, without a printable."
+              >
+                {saving === 'draft' ? 'Saving…' : 'Save revision'}
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => persist('send')}
+                disabled={saving !== 'idle' || !canSave}
+                title="Saves the next version and opens the printable to send them."
+              >
+                {saving === 'send' ? 'Preparing…' : 'Save revision as PDF'}
+              </button>
+            </>
+          ) : inHouse ? (
             <button
               type="button"
               className="btn primary"
@@ -421,6 +516,24 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           )}
         </div>
       </div>
+
+      {/* The ceiling. Shown while the numbers are being changed, not after
+          the save is refused: a price that is already too high is the one
+          thing the person needs to know BEFORE they finish typing. Warn,
+          don't block -- CG's decision, and the right one, because a shop
+          that cannot record what actually happened keeps a second set of
+          numbers somewhere Guma will never see. */}
+      {reviseJobId && acceptedTotal != null && (
+        <RevisionCeiling
+          acceptedTotal={acceptedTotal}
+          total={q.total}
+          money={money}
+          cause={cause}
+          setCause={setCause}
+          why={why}
+          setWhy={setWhy}
+        />
+      )}
 
       {error && (
         <div className="alert">
@@ -1379,6 +1492,92 @@ function ClientFieldHint({
         : clients.length > 0
           ? 'Pick a client above, or type a new name.'
           : 'Your first client. Typing a name here creates them.'}
+    </div>
+  )
+}
+
+/**
+ * What the accepted price allows, and what this revision does to it.
+ *
+ * Three states, and the difference between them is the whole feature:
+ *   - inside the ceiling: say so, ask for nothing.
+ *   - above it: say by how much, and require the reason the CLIENT caused
+ *     it before the save will go through.
+ *   - below the accepted price: also worth saying, because a revision that
+ *     came down is a thing to tell the client rather than to bury.
+ *
+ * The reasons are client-caused on purpose. A shop that under-quoted its
+ * own print time made a mistake, and billing the client for it is how a
+ * shop loses the client; recording it honestly is what makes the same
+ * mistake visible the third time it happens.
+ */
+function RevisionCeiling({
+  acceptedTotal,
+  total,
+  money,
+  cause,
+  setCause,
+  why,
+  setWhy,
+}: {
+  acceptedTotal: number
+  total: number
+  money: (n: number) => string
+  cause: ChangeCause
+  setCause: (c: ChangeCause) => void
+  why: string
+  setWhy: (s: string) => void
+}) {
+  const { ceiling, over, overPct } = ceilingCheck(acceptedTotal, total)
+  return (
+    <div className={`attn ${over ? 'crit' : ''}`.trim()} style={{ marginBottom: 12 }}>
+      <b>
+        {over
+          ? `${overPct}% above the price they accepted`
+          : total < acceptedTotal
+            ? `${money(acceptedTotal - total)} below the price they accepted`
+            : 'Inside the accepted price'}
+      </b>
+      <div style={{ marginTop: 4, fontSize: 12 }}>
+        They accepted {money(acceptedTotal)}. Up to {CEILING_PCT}% more — {money(ceiling ?? 0)} —
+        needs no explanation. This revision is {money(total)}.
+      </div>
+      {over && (
+        <>
+          <div className="fld" style={{ marginTop: 8 }}>
+            <label className="lbl" htmlFor="rev-cause">
+              What the client changed
+            </label>
+            <select
+              id="rev-cause"
+              value={cause}
+              onChange={(e) => setCause(e.target.value as ChangeCause)}
+            >
+              {CHANGE_CAUSES.map((c) => (
+                <option key={c} value={c}>
+                  {CHANGE_CAUSE_LABEL[c]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="fld">
+            <label className="lbl" htmlFor="rev-why">
+              In your words — this goes on the project, and it is what you will read back in six
+              months
+            </label>
+            <input
+              id="rev-why"
+              value={why}
+              placeholder="Added two more brackets and moved the date in a week"
+              onChange={(e) => setWhy(e.target.value)}
+            />
+          </div>
+          <div className="hint" style={{ marginTop: 0 }}>
+            Guma will save it either way — but not silently. An unexplained rise above a price the
+            client agreed to is indistinguishable from a billing error six months later.
+          </div>
+        </>
+      )}
     </div>
   )
 }

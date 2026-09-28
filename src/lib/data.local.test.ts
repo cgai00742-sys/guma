@@ -550,6 +550,90 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(printed.shops.name).toBe('Test Shop')
   })
 
+  it('revises an accepted quote into a new version, keeping what the client accepted', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const ctx = await local.loadShopContext()
+    const rates = local.toRateSet(ctx.rateCard, ctx.shop)
+    const material = ctx.materials[0]
+    const printer = ctx.printers[0]
+
+    const base = (ref: string) =>
+      ({
+        shopId,
+        ref,
+        client: { name: 'Acme Co', contact: '', email: '', phone: '', source: '' },
+        job: { title: 'Mast brackets', brief: '', neededBy: null, assetOrigin: 'model' as const },
+        quote: {
+          design_billing: 'hourly' as const,
+          design_qty: MAST_BRACKETS.designQty,
+          revisions_incl: MAST_BRACKETS.revisions,
+          quantity: MAST_BRACKETS.quantity,
+          material_id: material.id,
+          printer_id: printer.id,
+          units_per_part: MAST_BRACKETS.unitsPerPart,
+          print_hrs_part: MAST_BRACKETS.printHrsPerPart,
+          finishing_hrs: MAST_BRACKETS.finishingHrs,
+          rush: MAST_BRACKETS.rush,
+          flat_each: MAST_BRACKETS.flatEach,
+          discount_pct: MAST_BRACKETS.discountPct,
+        },
+      }) satisfies SaveQuoteArgs
+
+    const ref = await local.nextJobRef(shopId)
+    const saved = await local.saveQuote({
+      ...base(ref),
+      send: { rates_snapshot: rates, total: 1000, deposit_due: 0, valid_until: '2026-12-31' },
+    })
+    await local.setQuoteStatus(shopId, saved.quoteId, ctx.profile.id, 'accepted')
+
+    // Inside the ceiling: no explanation needed.
+    const okRevision = await local.saveQuote({
+      ...base(ref),
+      reviseJobId: saved.jobId,
+      send: { rates_snapshot: rates, total: 1080, deposit_due: 0, valid_until: '2026-12-31' },
+    })
+    expect(okRevision.jobId).toBe(saved.jobId)
+    expect(okRevision.quoteId).not.toBe(saved.quoteId)
+
+    // Above it, with nothing said: refused.
+    await expect(
+      local.saveQuote({
+        ...base(ref),
+        reviseJobId: saved.jobId,
+        send: { rates_snapshot: rates, total: 1400, deposit_due: 0, valid_until: '2026-12-31' },
+      }),
+    ).rejects.toThrow(/what the client changed/i)
+
+    // Above it, explained: allowed, and the reason is stored on the
+    // version that carries the higher price.
+    await local.saveQuote({
+      ...base(ref),
+      reviseJobId: saved.jobId,
+      change: { cause: 'added_work', reason: 'Two more brackets' },
+      send: { rates_snapshot: rates, total: 1400, deposit_due: 0, valid_until: '2026-12-31' },
+    })
+
+    const versions = (await currentDb.select(
+      'select version, status, total, change_cause, change_reason from quotes where job_id = ? order by version',
+      [saved.jobId],
+    )) as Record<string, unknown>[]
+    expect(versions.map((v) => Number(v.version))).toEqual([1, 2, 3])
+    // What the client accepted is untouched, and still the accepted one.
+    expect(versions[0]).toMatchObject({ status: 'accepted', total: 1000 })
+    expect(versions[1].change_reason).toBeNull()
+    expect(versions[2]).toMatchObject({
+      change_cause: 'added_work',
+      change_reason: 'Two more brackets',
+    })
+
+    // And one project, not three: a revision must never open another job.
+    const jobs = (await currentDb.select('select count(*) as n from jobs where ref = ?', [
+      ref,
+    ])) as { n: number }[]
+    expect(Number(jobs[0].n)).toBe(1)
+  })
+
   it('lists saved jobs newest first, with draft and sent quotes both showing', async () => {
     const local = await import('./data.local')
     const shopId = await local.setupShop(SETUP_PAYLOAD)
