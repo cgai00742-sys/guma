@@ -28,6 +28,7 @@ import { feeFor } from './selling'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody } from './data.types'
 import { osCurrency, osLocale } from './locale'
 import { LATEST_RATE_CARD } from './rateCards'
+import { activeDbUrl, isDemo } from './workspace'
 import type {
   Shop,
   RateCardRow,
@@ -144,8 +145,46 @@ export type {
 
 let dbPromise: Promise<Database> | null = null
 function db(): Promise<Database> {
-  if (!dbPromise) dbPromise = Database.load('sqlite:guma.db')
+  // Which file, from workspace.ts -- the real shop or the demo beside it.
+  // Read once and cached, same as the connection: switching workspaces
+  // reloads the window rather than swapping the file underneath a running
+  // app, which would leave writes going somewhere nobody expects.
+  if (!dbPromise) dbPromise = Database.load(activeDbUrl())
   return dbPromise
+}
+
+/**
+ * Empty the DEMO workspace, so the next launch is a first run: no shop, so
+ * loadShopContext throws NeedsSetup, so the setup wizard opens, so the
+ * welcome shows. Exactly what someone downloading Guma sees.
+ *
+ * Refuses point blank unless the demo is active. This deletes a shop's
+ * entire history and there is no undo, so the guard is a condition of the
+ * function rather than a note in a comment for somebody to read later.
+ *
+ * Tables are read from the schema rather than listed here. A hardcoded list
+ * is a list somebody forgets to add to -- it has already happened twice in
+ * this repo with migrations -- and a wipe that misses a table leaves rows
+ * pointing at a shop that no longer exists.
+ */
+export async function resetWorkspace(): Promise<void> {
+  if (!isDemo())
+    throw new Error(
+      'Refusing to empty your shop. Switch to the demo workspace first — this cannot be undone.',
+    )
+  const d = await db()
+  const tables = await d.select<{ name: string }[]>(
+    `select name from sqlite_master
+      where type = 'table' and name not like 'sqlite_%' and name not like '_sqlx%'`,
+  )
+  // Foreign keys off for the duration: with them on the deletes have to run
+  // in dependency order, and that order is another list to forget.
+  await d.execute('pragma foreign_keys = off')
+  try {
+    for (const t of tables) await d.execute(`delete from "${t.name}"`)
+  } finally {
+    await d.execute('pragma foreign_keys = on')
+  }
 }
 
 function uuid(): string {

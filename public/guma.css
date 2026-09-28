@@ -1391,11 +1391,27 @@ td.cell.busy.live,.tlseg.live{box-shadow:0 0 12px color-mix(in srgb, var(--biolu
   display:inline-block;
 }
 
-/* 5 · Sign-in reveal — see .home in §7. */
+/* 5 · Sign-in reveal — see .home in §7. Also the welcome: the first thing a
+      new install shows arrives rather than appearing, and its three points
+      land one after another so the eye is led down them instead of being
+      handed a wall. Staggered by nth-child rather than by a timer in the
+      app, so the markup stays declarative and reduced-motion switches the
+      whole thing off in one place (§2) like everything else here. */
 @keyframes gumareveal{
   0%{opacity:0;transform:translateY(10px) scale(.985)}
   100%{opacity:1;transform:none}
 }
+.wmark{animation:gumapop .62s cubic-bezier(.2,.85,.3,1.35) both}
+.wtitle{animation:gumareveal .44s cubic-bezier(.16,.84,.3,1) both;animation-delay:.06s}
+.wlede{animation:gumareveal .46s cubic-bezier(.16,.84,.3,1) both;animation-delay:.14s}
+.wpoint{animation:gumareveal .42s cubic-bezier(.16,.84,.3,1) both}
+.wpoint:nth-child(1){animation-delay:.24s}
+.wpoint:nth-child(2){animation-delay:.34s}
+.wpoint:nth-child(3){animation-delay:.44s}
+.wfoot{animation:gumareveal .4s cubic-bezier(.16,.84,.3,1) both;animation-delay:.56s}
+/* The dot draws itself after its line has arrived — the only thing on this
+   screen permitted to glow, and only for a moment. */
+.wdot{animation:gumapop .5s cubic-bezier(.2,.85,.3,1.35) both;animation-delay:.3s}
 
 /* Print: the app is a screen tool, but quotes and build sheets get printed. */
 @media print{

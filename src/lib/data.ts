@@ -519,3 +519,9 @@ export async function deleteSliceImport(shopId: string, importId: string): Promi
 export async function listQuoteBuilds(quoteId: string): Promise<QuoteBuildRow[]> {
   return (await backend()).listQuoteBuilds(quoteId)
 }
+
+/** Empty the demo workspace. Refuses unless the demo is active; desktop
+ *  only. See lib/workspace.ts. */
+export async function resetWorkspace(): Promise<void> {
+  return (await backend()).resetWorkspace()
+}

@@ -9,6 +9,12 @@
  * (section 4.4) for the pipeline board's project detail dialog, which
  * hasn't shipped yet -- this is the first screen to actually use it.
  *
+ * The entrance uses the motion the design package already shipped --
+ * gumapop for the mark and gumareveal for the text, staggered by nth-child
+ * in guma.css (§8.5). Those keyframes had been in the stylesheet unused
+ * since the handoff. Reduced-motion switches all of it off wholesale in §2,
+ * which is why the stagger lives in CSS rather than in a timer here.
+ *
  * Shown on every launch by default, same as Blender's splash, until
  * "Don't show this again" is checked. Unchecked, closing it only hides it
  * for this session; nothing is written to the database, so it comes back
@@ -68,20 +74,37 @@ export default function WelcomeModal({
     <dialog ref={ref}>
       <div className="dlg-head">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <img src="/brand/guma-mark.svg" alt="" width={22} height={20} style={{ display: 'block' }} />
-          <h3 style={{ margin: 0 }}>Welcome to Guma</h3>
+          <img
+            className="wmark"
+            src="/brand/guma-mark.svg"
+            alt=""
+            width={22}
+            height={20}
+            style={{ display: 'block' }}
+          />
+          <h3 className="wtitle" style={{ margin: 0 }}>
+            Welcome to Guma
+          </h3>
         </div>
       </div>
       <div className="dlg-body">
-        <p style={{ fontSize: 12.5, lineHeight: '19px', color: 'var(--txt-2)', margin: '0 0 16px' }}>
+        <p
+          className="wlede"
+          style={{ fontSize: 12.5, lineHeight: '19px', color: 'var(--txt-2)', margin: '0 0 16px' }}
+        >
           Guma isn’t here to run your printers — OctoPrint, Klipper and the rest already do that.
           It’s the money layer around the printing: what to charge, what a project actually costs you,
           and keeping the paperwork straight once a client says yes.
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {POINTS.map((p) => (
-            <div key={p.title} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <div
+              key={p.title}
+              className="wpoint"
+              style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}
+            >
               <span
+                className="wdot"
                 style={{
                   width: 6,
                   height: 6,
@@ -101,7 +124,10 @@ export default function WelcomeModal({
           ))}
         </div>
       </div>
-      <div className="dlg-foot" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        className="dlg-foot wfoot"
+        style={{ justifyContent: 'space-between', alignItems: 'center' }}
+      >
         <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
           <input
             type="checkbox"

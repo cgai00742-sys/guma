@@ -2131,3 +2131,17 @@ export async function deleteSliceImport(shopId: string, importId: string): Promi
     .eq('shop_id', shopId)
   if (error) throw error
 }
+
+/**
+ * There is no workspace to reset on the hosted build.
+ *
+ * Exists only so backends.test.ts passes: every function on one backend
+ * must exist on the other, or the web build throws "is not a function" on
+ * somebody's first day. A hosted shop's data lives in a shared Postgres
+ * behind row-level security -- "empty everything" is not a thing a tenant
+ * gets to do to itself from a settings screen, and the demo workspace is a
+ * desktop idea (a second SQLite file beside the first).
+ */
+export async function resetWorkspace(): Promise<void> {
+  throw new Error('The demo workspace is only available in the desktop app.')
+}

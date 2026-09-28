@@ -10,6 +10,7 @@
  * Nothing here is a constant in the code — that is the whole point.
  */
 import { Fragment, useEffect, useMemo, useState } from 'react'
+import { isDemo, switchWorkspace } from '../lib/workspace'
 import { useSearchParams } from 'react-router-dom'
 import {
   priceQuote,
@@ -41,6 +42,7 @@ import {
   type PrinterInput,
   type MaterialRow,
   type MaterialPurchaseRow,
+  resetWorkspace,
 } from '../lib/data'
 import { todayISO } from '../lib/dates'
 import { taxHintFor, US_STATES } from '../lib/taxHelp'
@@ -103,7 +105,7 @@ const DEPOSIT_HINTS: Record<Draft['deposit_when'], string> = {
   none: "Only if every client is someone you'd lend a truck to.",
 }
 
-const TABS = ['rates', 'costs', 'identity', 'terms', 'machines', 'materials'] as const
+const TABS = ['rates', 'costs', 'identity', 'terms', 'machines', 'materials', 'workspace'] as const
 type Tab = (typeof TABS)[number]
 
 export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
@@ -288,6 +290,14 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
         <button type="button" className="tab" aria-selected={tab === 'identity'} onClick={() => setTab('identity')}>
           Identity
         </button>
+        <button
+          type="button"
+          className="tab"
+          aria-selected={tab === 'workspace'}
+          onClick={() => setTab('workspace')}
+        >
+          Workspace
+        </button>
       </div>
 
       {tab === 'costs' && <CostsPane ctx={ctx} onSaved={onSaved} />}
@@ -295,6 +305,7 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
       {tab === 'terms' && <QuoteTermsPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'machines' && <MachinesPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'materials' && <MaterialsPane ctx={ctx} onSaved={onSaved} />}
+      {tab === 'workspace' && <WorkspacePane />}
 
       {tab === 'rates' && error && (
         <div className="alert">
@@ -2192,6 +2203,114 @@ function CostsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) 
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
+    </div>
+  )
+}
+
+
+/**
+ * Which set of books this install is open on, and how to see a first run
+ * without losing one.
+ *
+ * Guma's data lives in guma.db in the app-data directory, outside the repo
+ * and outside the build output, so rebuilding or reinstalling never touches
+ * it. That is the right behaviour and it creates the problem this pane
+ * solves: there is no way to see what a new shop sees -- the empty state,
+ * the setup wizard, the welcome -- without destroying your own.
+ *
+ * So the demo is a SECOND database file beside the real one. Switching is
+ * not a mode flag on one set of records; nothing done in the demo can reach
+ * the real shop, because they are different files.
+ */
+function WorkspacePane() {
+  const demo = isDemo()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
+
+  async function reset() {
+    setBusy(true)
+    setError(null)
+    try {
+      await resetWorkspace()
+      location.reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="pane">
+      <div className="sechead">
+        <h4>{demo ? 'You are in the demo shop' : 'You are in your shop'}</h4>
+        <span className={`secstat ${demo ? 'warn' : 'ok'}`}>
+          {demo ? 'guma-demo.db' : 'guma.db'}
+        </span>
+      </div>
+
+      <div className="hint" style={{ marginTop: 0 }}>
+        {demo ? (
+          <>
+            Nothing here touches your real shop — the demo is a separate database file. Emptying
+            it gives you a first run: no shop, the setup wizard, the welcome. Exactly what
+            someone downloading Guma sees.
+          </>
+        ) : (
+          <>
+            Your records live in <code>guma.db</code>, outside the app itself, so updating or
+            reinstalling Guma never touches them. To see what a new shop sees without giving up
+            your own, open the demo — it is a separate file, and your shop is waiting when you
+            come back.
+          </>
+        )}
+      </div>
+
+      <div className="btnrow" style={{ marginTop: 12 }}>
+        {demo ? (
+          <>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={busy}
+              onClick={() => switchWorkspace('shop')}
+            >
+              Back to my shop
+            </button>
+            {confirming ? (
+              <>
+                <button type="button" className="btn sm danger" disabled={busy} onClick={reset}>
+                  {busy ? 'Emptying…' : 'Yes, empty the demo'}
+                </button>
+                <button type="button" className="btn sm" onClick={() => setConfirming(false)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button type="button" className="btn sm" onClick={() => setConfirming(true)}>
+                Start the demo over
+              </button>
+            )}
+          </>
+        ) : (
+          <button type="button" className="btn sm" onClick={() => switchWorkspace('demo')}>
+            Open the demo shop
+          </button>
+        )}
+      </div>
+
+      {confirming && demo && (
+        <div className="hint" style={{ marginTop: 8 }}>
+          This empties the demo database. It cannot be undone — and it cannot reach your real
+          shop, which is a different file.
+        </div>
+      )}
+
+      {error && (
+        <div className="err" style={{ marginTop: 10 }}>
+          {error}
+        </div>
+      )}
     </div>
   )
 }
