@@ -1432,7 +1432,11 @@ function SliceImport({
         bits.push(
           `${res.partsMatched} already on the sheet, estimate updated`,
         )
-      setDone(`${read.fileName} — ${bits.join(' · ') || 'read, nothing to add'}.`)
+      setDone(
+        `${read.fileName} — ${bits.join(' · ') || 'read, nothing to add'}. It is listed under ` +
+          '“Sliced files” below; record it as printed when it comes off the machine and the ' +
+          'filament comes off the shelf.',
+      )
       onImported(res.partsAdded + res.partsMatched)
       clear()
       await onChanged()
@@ -1605,6 +1609,288 @@ function SliceImport({
   )
 }
 
+/**
+ * The imported files, and the one button that turns an estimate into an
+ * actual.
+ *
+ * This is the half 0015 left out on purpose and the half the shop actually
+ * feels. An import fills the build sheet and records what the slicer
+ * predicted; nothing comes off the shelf, because an estimate is not a
+ * measurement. But when the plate DOES come off the bed, the numbers the
+ * file already knows -- grams, machine hours, which machine, which spool --
+ * are exactly the numbers the run form asks you to retype. Retyping them is
+ * how a shop ends up with a material count that drifts and a fleet whose
+ * hours are guesses.
+ *
+ * So: one button per file. It opens the run pre-filled from the file, you
+ * say whether it came off clean, and recording it deducts the filament
+ * (the t_run_consume trigger does that) and lands the hours in job_actuals.
+ *
+ * Voltage's rule is kept: a failure is a run too. It burned the same
+ * material and the same hours, it wants a reason, and the file stays
+ * available to record again once the reprint is done -- which is why the
+ * "already recorded" note counts runs rather than hiding the file.
+ */
+function SliceRuns({
+  ctx,
+  detail,
+  busy,
+  onChanged,
+  setError,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  busy: boolean
+  onChanged: () => Promise<void>
+  setError: (m: string | null) => void
+}) {
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState<PrintRunInput | null>(null)
+
+  if (detail.slices.length === 0) return null
+
+  const hrs = (m: number | null) =>
+    m == null ? null : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`
+
+  function open(s: (typeof detail.slices)[number]) {
+    setError(null)
+    setOpenId(s.id)
+    setForm({
+      // A run needs a machine. The import may not have matched one, in
+      // which case the select opens empty and the button stays disabled
+      // rather than picking the first printer in the list for you.
+      printerId: s.printerId ?? '',
+      materialId: s.materialId,
+      // Rounded to whole grams and to a quarter hour, because that is the
+      // precision the rest of the app stores and a run that reads
+      // "7.483333h" looks like it was measured when it was predicted.
+      unitsUsed: s.estGrams == null ? 0 : Math.round(s.estGrams),
+      hours: s.estMinutes == null ? 0 : Math.round((s.estMinutes / 60) * 100) / 100,
+      outcome: 'success',
+      failureReason: null,
+      note: `From ${s.fileName}`,
+      startedAt: todayISO(),
+      sliceImportId: s.id,
+    })
+  }
+
+  async function record() {
+    if (!form) return
+    setSaving(true)
+    setError(null)
+    try {
+      await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, form)
+      setOpenId(null)
+      setForm(null)
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const unit = ctx.materials.find((m) => m.id === form?.materialId)?.unit ?? 'g'
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div className="sechead">
+        <h4>Sliced files</h4>
+        <span className="sub">
+          What the slicer said. Record one as printed and the filament comes off the shelf.
+        </span>
+      </div>
+
+      {detail.slices.map((s) => {
+        const runs = detail.runs.filter((r) => r.sliceImportId === s.id)
+        const used = runs.reduce((a, r) => a + (r.unitsUsed ?? 0), 0)
+        const hours = runs.reduce((a, r) => a + (r.hours ?? 0), 0)
+        const failed = runs.filter((r) => r.outcome !== 'success').length
+        return (
+          <div className="pane" key={s.id} style={{ marginTop: 8 }}>
+            <div className="btnrow" style={{ alignItems: 'baseline', justifyContent: 'space-between' }}>
+              <div>
+                <span className="pn">{s.fileName}</span>
+                <span className="hint" style={{ marginTop: 2 }}>
+                  {s.printerName ?? s.printerModel ?? 'machine not matched'}
+                  {s.materialName ? ` · ${s.materialName}` : s.materialText ? ` · ${s.materialText}` : ''}
+                  {s.estGrams != null && ` · ~${Math.round(s.estGrams)} g`}
+                  {s.estMinutes != null && ` · ~${hrs(s.estMinutes)}`}
+                  {` · imported ${s.importedAt.slice(0, 10)}`}
+                </span>
+              </div>
+              {openId !== s.id && (
+                <button
+                  type="button"
+                  className={`btn sm ${runs.length ? '' : 'primary'}`}
+                  disabled={busy || saving}
+                  onClick={() => open(s)}
+                >
+                  {runs.length ? 'Record another run' : 'This print happened'}
+                </button>
+              )}
+            </div>
+
+            {runs.length > 0 && (
+              <div className="hint" style={{ marginTop: 6, color: 'var(--ok)' }}>
+                Recorded — {runs.length} run{runs.length === 1 ? '' : 's'}, {Math.round(used)} off
+                the spool, {Math.round(hours * 100) / 100} machine hours
+                {failed > 0 && ` · ${failed} of them failed`}. The material is off the shelf and the
+                hours are in this project&rsquo;s cost.
+              </div>
+            )}
+
+            {openId === s.id && form && (
+              <div className="gatebox" style={{ marginTop: 8 }}>
+                <div className="grid3">
+                  <div className="fld">
+                    <label className="lbl" htmlFor={`sr-printer-${s.id}`}>
+                      Machine
+                    </label>
+                    <select
+                      id={`sr-printer-${s.id}`}
+                      value={form.printerId}
+                      onChange={(e) => setForm((f) => f && { ...f, printerId: e.target.value })}
+                    >
+                      <option value="">Pick one</option>
+                      {ctx.printers.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="fld">
+                    <label className="lbl" htmlFor={`sr-material-${s.id}`}>
+                      Material
+                    </label>
+                    <select
+                      id={`sr-material-${s.id}`}
+                      value={form.materialId ?? ''}
+                      onChange={(e) =>
+                        setForm((f) => f && { ...f, materialId: e.target.value || null })
+                      }
+                    >
+                      <option value="">Not recorded</option>
+                      {ctx.materials.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="fld">
+                    <label className="lbl" htmlFor={`sr-when-${s.id}`}>
+                      Started
+                    </label>
+                    <input
+                      id={`sr-when-${s.id}`}
+                      type="date"
+                      value={form.startedAt ?? ''}
+                      onChange={(e) =>
+                        setForm((f) => f && { ...f, startedAt: e.target.value || null })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="grid3">
+                  <div className="fld">
+                    <label className="lbl" htmlFor={`sr-units-${s.id}`}>
+                      {unit} off the spool
+                    </label>
+                    <input
+                      id={`sr-units-${s.id}`}
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={form.unitsUsed || ''}
+                      onChange={(e) =>
+                        setForm((f) => f && { ...f, unitsUsed: Number(e.target.value) || 0 })
+                      }
+                    />
+                  </div>
+                  <div className="fld">
+                    <label className="lbl" htmlFor={`sr-hours-${s.id}`}>
+                      Machine hours
+                    </label>
+                    <input
+                      id={`sr-hours-${s.id}`}
+                      type="number"
+                      min="0"
+                      step="0.25"
+                      value={form.hours || ''}
+                      onChange={(e) =>
+                        setForm((f) => f && { ...f, hours: Number(e.target.value) || 0 })
+                      }
+                    />
+                  </div>
+                  <div className="fld">
+                    <label className="lbl" htmlFor={`sr-outcome-${s.id}`}>
+                      How it went
+                    </label>
+                    <select
+                      id={`sr-outcome-${s.id}`}
+                      value={form.outcome}
+                      onChange={(e) =>
+                        setForm((f) => f && { ...f, outcome: e.target.value as RunOutcome })
+                      }
+                    >
+                      <option value="success">Came off clean</option>
+                      <option value="failed">Failed</option>
+                      <option value="cancelled">Canceled part way</option>
+                    </select>
+                  </div>
+                </div>
+                {form.outcome !== 'success' && (
+                  <div className="fld">
+                    <label className="lbl" htmlFor={`sr-why-${s.id}`}>
+                      What went wrong
+                    </label>
+                    <input
+                      id={`sr-why-${s.id}`}
+                      value={form.failureReason ?? ''}
+                      placeholder="Warped off the plate, clog, power cut…"
+                      onChange={(e) =>
+                        setForm((f) => f && { ...f, failureReason: e.target.value || null })
+                      }
+                    />
+                  </div>
+                )}
+                <div className="btnrow" style={{ alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="btn sm primary"
+                    disabled={saving || !form.printerId}
+                    onClick={() => void record()}
+                  >
+                    Record it
+                  </button>
+                  <button
+                    type="button"
+                    className="btn sm ghost"
+                    disabled={saving}
+                    onClick={() => {
+                      setOpenId(null)
+                      setForm(null)
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <span className="hint" style={{ marginTop: 0 }}>
+                    These are the file&rsquo;s numbers — change them to what the machine actually
+                    used if you know better. Recording takes the material off the shelf.
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function BuildSheet({
   ctx,
   detail,
@@ -1684,6 +1970,14 @@ function BuildSheet({
           setError={setError}
         />
       )}
+
+      <SliceRuns
+        ctx={ctx}
+        detail={detail}
+        busy={busy || saving}
+        onChanged={onChanged}
+        setError={setError}
+      />
 
       {detail.parts.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--txt-2)', marginTop: 14 }}>

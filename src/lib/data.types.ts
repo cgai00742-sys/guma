@@ -502,6 +502,11 @@ export interface ProjectDetail {
   runs: PrintRunRow[]
   work: WorkEntryRow[]
   parts: PartRow[]
+  /** Every sliced file imported against this project, newest first. The
+   *  screen needs them here rather than in a second fetch because each one
+   *  offers a one-click run, and that offer has to disappear the moment
+   *  the run exists. */
+  slices: SliceImportRow[]
 }
 
 /** The pricing inputs stored on a quote row, plus its frozen rate snapshot. */
@@ -730,6 +735,9 @@ export interface PrintRunRow {
   startedAt: string | null
   endedAt: string | null
   operator: string | null
+  /** The imported slicer file this run confirms, when it came from one.
+   *  Null for a run typed in by hand, which stays the normal case. */
+  sliceImportId: string | null
 }
 
 export interface PrintRunInput {
@@ -741,6 +749,9 @@ export interface PrintRunInput {
   failureReason: string | null
   note: string | null
   startedAt: string | null
+  /** Set when the run was confirmed from an import, so the screen can show
+   *  that file as recorded and nobody logs the same plate twice. */
+  sliceImportId?: string | null
 }
 
 export interface WorkEntryRow {

@@ -1212,6 +1212,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   if (!r) throw new Error('That project no longer exists.')
 
   const gatesByPhase = (await loadGateAnswers(d, [jobId]))[jobId] ?? {}
+  const slices = await listSliceImports(shopId, jobId)
 
   const actualsRow = await d.select<Record<string, number>[]>(
     'select * from job_actuals where job_id = ?',
@@ -1243,11 +1244,12 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       started_at: string | null
       ended_at: string | null
       operator: string | null
+      slice_import_id: string | null
     }[]
   >(
     `select r.id, r.printer_id, p.name as printer_name, r.material_id, m.name as material_name,
             m.unit, r.units_used, r.hours, r.outcome, r.failure_reason, r.note,
-            r.started_at, r.ended_at, pr.full_name as operator
+            r.started_at, r.ended_at, r.slice_import_id, pr.full_name as operator
        from print_runs r
        left join printers p on p.id = r.printer_id
        left join materials m on m.id = r.material_id
@@ -1375,6 +1377,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         startedAt: x.started_at,
         endedAt: x.ended_at,
         operator: x.operator,
+        sliceImportId: x.slice_import_id,
       }),
     ),
     work: work.map(
@@ -1408,6 +1411,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
           })),
       }),
     ),
+    slices,
     gates: gatesByPhase,
     payments: payments.map(
       (p): PaymentRow => ({
@@ -2012,8 +2016,9 @@ export async function recordPrintRun(
   const d = await db()
   await d.execute(
     `insert into print_runs (id, shop_id, job_id, printer_id, material_id, units_used, hours,
-                             outcome, failure_reason, note, started_at, operator_id)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             outcome, failure_reason, note, started_at, operator_id,
+                             slice_import_id)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       shopId,
@@ -2027,6 +2032,7 @@ export async function recordPrintRun(
       input.note,
       input.startedAt,
       actorId,
+      input.sliceImportId ?? null,
     ],
   )
   await d.execute(

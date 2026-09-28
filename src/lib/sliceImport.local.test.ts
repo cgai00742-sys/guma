@@ -178,6 +178,71 @@ describe('an estimate is not an actual', () => {
   })
 })
 
+describe('confirming the print that the file described', () => {
+  /** The other half of the rule above. An estimate must not reach the
+   *  actuals by itself -- and the moment the plate comes off the bed, the
+   *  file's own numbers must be able to get there in one step, or the shop
+   *  retypes them and the material count drifts. */
+  it('deducts the filament and lands the hours, and says which file it came from', async () => {
+    const { importSlice, recordPrintRun, loadProjectDetail } = await import('./data.local')
+    currentDb.sqlite.exec("update materials set on_hand = 1000 where id = 'material-1'")
+    const { importId } = await importSlice(SHOP, JOB, ACTOR, BUOY)
+
+    await recordPrintRun(SHOP, JOB, ACTOR, {
+      printerId: 'printer-1',
+      materialId: 'material-1',
+      unitsUsed: 87,
+      hours: 2.05,
+      outcome: 'success',
+      failureReason: null,
+      note: `From ${BUOY.fileName}`,
+      startedAt: '2026-09-27',
+      sliceImportId: importId,
+    })
+
+    const a = currentDb.sqlite
+      .prepare('select material_units, machine_hours, runs from job_actuals where job_id = ?')
+      .get(JOB) as Record<string, number>
+    expect(a.material_units).toBe(87)
+    expect(a.machine_hours).toBe(2.05)
+    expect(a.runs).toBe(1)
+
+    const m = currentDb.sqlite
+      .prepare("select on_hand from materials where id = 'material-1'")
+      .get() as { on_hand: number }
+    expect(m.on_hand).toBe(913)
+
+    // And the screen can tell that this file has been recorded, so the same
+    // plate does not get logged twice.
+    const detail = await loadProjectDetail(SHOP, JOB)
+    expect(detail.slices.map((x) => x.id)).toEqual([importId])
+    expect(detail.runs[0].sliceImportId).toBe(importId)
+  })
+
+  it('keeps the run when the import is deleted -- the print still happened', async () => {
+    const { importSlice, recordPrintRun, deleteSliceImport } = await import('./data.local')
+    const { importId } = await importSlice(SHOP, JOB, ACTOR, BUOY)
+    await recordPrintRun(SHOP, JOB, ACTOR, {
+      printerId: 'printer-1',
+      materialId: 'material-1',
+      unitsUsed: 87,
+      hours: 2,
+      outcome: 'failed',
+      failureReason: 'Warped off the plate',
+      note: null,
+      startedAt: null,
+      sliceImportId: importId,
+    })
+    await deleteSliceImport(SHOP, importId)
+    const run = currentDb.sqlite
+      .prepare('select slice_import_id, hours from print_runs')
+      .all() as { slice_import_id: string | null; hours: number }[]
+    expect(run).toHaveLength(1)
+    expect(run[0].slice_import_id).toBeNull()
+    expect(Number(run[0].hours)).toBe(2)
+  })
+})
+
 describe('re-importing a fixed file for a reprint', () => {
   it('attaches the new estimate to the part that already exists', async () => {
     const { importSlice, listSliceImports } = await import('./data.local')

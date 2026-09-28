@@ -970,7 +970,8 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   const r = data as any
   if (!r) throw new Error('That project no longer exists.')
 
-  const [gates, rates, events, payments, runs, work, parts, partHistory] = await Promise.all([
+  const [gates, rates, events, payments, runs, work, parts, partHistory, slices] =
+    await Promise.all([
     loadGateAnswers([jobId]),
     currentRates(shopId),
     supabase
@@ -987,6 +988,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .from('print_runs')
       .select(
         `id, units_used, hours, outcome, failure_reason, note, started_at, ended_at,
+         slice_import_id,
          printers ( id, name ), materials ( id, name, unit ), profiles ( full_name )`,
       )
       .eq('job_id', jobId)
@@ -1006,6 +1008,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .select('id, part_id, kind, from_status, to_status, note, at, profiles ( full_name )')
       .eq('job_id', jobId)
       .order('at', { ascending: false }),
+    listSliceImports(shopId, jobId),
   ])
   if (events.error) throw events.error
   if (payments.error) throw payments.error
@@ -1053,8 +1056,10 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         startedAt: x.started_at ?? null,
         endedAt: x.ended_at ?? null,
         operator: x.profiles?.full_name ?? null,
+        sliceImportId: x.slice_import_id ?? null,
       }),
     ),
+    slices,
     work: ((work.data ?? []) as any[]).map(
       (x): WorkEntryRow => ({
         id: x.id,
@@ -1469,6 +1474,7 @@ export async function recordPrintRun(
       note: input.note,
       started_at: input.startedAt,
       operator_id: actorId,
+      slice_import_id: input.sliceImportId ?? null,
     })
     .select('id')
     .single()

@@ -101,6 +101,12 @@ pub fn run() {
       sql: include_str!("../migrations/0016_quote_builds.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 17,
+      description: "a run can say which imported file it confirms",
+      sql: include_str!("../migrations/0017_run_from_slice.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()
