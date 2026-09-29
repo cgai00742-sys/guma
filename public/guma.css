@@ -580,6 +580,17 @@ dialog.proj-dlg .stepper{margin:10px 0 0}
 .fold > summary:hover::before,.fold > summary:hover h4{color:var(--txt)}
 .fold:not([open]) > summary{border-bottom-color:transparent}
 
+/* The demo announces itself on every screen. Accent-tinted and pinned
+   to the top, because the failure it prevents is somebody believing their
+   own shop has been emptied. */
+.demoribbon{
+  position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;
+  justify-content:center;flex-wrap:wrap;padding:7px 16px;font-size:12.5px;
+  color:var(--txt);background:color-mix(in srgb, var(--ember) 16%, var(--panel));
+  border-bottom:1px solid color-mix(in srgb, var(--ember) 45%, transparent);
+}
+.demoribbon b{color:var(--ember)}
+
 .sechead{
   position:sticky;top:0;z-index:3;background:var(--panel-3);
   padding:12px 0 8px;margin-bottom:10px;border-bottom:1px solid var(--line);
@@ -1223,6 +1234,44 @@ details.snap .snapbody,.snapbody{padding:2px 12px 12px}
 .crit,.danger,.neg,.overdue{color:var(--red)}
 .overdue{color:var(--red)!important}
 .info{color:var(--info)}
+
+/* Dashboard headline tiles.
+   Each one STACKS -- label, number, sentence -- with room between them,
+   and carries its own hue on a top rule and on the number, so four figures
+   read as four different things rather than one grey row. The first
+   version was three inline spans in a link, which ran together wherever
+   they fit. */
+.dtiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:12px 0}
+.dtile{
+  --hue:var(--biolum);
+  display:flex;flex-direction:column;gap:6px;
+  padding:14px 16px 16px;border-radius:var(--radius);
+  background:linear-gradient(180deg, color-mix(in srgb, var(--hue) 9%, var(--panel)) 0%, var(--panel) 70%);
+  border:1px solid var(--line);border-top:3px solid var(--hue);
+  color:var(--txt);transition:border-color .14s,transform .14s,background .14s;
+}
+.dtile:hover{border-color:color-mix(in srgb, var(--hue) 55%, var(--line));transform:translateY(-1px)}
+.dtile.biolum{--hue:var(--biolum)}
+.dtile.ember{--hue:var(--ember)}
+.dtile.teal{--hue:var(--teal)}
+.dtile.violet{--hue:var(--violet)}
+.dt-lab{font-size:11px;line-height:14px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt-3);font-weight:600}
+.dt-v{
+  font-size:30px;line-height:1.1;font-weight:700;letter-spacing:.01em;
+  font-variant-numeric:tabular-nums;color:var(--hue);margin:2px 0 2px;
+}
+.dt-sub{font-size:12px;line-height:1.45;color:var(--txt-2)}
+.dtile.warn .dt-sub{color:var(--warn)}
+.dtile.muted .dt-v{color:var(--txt-3)}
+
+/* Panel rows: a label and a figure, on one line, with room. */
+.drow{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px solid var(--line)}
+.drow:last-child{border-bottom:none}
+.dr-lab{color:var(--txt-2);font-size:12.5px;line-height:1.4}
+.dr-v{font-size:15px;line-height:1.3;font-weight:650;font-variant-numeric:tabular-nums;color:var(--txt);letter-spacing:.01em}
+.dr-v.ok{color:var(--ok)}
+.dr-v.warn{color:var(--warn)}
+.dr-v.crit{color:var(--red)}
 
 .kpi.good .v,.metric.good .v{color:var(--ok)}
 .kpi.warn .v,.metric.warn .v{color:var(--warn)}

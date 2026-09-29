@@ -186,6 +186,7 @@ export default function App() {
     // somebody who by then had worked it out.
     return (
       <>
+        <DemoRibbon />
         <WelcomeModal shop={null} onDismissedForever={refresh} />
         <Wizard ctx={null} fullName={ownerName} onSaved={refresh} />
       </>
@@ -247,6 +248,7 @@ export default function App() {
           // Mounted but not opened: the wizard is the one window here.
           autoOpen={false}
         />
+        <DemoRibbon />
         <TopBar
           ctx={ctx}
           desktop={desktop}
@@ -276,6 +278,7 @@ export default function App() {
           onClosed={() => setWelcomeOpen(false)}
         />
       )}
+      <DemoRibbon />
       <TopBar
         ctx={ctx}
         desktop={desktop}
@@ -399,6 +402,35 @@ export default function App() {
  * a door that depends on none of them means the answer to "why can I not
  * see it" is never again "work out which condition is false".
  */
+/**
+ * A strip across the top of every screen while the demo shop is open.
+ *
+ * Reported as "my saved data/project is missing now." It was not missing:
+ * the app had reopened the DEMO, which is a separate, empty database file,
+ * and an empty demo opens exactly the way a brand-new install does -- the
+ * welcome, then the setup questions. From inside that, nothing said "this
+ * is not your shop", and the first-run screens have no top bar, so the
+ * only switch back lived behind a shop that did not exist yet.
+ *
+ * So the demo announces itself everywhere, including in the middle of the
+ * setup wizard, and the way back is always one click. Your own shop is a
+ * different file; nothing done here can reach it.
+ */
+function DemoRibbon() {
+  if (!isDemo()) return null
+  return (
+    <div className="demoribbon" role="status">
+      <span>
+        <b>Demo shop.</b> Your own shop and projects are safe in a separate file — this is a
+        sandbox.
+      </span>
+      <button type="button" className="btn sm primary" onClick={() => switchWorkspace('shop')}>
+        Back to my shop
+      </button>
+    </div>
+  )
+}
+
 /**
  * One step back, wherever you are.
  *

@@ -24,6 +24,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { dismissWelcome } from '../lib/data'
 import type { Shop } from '../lib/data.types'
+import { isDemo, switchWorkspace } from '../lib/workspace'
 
 const POINTS: { title: string; body: string }[] = [
   {
@@ -176,6 +177,14 @@ export default function WelcomeModal({
             />
             <span style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>Don’t show this again</span>
           </label>
+        ) : isDemo() ? (
+          // The welcome is modal, so the demo ribbon behind it cannot be
+          // clicked while it is up. A first run inside the DEMO is exactly
+          // the moment somebody may think their own shop has vanished, so
+          // the way back is here too.
+          <button type="button" className="btn sm" onClick={() => switchWorkspace('shop')}>
+            ← Back to my shop — this is the demo
+          </button>
         ) : (
           <span style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>
             Next: a few questions about your shop, so the numbers are yours.

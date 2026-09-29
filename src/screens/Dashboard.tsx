@@ -134,10 +134,11 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
       </div>
 
       {/* ---- the four at a glance ---- */}
-      <div className="kpis" style={{ marginTop: 6 }}>
+      <div className="dtiles" style={{ marginTop: 6 }}>
         <Tile
           to="/projects"
           label="Projects open"
+          hue="biolum"
           value={String(s.open)}
           sub={
             s.needsAttention > 0
@@ -151,6 +152,7 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
         <Tile
           to="/projects"
           label="Cost of work delivered"
+          hue="ember"
           value={s.hasActuals ? money(s.cogs) : '—'}
           sub={
             s.hasActuals
@@ -162,6 +164,7 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
         <Tile
           to="/settings?tab=machines"
           label="Printer fleet"
+          hue="teal"
           value={String(s.printers)}
           sub={
             s.machineHours > 0
@@ -172,6 +175,7 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
         <Tile
           to="/settings?tab=materials"
           label="Materials on hand"
+          hue="violet"
           value={s.stockValue > 0 ? money(s.stockValue) : '—'}
           sub={
             s.lowStock.length > 0
@@ -209,7 +213,7 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
                       style={{ width: `${Math.round((p.n / Math.max(1, s.open)) * 100)}%` }}
                     />
                   </span>
-                  <span className="v" style={{ minWidth: 28, textAlign: 'right' }}>
+                  <span className="dr-v" style={{ minWidth: 28, textAlign: 'right' }}>
                     {p.n}
                   </span>
                 </div>
@@ -363,35 +367,52 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
 
 /* ---- pieces ------------------------------------------------------------- */
 
+/**
+ * One headline number.
+ *
+ * It was a `.kpi` with three <span>s inside a link -- and spans are inline,
+ * so the label, the 22px number and the sentence under it ran together on
+ * the same line wherever they fit. Reported as "the numbers that are bigger
+ * and in bold are not visibly appealing, they are too tight." They were
+ * not spaced badly; they were not stacked at all.
+ *
+ * Each tile now stacks, breathes, and carries its own colour, so the four
+ * read as four different things at a glance rather than one grey row. The
+ * hue belongs to the tile, not to the value's state: a warning goes on the
+ * sentence underneath, where it can say what is wrong.
+ */
 function Tile({
   to,
   label,
   value,
   sub,
+  hue,
   tone = '',
 }: {
   to: string
   label: string
   value: string
   sub: string
+  hue: 'biolum' | 'ember' | 'teal' | 'violet'
   tone?: string
 }) {
   return (
-    <Link to={to} className={`kpi ${tone}`} style={{ textDecoration: 'none' }}>
-      <span className="lab">{label}</span>
-      <span className="v">{value}</span>
-      <span className="sub">{sub}</span>
+    <Link to={to} className={`dtile ${hue} ${tone}`.trim()} style={{ textDecoration: 'none' }}>
+      <span className="dt-lab">{label}</span>
+      <span className="dt-v">{value}</span>
+      <span className="dt-sub">{sub}</span>
     </Link>
   )
 }
 
+/** A labelled figure in a panel. Its own class rather than the global
+ *  `.v`, which is a 22px headline style: in a list of rows it crowded the
+ *  label and every row read as shouting. */
 function Row({ label, value, tone = '' }: { label: string; value: string; tone?: string }) {
   return (
-    <div className="fp-row" style={{ alignItems: 'baseline' }}>
-      <span className="lab" style={{ flex: 1 }}>
-        {label}
-      </span>
-      <span className={`v ${tone}`}>{value}</span>
+    <div className="drow">
+      <span className="dr-lab">{label}</span>
+      <span className={`dr-v ${tone}`.trim()}>{value}</span>
     </div>
   )
 }
