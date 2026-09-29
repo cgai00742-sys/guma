@@ -168,3 +168,28 @@ describe('a plate is one print', () => {
     expect(isOnSharedPlate(null)).toBe(false)
   })
 })
+
+describe('failureTally', () => {
+  const ev = (note: string) => ({
+    id: note, kind: 'status' as const, fromStatus: 'printed' as const, toStatus: 'reprint' as const,
+    note, actor: null, at: '2026-09-01',
+  })
+  it('is null when nothing failed', async () => {
+    const { failureTally } = await import('./parts')
+    expect(failureTally([], [])).toBeNull()
+  })
+  it('counts send-backs, failed plates, what they burned, and a repeated reason', async () => {
+    const { failureTally, reprintNote } = await import('./parts')
+    const parts = [
+      { id: 'a', status: 'reprint', history: [ev(reprintNote('Warped', 'Brim', null)), ev('warped')] },
+      { id: 'b', status: 'passed', history: [] },
+    ] as never
+    const runs = [
+      { outcome: 'failed', unitsUsed: 40, hours: 1.5, failureReason: 'Spaghetti' },
+      { outcome: 'success', unitsUsed: 90, hours: 3, failureReason: null },
+    ] as never
+    expect(failureTally(parts, runs)).toEqual({
+      sentBack: 2, partsAffected: 1, failedRuns: 1, unitsLost: 40, hoursLost: 1.5, repeatReason: 'warped',
+    })
+  })
+})

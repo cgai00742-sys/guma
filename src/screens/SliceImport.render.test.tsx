@@ -767,3 +767,39 @@ describe('what is blocking the stage', () => {
     for (const row of todo) expect(row.querySelector('.todo-chip')).not.toBeNull()
   })
 })
+
+describe('a failed part, Voltage-style', () => {
+  it('asks why and how to fix it, takes the fixed file, and keeps the tally', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /record the print/i }))
+    await screen.findByText(/Recorded as printed on/i)
+
+    const row = (await screen.findByText('Buoy shell')).closest('tr')!
+    await user.click(within(row).getByRole('button', { name: /send back/i }))
+    const send = screen.getByRole('button', { name: /send it back/i })
+    expect((send as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Warped corner')
+    await user.type(screen.getByLabelText(/how to get it right/i), 'Brim on, dry the spool')
+    await user.upload(screen.getByLabelText(/fixed file/i), gcodeFile('Reef buoy_v2.gcode'))
+    await user.click(send)
+
+    await waitFor(() => {
+      const ev = currentDb.sqlite
+        .prepare("select note from part_events where to_status = 'reprint'")
+        .get() as { note: string } | undefined
+      expect(ev?.note).toBe('Warped corner · Fix: Brim on, dry the spool · Fixed file: Reef buoy_v2.gcode')
+    })
+    // The fixed file is kept and matched to the existing parts, not duplicated.
+    expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 2 })
+    expect(currentDb.sqlite.prepare('select count(*) as n from job_parts').get()).toEqual({ n: 2 })
+    const note = await screen.findByRole('note', { name: /failures on this project/i })
+    expect(note.textContent).toMatch(/1 send-back across 1 part/)
+  })
+})

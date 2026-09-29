@@ -107,7 +107,9 @@ import {
   buildingPhase,
   chosenVariant,
   isOnSharedPlate,
+  failureTally,
   reprintCount,
+  reprintNote,
   reprintReason,
   shouldReturnToBuilding,
   timeSpreadPct,
@@ -2997,7 +2999,49 @@ function BuildSheet({
   // whatever you click next. See rowAnchor.ts.
   const holdRow = useRowAnchor(openId)
   const [why, setWhy] = useState('')
+  const [fix, setFix] = useState('')
+  const [fixedFile, setFixedFile] = useState<File | null>(null)
   const [editId, setEditId] = useState<string | null>(null)
+  const tally = failureTally(detail.parts, detail.runs)
+
+  /**
+   * Send a part back, Voltage's way: why it failed, how to make the next
+   * attempt work, and -- when the fix was a re-slice -- the fixed file
+   * itself. The file goes through the same import as any other, so it
+   * updates this part's estimate rather than adding a duplicate row, is
+   * kept with the project, and waits under "Sliced files" to be recorded
+   * when the reprint comes off the bed.
+   */
+  async function sendBack(part: PartRow) {
+    let fileName: string | null = null
+    if (fixedFile) {
+      const parsed = await parseSliceFile(fixedFile)
+      const bytes = new Uint8Array(await fixedFile.arrayBuffer())
+      await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
+        file: await packFile(bytes),
+        fileName: parsed.fileName,
+        kind: parsed.kind,
+        printerModel: parsed.printerModel,
+        printerId: matchPrinter(ctx.printerRows, parsed.printerModel)?.id ?? null,
+        materialText: parsed.totals.material,
+        materialId: matchMaterial(ctx.materials, parsed.totals.material)?.id ?? null,
+        estMinutes: parsed.totals.estMinutes,
+        estGrams: parsed.totals.estGrams,
+        notes: parsed.notes,
+        sections: parsed.sections.map((sec) => ({
+          label: sec.label,
+          qty: sec.qty,
+          estMinutes: sec.estMinutes,
+          estGrams: sec.estGrams,
+          material: sec.material,
+        })),
+      })
+      fileName = parsed.fileName
+    }
+    await setPartStatus(ctx.shop.id, part.id, ctx.profile.id, 'reprint', reprintNote(why, fix, fileName))
+    setReprintFor(null)
+    setFixedFile(null)
+  }
 
   async function guard(fn: () => Promise<unknown>) {
     setSaving(true)
@@ -3016,6 +3060,8 @@ function BuildSheet({
     if (status === 'reprint') {
       setReprintFor(part.id)
       setWhy('')
+      setFix('')
+      setFixedFile(null)
       return
     }
     await guard(() => setPartStatus(ctx.shop.id, part.id, ctx.profile.id, status, null))
@@ -3082,6 +3128,27 @@ function BuildSheet({
         onChanged={onChanged}
         setError={setError}
       />
+
+      {tally && (
+        <div
+          className="hint"
+          role="note"
+          aria-label="Failures on this project"
+          style={{ marginTop: 12, color: 'var(--red)' }}
+        >
+          Failures so far:{' '}
+          {[
+            tally.sentBack > 0 &&
+              `${tally.sentBack} send-back${tally.sentBack === 1 ? '' : 's'} across ${tally.partsAffected} part${tally.partsAffected === 1 ? '' : 's'}`,
+            tally.failedRuns > 0 &&
+              `${tally.failedRuns} failed plate${tally.failedRuns === 1 ? '' : 's'} (${tally.unitsLost} g, ${tally.hoursLost} h lost)`,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+          {tally.repeatReason && ` · same reason more than once: “${tally.repeatReason}” — likely a design or setup problem, not luck`}
+          .
+        </div>
+      )}
 
       {detail.parts.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--txt-2)', marginTop: 14 }}>
@@ -3243,23 +3310,34 @@ function BuildSheet({
                             onChange={(e) => setWhy(e.target.value)}
                           />
                         </div>
+                        <div className="fld" style={{ margin: '6px 0 0' }}>
+                          <label className="lbl" htmlFor={`fix-${p.id}`}>
+                            How to get it right next time
+                          </label>
+                          <input
+                            id={`fix-${p.id}`}
+                            value={fix}
+                            placeholder="Brim on, slow first layer to 15mm/s, dry the spool…"
+                            onChange={(e) => setFix(e.target.value)}
+                          />
+                        </div>
+                        <div className="fld" style={{ margin: '6px 0 0' }}>
+                          <label className="lbl" htmlFor={`fixed-${p.id}`}>
+                            Fixed file (optional) — the re-sliced plate for the reprint
+                          </label>
+                          <input
+                            id={`fixed-${p.id}`}
+                            type="file"
+                            accept={SLICE_ACCEPT}
+                            onChange={(e) => setFixedFile(e.target.files?.[0] ?? null)}
+                          />
+                        </div>
                         <div className="btnrow" style={{ marginTop: 6, alignItems: 'center' }}>
                           <button
                             type="button"
                             className="btn sm primary"
                             disabled={!why.trim() || saving}
-                            onClick={() =>
-                              void guard(async () => {
-                                await setPartStatus(
-                                  ctx.shop.id,
-                                  p.id,
-                                  ctx.profile.id,
-                                  'reprint',
-                                  why,
-                                )
-                                setReprintFor(null)
-                              })
-                            }
+                            onClick={() => void guard(() => sendBack(p))}
                           >
                             Send it back
                           </button>

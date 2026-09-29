@@ -18,7 +18,7 @@
  * belongs on the row, in front of whoever prints it next. Nothing is
  * stored twice for this: it is read back out of the part's own history.
  */
-import type { JobKind, JobPhase, PartRow, PartStatus, PartVariant } from './data.types'
+import type { JobKind, JobPhase, PartRow, PartStatus, PartVariant, PrintRunRow } from './data.types'
 
 /**
  * The statuses a part may be moved to at this stage, in the order they
@@ -135,4 +135,55 @@ export function timeSpreadPct(part: PartRow): number | null {
  *  print cannot be started or costed on its own. */
 export function isOnSharedPlate(v: PartVariant | null): boolean {
   return !!v && v.plateParts > 1
+}
+
+/** What failure has cost a project so far -- Voltage's reprint tally, plus
+ *  the material and machine time a failed plate burned. Null when nothing
+ *  has failed, so the screen can say nothing. */
+export interface FailureTally {
+  sentBack: number
+  partsAffected: number
+  failedRuns: number
+  unitsLost: number
+  hoursLost: number
+  /** The reason given most often, when one has come up more than once. */
+  repeatReason: string | null
+}
+
+export function failureTally(parts: PartRow[], runs: PrintRunRow[]): FailureTally | null {
+  const sentBack = parts.reduce((a, p) => a + reprintCount(p), 0)
+  const partsAffected = parts.filter((p) => reprintCount(p) > 0).length
+  const failed = runs.filter((r) => r.outcome === 'failed')
+  if (sentBack === 0 && failed.length === 0) return null
+  const counts = new Map<string, number>()
+  const reasons = [
+    ...parts.flatMap((p) =>
+      p.history.filter((h) => h.kind === 'status' && h.toStatus === 'reprint').map((h) => h.note),
+    ),
+    ...failed.map((r) => r.failureReason),
+  ]
+  for (const raw of reasons) {
+    const key = (raw ?? '').split(' · Fix:')[0].trim().toLowerCase()
+    if (key) counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  let repeatReason: string | null = null
+  let best = 1
+  for (const [k, n] of counts) if (n > best) ((best = n), (repeatReason = k))
+  return {
+    sentBack,
+    partsAffected,
+    failedRuns: failed.length,
+    unitsLost: Math.round(failed.reduce((a, r) => a + (r.unitsUsed ?? 0), 0)),
+    hoursLost: Math.round(failed.reduce((a, r) => a + (r.hours ?? 0), 0) * 100) / 100,
+    repeatReason,
+  }
+}
+
+/** Voltage asked two things of every reprint: why it failed, and what to do
+ *  so the next attempt works. Both live in the one note the history keeps. */
+export function reprintNote(why: string, fix: string, fixedFile: string | null): string {
+  let note = why.trim()
+  if (fix.trim()) note += ` · Fix: ${fix.trim()}`
+  if (fixedFile) note += ` · Fixed file: ${fixedFile}`
+  return note
 }
