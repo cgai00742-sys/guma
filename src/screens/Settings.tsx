@@ -64,6 +64,7 @@ import FieldGuide, { benchmarkGroup, makeBenchmarkFormatter } from '../component
 import { benchmarksFor, hasLocalRates, ratedCurrencies } from '../lib/benchmarks'
 import { rateImplies } from '../lib/derive'
 import { summarizeHistory, type ShopHistory } from '../lib/history'
+import { findModel, MACHINE_MODELS, RATE_BANDS, suggestionsFor, wearFrom } from '../lib/machines'
 
 /**
  * The sample job from the design: four brackets, six hours modeling, PA-CF,
@@ -1047,6 +1048,81 @@ function QuoteTermsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => voi
  * having failed. That is fixed below, and the fix is the boring one: this
  * list is a view of ctx, so it follows ctx.
  */
+/**
+ * The model field, with the common machines one keystroke away and the
+ * figures for a known one offered -- never forced.
+ *
+ * A free-text input with a list rather than a select: a shop with a
+ * machine nobody has heard of still types its name, and a select would
+ * make it pick the nearest wrong one.
+ */
+function ModelField({
+  id,
+  value,
+  onChange,
+  current,
+  onApply,
+}: {
+  id: string
+  value: string
+  onChange: (v: string) => void
+  current: { watts: number | null; wear_hourly: number; rate_hourly: number }
+  onApply: (p: { watts?: number; wear_hourly?: number; rate_hourly?: number; tech?: string }) => void
+}) {
+  const known = findModel(value)
+  const offer = known ? suggestionsFor(known, current) : {}
+  const band = known ? RATE_BANDS[known.class] : null
+  return (
+    <div className="fld">
+      <label className="lbl" htmlFor={id}>
+        Model
+      </label>
+      <input
+        id={id}
+        list="guma-machine-models"
+        value={value}
+        placeholder="Pick one or type your own"
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <datalist id="guma-machine-models">
+        {MACHINE_MODELS.map((m) => (
+          <option key={m.name} value={m.name} />
+        ))}
+      </datalist>
+      {known && (
+        <div className="hint" style={{ lineHeight: 1.5 }}>
+          {known.watts
+            ? `Draws about ${known.watts} W printing${
+                known.wattsRange ? ` (${known.wattsRange[0]}–${known.wattsRange[1]} W)` : ''
+              }. `
+            : known.wattsRange
+              ? `Draws ${known.wattsRange[0]}–${known.wattsRange[1]} W printing. `
+              : ''}
+          {known.listPriceUsd
+            ? `List price about $${known.listPriceUsd.toLocaleString()} — wear ≈ $${wearFrom(known.listPriceUsd)}/h over 5,000 hours. `
+            : ''}
+          {band &&
+            `Shops charge roughly $${band.low}–${band.high} an hour for this class of machine. ${band.note}`}
+          {Object.keys(offer).length > 0 && (
+            <>
+              {' '}
+              <button
+                type="button"
+                className="linkbtn"
+                style={{ display: 'inline', width: 'auto', margin: 0 }}
+                onClick={() => onApply({ ...offer, tech: known.tech })}
+              >
+                Use these for the empty fields
+              </button>
+            </>
+          )}
+          <div style={{ color: 'var(--txt-3)', marginTop: 2 }}>{known.source}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MachinesPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void }) {
   const [rows, setRows] = useState<PrinterRow[]>(ctx.printerRows)
   const [error, setError] = useState<string | null>(null)
@@ -1209,10 +1285,21 @@ function MachinesPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void 
               <label className="lbl" htmlFor="mn-name">Name</label>
               <input id="mn-name" autoFocus value={draftNew.name} onChange={(e) => setDraftNew((d) => ({ ...d, name: e.target.value }))} placeholder="Bay 2" />
             </div>
-            <div className="fld">
-              <label className="lbl" htmlFor="mn-model">Model</label>
-              <input id="mn-model" value={draftNew.model} onChange={(e) => setDraftNew((d) => ({ ...d, model: e.target.value }))} />
-            </div>
+            <ModelField
+              id="mn-model"
+              value={draftNew.model}
+              onChange={(v) => setDraftNew((d) => ({ ...d, model: v }))}
+              current={draftNew}
+              onApply={(p) =>
+                setDraftNew((d) => ({
+                  ...d,
+                  ...(p.watts != null ? { watts: p.watts } : {}),
+                  ...(p.wear_hourly != null ? { wear_hourly: p.wear_hourly } : {}),
+                  ...(p.rate_hourly != null ? { rate_hourly: p.rate_hourly } : {}),
+                  ...(p.tech ? { tech: p.tech as PrinterRow['tech'] } : {}),
+                }))
+              }
+            />
             <div className="fld">
               <label className="lbl" htmlFor="mn-tech">Technology</label>
               <select id="mn-tech" value={draftNew.tech} onChange={(e) => setDraftNew((d) => ({ ...d, tech: e.target.value as PrinterRow['tech'] }))}>
@@ -1313,10 +1400,21 @@ function MachineRow({
           <label className="lbl" htmlFor={`m-name-${row.id}`}>Name</label>
           <input id={`m-name-${row.id}`} value={row.name} onChange={(e) => onPatch(row.id, 'name', e.target.value)} />
         </div>
-        <div className="fld">
-          <label className="lbl" htmlFor={`m-model-${row.id}`}>Model</label>
-          <input id={`m-model-${row.id}`} value={row.model} onChange={(e) => onPatch(row.id, 'model', e.target.value)} />
-        </div>
+        <ModelField
+          id={`m-model-${row.id}`}
+          value={row.model}
+          onChange={(v) => onPatch(row.id, 'model', v)}
+          current={{
+            watts: row.watts == null ? null : Number(row.watts),
+            wear_hourly: Number(row.wear_hourly) || 0,
+            rate_hourly: Number(row.rate_hourly) || 0,
+          }}
+          onApply={(p) => {
+            if (p.watts != null) onPatch(row.id, 'watts', String(p.watts))
+            if (p.wear_hourly != null) onPatch(row.id, 'wear_hourly', String(p.wear_hourly))
+            if (p.rate_hourly != null) onPatch(row.id, 'rate_hourly', String(p.rate_hourly))
+          }}
+        />
         <div className="fld">
           <label className="lbl" htmlFor={`m-tech-${row.id}`}>Technology</label>
           <select id={`m-tech-${row.id}`} value={row.tech} onChange={(e) => onPatch(row.id, 'tech', e.target.value)}>
