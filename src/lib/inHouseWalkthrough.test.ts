@@ -113,6 +113,14 @@ describe('a trial print, all the way through', () => {
     })
     let detail = await data.loadProjectDetail(shopId, jobId)
     expect(detail.phase).toBe('design')
+    // BOTTLENECK CHECK, found by CG rather than by this test: in-house
+    // work was born a DRAFT, so it never reached the board or the
+    // dashboard and its page offered "Take it into Intake" on a ladder that
+    // has no Intake. There is no quote to agree to on the shop's own work,
+    // so there is nothing to take in -- it is live from the moment it exists.
+    expect(detail.facts.takenInAt, 'a new in-house project is live, not a draft').not.toBeNull()
+    const onBoard = (await data.listJobs(shopId)).find((r) => r.jobId === jobId)
+    expect(onBoard?.facts.takenInAt).not.toBeNull()
     expect(ladderFor('inhouse')).toEqual(['design', 'review', 'delivered'])
 
     // The sliced file fills the build sheet.

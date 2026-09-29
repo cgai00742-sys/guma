@@ -227,6 +227,12 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
 
   const shown = viewPhase ?? detail.phase
   const facts = detail.facts
+  // Only client work can be a draft. A draft is a price nobody has agreed
+  // to; the shop's own work has neither, and treating it as one hid every
+  // in-house project from the board (see 0022_inhouse_live.sql). The data
+  // is fixed at the source -- this is the backstop, so that no other path
+  // that creates in-house work can bring the bug back on screen.
+  const isDraft = !facts.takenInAt && facts.kind !== 'inhouse'
   const flags = flagsFor(facts)
   const gate = gateStatus(shown, detail.gates[shown] ?? {}, facts)
   const liveGate =
@@ -394,7 +400,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       {/* A draft is deliberately not on the board. Saying so here, with the
           one action that changes it, is the difference between "where did my
           project go" and a decision someone made on purpose. */}
-      {!facts.takenInAt && (
+      {isDraft && (
         <div
           className="pane"
           style={{
@@ -420,7 +426,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         </div>
       )}
 
-      <div className="stepper" style={{ marginTop: 12, opacity: facts.takenInAt ? 1 : 0.45 }}>
+      <div className="stepper" style={{ marginTop: 12, opacity: isDraft ? 0.45 : 1 }}>
         {ladder.map((p, i) => {
           // A stage behind this one that still has items outstanding was
           // not finished, it was left behind -- and a green tick on it
@@ -1136,7 +1142,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         }}
       >
         <span className="gatewhy" style={{ fontSize: 11, color: 'var(--txt-3)', maxWidth: '52ch' }}>
-          {facts.takenInAt
+          {!isDraft
             ? liveGate.reason
             : 'A draft has no gate to clear — nothing is being tracked against it until it is taken in.'}
         </span>
@@ -1194,7 +1200,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           Back to projects
         </button>
         <DeleteProject detail={detail} busy={busy} onConfirm={destroy} />
-        {facts.takenInAt ? (
+        {!isDraft ? (
           <button
             type="button"
             className="btn primary advance"

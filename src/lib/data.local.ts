@@ -700,7 +700,7 @@ async function systemClientId(shopId: string): Promise<string> {
  */
 export async function createInHouseJob(
   shopId: string,
-  input: { title: string; brief?: string | null },
+  input: { title: string; brief?: string | null; relatedTo?: string | null },
 ): Promise<string> {
   const title = input.title.trim()
   if (!title) throw new Error('An in-house job needs a title — what are you working on?')
@@ -710,11 +710,20 @@ export async function createInHouseJob(
   const clientId = await systemClientId(shopId)
   const ref = await nextJobRef(shopId)
 
+  // taken_in_at is set at birth. A draft is "a price nobody has agreed to
+  // yet" (0008_drafts.sql) and the shop's own work has no price and nobody
+  // to agree -- so it is live the moment it exists. Leaving this null made
+  // every in-house project a draft: off the board, off the dashboard, and
+  // offering "Take it into Intake" on a ladder with no Intake. Reported by
+  // CG as "the drafts feature isn't working"; fixed for old rows by 0022.
   await d.execute(
-    `insert into jobs (id, shop_id, ref, client_id, title, brief, kind, phase, asset_origin)
-     values (?, ?, ?, ?, ?, ?, 'inhouse', 'design', 'model')`,
+    `insert into jobs (id, shop_id, ref, client_id, title, brief, kind, phase, asset_origin,
+                       taken_in_at)
+     values (?, ?, ?, ?, ?, ?, 'inhouse', 'design', 'model',
+             strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
     [jobId, shopId, ref, clientId, title, input.brief?.trim() || null],
   )
+  if (input.relatedTo) await setRelatedProject(shopId, jobId, input.relatedTo)
   return jobId
 }
 

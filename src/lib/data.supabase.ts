@@ -450,7 +450,7 @@ async function systemClientId(shopId: string): Promise<string> {
  *  intake is where a client brief becomes a quote, and neither applies. */
 export async function createInHouseJob(
   shopId: string,
-  input: { title: string; brief?: string | null },
+  input: { title: string; brief?: string | null; relatedTo?: string | null },
 ): Promise<string> {
   const title = input.title.trim()
   if (!title) throw new Error('An in-house job needs a title — what are you working on?')
@@ -468,10 +468,13 @@ export async function createInHouseJob(
       kind: 'inhouse',
       phase: 'design',
       asset_origin: 'model',
+      // Live at birth -- see data.local.ts's createInHouseJob.
+      taken_in_at: new Date().toISOString(),
     })
     .select('id')
     .single()
   if (error) throw error
+  if (input.relatedTo) await setRelatedProject(shopId, data.id, input.relatedTo)
   return data.id
 }
 

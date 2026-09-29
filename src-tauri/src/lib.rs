@@ -134,6 +134,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0021_archive_and_family.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 22,
+      description: "in-house work is live from the start, not a draft",
+      sql: include_str!("../migrations/0022_inhouse_live.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 
