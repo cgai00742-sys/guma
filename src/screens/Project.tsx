@@ -1582,6 +1582,16 @@ function SliceImport({
    *  silent: the rows appear somewhere below and nothing says the file was
    *  read, which reads as "nothing happened". */
   const [done, setDone] = useState<string | null>(null)
+  /**
+   * Asked once, at import: has this file already been printed? Most files
+   * arrive AFTER the plate came off -- that is when people remember to log
+   * them -- so the default is yes. Checked, one step writes the run from
+   * the file's own numbers: machine hours, filament off the shelf, the
+   * plate's parts marked printed. Unchecked, the file waits under "Sliced
+   * files" as an estimate until someone records it.
+   */
+  const [printedNow, setPrintedNow] = useState(true)
+  const [printedOn, setPrintedOn] = useState(todayISO)
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function pick(file: File | undefined) {
@@ -1643,6 +1653,42 @@ function SliceImport({
           material: sec.material,
         })),
       })
+      let recorded: string | null = null
+      if (printedNow && printerId) {
+        const grams = read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)
+        const hours =
+          read.totals.estMinutes == null ? 0 : Math.round((read.totals.estMinutes / 60) * 100) / 100
+        await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
+          printerId,
+          materialId: materialId || null,
+          unitsUsed: materialId ? grams : 0,
+          hours,
+          outcome: 'success',
+          failureReason: null,
+          note: `From ${read.fileName}`,
+          startedAt: printedOn || todayISO(),
+          sliceImportId: res.importId,
+        })
+        // The plate came off, so every object on it came off.
+        const fresh = await loadProjectDetail(ctx.shop.id, detail.jobId)
+        let marked = 0
+        if (allowedStatuses(fresh.phase, fresh.facts.kind).includes('printed')) {
+          const slice = fresh.slices.find((x) => x.id === res.importId)
+          const ids = new Set(slice?.sections.map((sec) => sec.partId).filter(Boolean))
+          for (const part of fresh.parts) {
+            if (ids.has(part.id) && part.status === 'pending') {
+              await setPartStatus(ctx.shop.id, part.id, ctx.profile.id, 'printed', null)
+              marked++
+            }
+          }
+        }
+        const machine = ctx.printerRows.find((p) => p.id === printerId)?.name ?? 'the machine'
+        recorded =
+          `Recorded as printed on ${machine}: ${hrs(read.totals.estMinutes) ?? '0h'}` +
+          (materialId ? `, ${grams} g off the shelf` : ', no material matched so nothing came off the shelf') +
+          (marked ? `, ${marked} part${marked === 1 ? '' : 's'} marked printed` : '') +
+          '.'
+      }
       const bits: string[] = []
       if (res.partsAdded) bits.push(`${res.partsAdded} part${res.partsAdded === 1 ? '' : 's'} added`)
       if (res.partsMatched)
@@ -1652,9 +1698,10 @@ function SliceImport({
       setDone(
         `${read.fileName} — ${bits.join(' · ') || 'read, nothing to add'}${
           kept ? ', file kept' : ''
-        }. It is listed under ` +
-          '“Sliced files” below; record it as printed when it comes off the machine and the ' +
-          'filament comes off the shelf.',
+        }. ` +
+          (recorded ??
+            'It is listed under “Sliced files” below; record it as printed when it comes off the ' +
+              'machine and the filament comes off the shelf.'),
       )
       onImported(res.partsAdded + res.partsMatched)
       clear()
@@ -1724,7 +1771,8 @@ function SliceImport({
       </label>
       <div className="hint" style={{ marginTop: 6 }}>
         Guma reads the objects on the plate, the machine and the filament, and shows you before
-        writing anything. Nothing is recorded as printed — an estimate is not an actual.
+        writing anything. You choose whether it has already been printed; if not, it waits as an
+        estimate until you record it.
       </div>
 
       {read && (
@@ -1820,15 +1868,45 @@ function SliceImport({
             </div>
           ))}
 
+          <div className="btnrow" style={{ marginTop: 10, alignItems: 'center' }}>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={printedNow}
+                onChange={(e) => setPrintedNow(e.target.checked)}
+              />
+              Already printed — record it now
+            </label>
+            {printedNow && (
+              <input
+                type="date"
+                aria-label="Printed on"
+                value={printedOn}
+                onChange={(e) => setPrintedOn(e.target.value)}
+                style={{ width: 150 }}
+              />
+            )}
+          </div>
+          {printedNow && (
+            <div className="hint" style={{ marginTop: 4 }}>
+              {printerId
+                ? `Writes the run from the file: ${hrs(read.totals.estMinutes) ?? 'no time in the file'} on the machine` +
+                  (materialId
+                    ? `, ${read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)} g off the shelf, `
+                    : ', no material matched — pick one or nothing comes off the shelf, ') +
+                  'plate parts marked printed. If the real print differed, remove the run under “Sliced files” and record it again.'
+                : 'Pick the machine it printed on — a print run needs one.'}
+            </div>
+          )}
+
           <div className="btnrow" style={{ marginTop: 10 }}>
             <button
               type="button"
               className="btn sm primary"
-              disabled={busy || saving}
+              disabled={busy || saving || (printedNow && !printerId)}
               onClick={() => void confirm()}
             >
-              Add {read.totals.sections} section{read.totals.sections === 1 ? '' : 's'} to the build
-              sheet
+              {printedNow ? 'Add to the build sheet and record the print' : `Add ${read.totals.sections} section${read.totals.sections === 1 ? '' : 's'} to the build sheet`}
             </button>
             <button type="button" className="btn sm" disabled={saving} onClick={clear}>
               Discard

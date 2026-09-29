@@ -179,6 +179,13 @@ const GCODE = `
 ; printer_model = XL
 `
 
+/** Import the file as an estimate only: untick "Already printed" first. */
+async function addAsEstimate(user: ReturnType<typeof userEvent.setup>) {
+  const box = await screen.findByRole('checkbox', { name: /already printed/i })
+  if ((box as HTMLInputElement).checked) await user.click(box)
+  await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+}
+
 function gcodeFile(name = 'Reef buoy_sliced.gcode') {
   return new File([GCODE], name, { type: 'text/plain' })
 }
@@ -224,7 +231,7 @@ describe('importing a sliced file from the project screen', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
 
     await waitFor(() => {
       const parts = currentDb.sqlite
@@ -247,7 +254,7 @@ describe('importing a sliced file from the project screen', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
     await screen.findByText('Buoy shell')
 
     // 86.5 g of PETG at $0.025 is $2.16, and 2h 3m on a machine at $9/h
@@ -296,11 +303,11 @@ describe('importing a sliced file from the project screen', () => {
     await renderProject(jobId, ctx)
 
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
     await screen.findByText('Buoy shell')
 
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile('fixed_v2.gcode'))
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
 
     await waitFor(() => {
       const n = currentDb.sqlite.prepare('select count(*) as n from job_parts').get() as {
@@ -333,7 +340,7 @@ describe('a shop that has not set up its machines', () => {
     expect(within(printer).getByText(/not matched/i)).toBeDefined()
 
     // And it still imports -- an unmatched machine is not a blocked import.
-    await user.click(screen.getByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
     await waitFor(() => {
       const row = currentDb.sqlite
         .prepare('select printer_id, printer_model from slice_imports')
@@ -379,7 +386,7 @@ describe("the shop's own work", () => {
     await renderProject(jobId, ctx)
 
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
 
     await waitFor(() => {
       const parts = currentDb.sqlite
@@ -397,7 +404,7 @@ describe("the shop's own work", () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
     await screen.findByText('Buoy shell')
 
     // In-house work has no quote to compare against, so its actual cost is
@@ -418,13 +425,50 @@ describe('turning the file into what actually happened', () => {
    * one-click confirm has to exist, and has to be reachable from where the
    * file was dropped.
    */
+  it('records the print at import in one step when it already happened (the default)', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+
+    const box = (await screen.findByRole('checkbox', { name: /already printed/i })) as HTMLInputElement
+    expect(box.checked).toBe(true)
+    const when = screen.getByLabelText(/printed on/i) as HTMLInputElement
+    await user.clear(when)
+    await user.type(when, '2026-09-20')
+    await user.click(screen.getByRole('button', { name: /record the print/i }))
+
+    await waitFor(() => {
+      const a = currentDb.sqlite
+        .prepare('select material_units, machine_hours, runs from job_actuals where job_id = ?')
+        .get(jobId) as Record<string, number>
+      expect(a).toMatchObject({ material_units: 87, machine_hours: 2.05, runs: 1 })
+    })
+    const run = currentDb.sqlite
+      .prepare('select started_at, slice_import_id from print_runs')
+      .get() as { started_at: string; slice_import_id: string | null }
+    expect(run.started_at.slice(0, 10)).toBe('2026-09-20')
+    expect(run.slice_import_id).not.toBeNull()
+    const m = currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }
+    expect(Number(m.on_hand)).toBe(913)
+    const parts = currentDb.sqlite
+      .prepare('select status from job_parts order by sort')
+      .all() as { status: string }[]
+    expect(parts.map((p) => p.status)).toEqual(['printed', 'printed'])
+    await screen.findByText(/Recorded as printed on/i)
+  })
+
   it('records the print from the file, deducting the spool and logging the hours', async () => {
     const { ctx, jobId } = await seedShop()
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
 
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
 
@@ -453,7 +497,7 @@ describe('turning the file into what actually happened', () => {
     currentDb.sqlite.exec('update materials set on_hand = 1000')
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
 
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
@@ -485,7 +529,7 @@ describe('the file itself, kept', () => {
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
     // Said before anything is written, while the file can still be discarded.
     await screen.findByText(/The file itself will be kept with the project/)
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
 
     await waitFor(() => {
       const f = currentDb.sqlite
@@ -510,7 +554,7 @@ describe('the file itself, kept', () => {
     }
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
     await screen.findByText(/Recorded — 1 run/i)
@@ -550,7 +594,7 @@ describe('a plate is one print, and the whole plate comes off it', () => {
     }
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
 
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     // The offer names the plate, and is on by default.
@@ -578,7 +622,7 @@ describe('a plate is one print, and the whole plate comes off it', () => {
     }
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
     // The offer goes away: a failed plate produced nothing to check.
@@ -607,7 +651,7 @@ describe('a finished project reads like a record, not a control panel', () => {
     }
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
     await screen.findByText(/Recorded — 1 run/i)
@@ -675,7 +719,7 @@ describe('the import is findable, and says what it did', () => {
     await renderProject(jobId, ctx)
 
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
 
     // The thing whose absence read as "nothing happened". It also says
     // the file itself was kept, which is the other half of the answer.
@@ -688,11 +732,11 @@ describe('the import is findable, and says what it did', () => {
     await renderProject(jobId, ctx)
 
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
     await screen.findByText('Buoy shell')
 
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile('fixed_v2.gcode'))
-    await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
+    await addAsEstimate(user)
 
     // Nothing was added, and saying "2 parts added" would be a lie that
     // sends someone looking for rows that are not there.
