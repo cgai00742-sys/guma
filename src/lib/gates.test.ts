@@ -53,6 +53,7 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     windowFrom: null,
     windowLocked: false,
     atRisk: false,
+    overCeiling: null,
     deliveryOn: null,
     deliveryHow: null,
     brief: null,
@@ -383,5 +384,18 @@ describe('flags that belong to a client, on work that has none', () => {
       (f) => f.key,
     )
     expect(flags).toContain('stalled')
+  })
+})
+
+describe('the over-the-agreed-price flag', () => {
+  it('shows while set, on client work only, and says what to do', () => {
+    const note = 'Quote v3 is 1400.00, above the price the client accepted — Added work: Two more brackets'
+    const f = flagsFor(facts({ overCeiling: note })).find((x) => x.key === 'over-ceiling')
+    expect(f?.cause).toBe(note)
+    expect(f?.action).toMatch(/clear this flag/i)
+    expect(flagsFor(facts({ overCeiling: null })).some((x) => x.key === 'over-ceiling')).toBe(false)
+    expect(
+      flagsFor(facts({ overCeiling: note, kind: 'inhouse' })).some((x) => x.key === 'over-ceiling'),
+    ).toBe(false)
   })
 })

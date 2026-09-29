@@ -537,7 +537,13 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       )}
 
       {/* ---- flags, spelled out ---- */}
-      {flags.length > 0 && <FlagPanel flags={flags} />}
+      {flags.length > 0 && (
+        <FlagPanel
+          flags={flags}
+          busy={busy}
+          onClear={(key) => (key === 'over-ceiling' ? patch({ overCeiling: null }) : undefined)}
+        />
+      )}
 
       {/* ---- what this project is ----
           Sits first because the intake gate reads the brief, and a fact a
@@ -3875,7 +3881,16 @@ function DeleteProject({
   )
 }
 
-function FlagPanel({ flags }: { flags: Flag[] }) {
+function FlagPanel({
+  flags,
+  busy,
+  onClear,
+}: {
+  flags: Flag[]
+  busy: boolean
+  /** Flags a person raised or can settle by hand get a clear button. */
+  onClear: (key: Flag['key']) => Promise<void> | undefined
+}) {
   return (
     <div
       className="pane"
@@ -3894,6 +3909,17 @@ function FlagPanel({ flags }: { flags: Flag[] }) {
           <div>
             <div className="fw">{f.cause}</div>
             <div className="fa">{f.action}</div>
+            {f.key === 'over-ceiling' && (
+              <button
+                type="button"
+                className="btn sm"
+                style={{ marginTop: 6 }}
+                disabled={busy}
+                onClick={() => void onClear(f.key)}
+              >
+                Client agreed — clear this flag
+              </button>
+            )}
           </div>
         </div>
       ))}

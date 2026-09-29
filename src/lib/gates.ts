@@ -449,6 +449,7 @@ export type FlagKey =
   | 'balance'
   | 'under-minimum'
   | 'over-budget'
+  | 'over-ceiling'
 
 export interface Flag {
   key: FlagKey
@@ -574,6 +575,17 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
           'Post an update saying where this actually stands — even "waiting on the client" is information the next person needs.',
       })
     }
+  }
+
+  if (!mine && f.overCeiling) {
+    out.push({
+      key: 'over-ceiling',
+      tone: 'warn',
+      label: 'Above agreed price',
+      cause: f.overCeiling,
+      action:
+        'Make sure the client has seen and agreed the new price in writing, then clear this flag on the project page.',
+    })
   }
 
   if (!delivered && f.atRisk) {

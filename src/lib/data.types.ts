@@ -480,6 +480,9 @@ export interface ProjectFacts {
   windowLocked: boolean
   /** Someone marked this project as at risk by hand. */
   atRisk: boolean
+  /** Set when a change order took the price above what the client
+   *  accepted; says how. Stays until someone clears it. */
+  overCeiling: string | null
   /** ISO date it actually changed hands. */
   deliveryOn: string | null
   deliveryHow: string | null
@@ -652,6 +655,8 @@ export interface ProjectFieldsInput {
   deliveryOn?: string | null
   deliveryHow?: string | null
   priority?: JobPriority
+  /** Only ever cleared from the screen (null); saveQuote sets it. */
+  overCeiling?: string | null
 }
 
 /** One row on the Clients screen -- a client, plus what they are worth. */

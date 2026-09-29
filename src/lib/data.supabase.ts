@@ -607,7 +607,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
 }
 
 const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_in_at, phase, priority,
-   asset_origin, poc, needed_by, window_from, window_locked, at_risk, archived_at, related_to,
+   asset_origin, poc, needed_by, window_from, window_locked, at_risk, over_ceiling, archived_at, related_to,
    delivery_on, delivery_how,
    clients!inner ( id, name, kind, contact, email, phone ),
    quotes ( id, status, total, design_billing, design_qty, revisions_incl, quantity,
@@ -675,6 +675,7 @@ function factsFrom(
     windowFrom: r.window_from ?? null,
     windowLocked: r.window_locked === true,
     atRisk: r.at_risk === true,
+    overCeiling: (r.over_ceiling as string | null) ?? null,
     deliveryOn: r.delivery_on ?? null,
     deliveryHow: r.delivery_how ?? null,
     brief: r.brief ?? null,
@@ -899,6 +900,13 @@ async function reviseQuote(args: SaveQuoteArgs, jobId: string): Promise<SavedQuo
       brief: args.job.brief || null,
       needed_by: args.job.neededBy,
       asset_origin: args.job.assetOrigin,
+      // See data.local.ts: a change order above the accepted price flags
+      // the project until someone clears it.
+      ...(change
+        ? {
+            over_ceiling: `Quote v${version} is ${(args.send?.total ?? 0).toFixed(2)}, above the price the client accepted — ${CHANGE_CAUSE_LABEL[change.cause]}: ${change.reason}`,
+          }
+        : {}),
     })
     .eq('id', jobId)
     .eq('shop_id', args.shopId)
@@ -1363,6 +1371,7 @@ export async function updateProjectFields(
     deliveryOn: 'delivery_on',
     deliveryHow: 'delivery_how',
     priority: 'priority',
+    overCeiling: 'over_ceiling',
   }
   const row: Record<string, unknown> = {}
   for (const [key, column] of Object.entries(map)) {
@@ -1372,7 +1381,7 @@ export async function updateProjectFields(
   row.updated_at = new Date().toISOString()
   const { data: before, error: readErr } = await supabase
     .from('jobs')
-    .select('title, brief, poc, needed_by, window_from, window_locked, at_risk, delivery_on, delivery_how, priority')
+    .select('title, brief, poc, needed_by, window_from, window_locked, at_risk, delivery_on, delivery_how, priority, over_ceiling')
     .eq('id', jobId)
     .eq('shop_id', shopId)
     .single()

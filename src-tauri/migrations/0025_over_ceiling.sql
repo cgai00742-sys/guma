@@ -1,0 +1,12 @@
+-- Guma: a project remembers that its price went above what was agreed.
+--
+-- A revision above the accepted total needs a client-caused reason, and
+-- that reason already lands on the version and in Activity. What was
+-- missing is a marker on the PROJECT: something the board and the project
+-- page show until a person has dealt with it (told the client, had it
+-- signed) and cleared it. Activity scrolls away; a flag does not.
+--
+-- Holds the sentence that explains it; null means nothing to flag.
+-- Set by saveQuote when a change order goes above the accepted price,
+-- cleared by hand through updateProjectFields, which logs the clearing.
+alter table jobs add column over_ceiling text;

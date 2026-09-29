@@ -627,6 +627,15 @@ describe('data.local.ts against a real SQLite database', () => {
       change_reason: 'Two more brackets',
     })
 
+    // The project carries a flag until someone clears it, and clearing it
+    // is on the record.
+    let d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.facts.overCeiling).toMatch(/v3 is 1400\.00.*Two more brackets/)
+    await local.updateProjectFields(shopId, saved.jobId, { overCeiling: null }, ctx.profile.id)
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.facts.overCeiling).toBeNull()
+    expect(d.events.some((e) => e.kind === 'edit' && /flag cleared/.test(e.body ?? ''))).toBe(true)
+
     // And one project, not three: a revision must never open another job.
     const jobs = (await currentDb.select('select count(*) as n from jobs where ref = ?', [
       ref,

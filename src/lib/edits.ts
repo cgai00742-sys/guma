@@ -18,6 +18,7 @@ export interface ProjectBefore {
   delivery_on: string | null
   delivery_how: string | null
   priority: string | null
+  over_ceiling?: string | null
 }
 
 const clip = (s: string, n = 60) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
@@ -47,6 +48,8 @@ export function describeProjectEdits(before: ProjectBefore, fields: ProjectField
     out.push(`Delivery: ${shown(before.delivery_how)} → ${shown(norm(fields.deliveryHow))}.`)
   if (changed('priority', 'priority'))
     out.push(`Priority: ${shown(before.priority)} → ${shown(fields.priority ?? null)}.`)
+  if (changed('overCeiling', 'over_ceiling'))
+    out.push(fields.overCeiling ? `Over-the-agreed-price flag set.` : 'Over-the-agreed-price flag cleared.')
   return out
 }
 

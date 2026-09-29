@@ -792,7 +792,7 @@ const JOB_LIST_SQL = `
          j.archived_at, j.related_to,
          j.taken_in_at,
          j.phase, j.kind, j.priority, j.asset_origin, j.poc,
-         j.needed_by, j.window_from, j.window_locked, j.at_risk,
+         j.needed_by, j.window_from, j.window_locked, j.at_risk, j.over_ceiling,
          j.delivery_on, j.delivery_how,
          c.id as client_id, c.name as client_name, c.kind as client_kind,
          c.contact as client_contact, c.email as client_email, c.phone as client_phone,
@@ -862,6 +862,7 @@ interface JobListSqlRow {
   window_from: string | null
   window_locked: number
   at_risk: number
+  over_ceiling: string | null
   delivery_on: string | null
   delivery_how: string | null
   client_id: string
@@ -905,6 +906,7 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     // nothing downstream has to remember which backend it came from.
     windowLocked: Number(r.window_locked) === 1,
     atRisk: Number(r.at_risk) === 1,
+    overCeiling: r.over_ceiling ?? null,
     deliveryOn: r.delivery_on,
     deliveryHow: r.delivery_how,
     brief: r.brief,
@@ -1205,6 +1207,15 @@ async function reviseQuote(
       where id = ? and shop_id = ?`,
     [args.job.title, args.job.brief || null, args.job.neededBy, args.job.assetOrigin, jobId, args.shopId],
   )
+  // A change order above the accepted price flags the project until
+  // someone clears it by hand (0025_over_ceiling.sql).
+  if (change) {
+    await d.execute('update jobs set over_ceiling = ? where id = ? and shop_id = ?', [
+      `Quote v${version} is ${(args.send?.total ?? 0).toFixed(2)}, above the price the client accepted — ${CHANGE_CAUSE_LABEL[change.cause]}: ${change.reason}`,
+      jobId,
+      args.shopId,
+    ])
+  }
 
   await d.execute(
     `insert into job_events (job_id, kind, body) values (?, 'quote_sent', ?)`,
@@ -1731,6 +1742,7 @@ export async function updateProjectFields(
     deliveryOn: 'delivery_on',
     deliveryHow: 'delivery_how',
     priority: 'priority',
+    overCeiling: 'over_ceiling',
   }
   const sets: string[] = []
   const args: unknown[] = []
@@ -1745,7 +1757,7 @@ export async function updateProjectFields(
   const d = await db()
   const [before] = await d.select<ProjectBefore[]>(
     `select title, brief, poc, needed_by, window_from, window_locked, at_risk,
-            delivery_on, delivery_how, priority
+            delivery_on, delivery_how, priority, over_ceiling
        from jobs where id = ? and shop_id = ?`,
     [jobId, shopId],
   )
