@@ -313,3 +313,86 @@ describe('what happens to a project after it is finished', () => {
     await expect(data.setRelatedProject(shopId, jobId, jobId)).rejects.toThrow(/under itself/i)
   })
 })
+
+describe('the material shelf, as a ledger', () => {
+  /**
+   * CG: "we need to have a tracking and inventory system that allows for
+   * more material to be added and averaged for costs. This is the same
+   * system that needs to be drawn down for usage based on projects."
+   */
+  it('adds purchases, averages their cost, draws down on prints, and records a count', async () => {
+    const data = await import('./data')
+    const shopId = await data.setupShop(SETUP)
+    const ctx = await data.loadShopContext()
+    const petg = ctx.materials[0]
+    const jobId = await data.createInHouseJob(shopId, { title: 'Oʻahu' })
+
+    await data.recordMaterialPurchase(shopId, petg.id, ctx.profile.id, {
+      purchasedOn: '2026-09-01',
+      qty: 1000,
+      totalCost: 24,
+      supplier: 'Prusa',
+      note: null,
+    })
+    await data.recordMaterialPurchase(shopId, petg.id, ctx.profile.id, {
+      purchasedOn: '2026-09-10',
+      qty: 1000,
+      totalCost: 30,
+      supplier: null,
+      note: null,
+    })
+    let m = (await data.listMaterials(shopId)).find((x) => x.id === petg.id)!
+    expect(m.onHand).toBe(2000)
+    // Weighted across both spools, not the last one.
+    expect(m.avgCostPerUnit).toBeCloseTo(0.027, 6)
+    expect(m.costBasis).toBe('purchases')
+
+    await data.recordPrintRun(shopId, jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id,
+      materialId: petg.id,
+      unitsUsed: 412,
+      hours: 18,
+      outcome: 'success',
+      failureReason: null,
+      note: null,
+      startedAt: '2026-09-12',
+    })
+    m = (await data.listMaterials(shopId)).find((x) => x.id === petg.id)!
+    expect(m.onHand).toBe(1588)
+
+    // Weighed: 88 g short of what Guma believed.
+    const { delta } = await data.recordStockCount(shopId, petg.id, ctx.profile.id, {
+      countedOn: '2026-09-20',
+      counted: 1500,
+      note: 'Weighed both spools',
+    })
+    expect(delta).toBe(-88)
+    m = (await data.listMaterials(shopId)).find((x) => x.id === petg.id)!
+    expect(m.onHand).toBe(1500)
+
+    // Renaming it does not touch the shelf.
+    await data.saveMaterial(shopId, {
+      id: petg.id,
+      name: 'PETG black (Prusament)',
+      kind: m.kind,
+      swatch: m.swatch,
+      unit: m.unit,
+      costPerUnit: m.costPerUnit,
+      sellOverride: null,
+      onHand: null,
+      reorderAt: null,
+    })
+    m = (await data.listMaterials(shopId)).find((x) => x.id === petg.id)!
+    expect(m.onHand).toBe(1500)
+
+    // And every movement is on the record, with the project that burned it.
+    const ledger = await data.listMaterialLedger(shopId, petg.id)
+    expect(ledger.map((e) => [e.kind, e.qty])).toEqual([
+      ['count', -88],
+      ['print', -412],
+      ['purchase', 1000],
+      ['purchase', 1000],
+    ])
+    expect(ledger[1].jobTitle).toBe('Oʻahu')
+  })
+})

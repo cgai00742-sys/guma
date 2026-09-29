@@ -77,6 +77,9 @@ import type {
   RelatedProject,
   JobKind,
   SellBranch,
+  StockCountInput,
+  StockEntry,
+  RunOutcome,
   PartInput,
   QuoteBuildInput,
   QuoteBuildRow,
@@ -2107,6 +2110,130 @@ export async function recordMaterialPurchase(
     [id, shopId, materialId, input.purchasedOn, qty, cost, input.supplier, input.note, actorId],
   )
   return id
+}
+
+/**
+ * Record a weighing. Stores the count AND the difference from what Guma
+ * believed was on hand -- the difference is the number worth reading
+ * later: a print nobody logged, or a slicer that is optimistic about its
+ * filament. The trigger applies the difference, so on-hand becomes the
+ * count. See 0024_stock_counts.sql.
+ */
+export async function recordStockCount(
+  shopId: string,
+  materialId: string,
+  actorId: string,
+  input: StockCountInput,
+): Promise<{ id: string; delta: number }> {
+  const counted = Number(input.counted)
+  if (!Number.isFinite(counted) || counted < 0) {
+    throw new Error('A count is zero or more — weigh what is actually there.')
+  }
+  const d = await db()
+  const rows = await d.select<{ on_hand: number }[]>(
+    'select on_hand from materials where id = ? and shop_id = ?',
+    [materialId, shopId],
+  )
+  if (!rows[0]) throw new Error('That material no longer exists.')
+  const delta = Math.round((counted - Number(rows[0].on_hand ?? 0)) * 1000) / 1000
+  const id = crypto.randomUUID()
+  await d.execute(
+    `insert into material_counts
+       (id, shop_id, material_id, counted_on, counted_qty, delta, note, recorded_by)
+     values (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, shopId, materialId, input.countedOn, counted, delta, input.note, actorId],
+  )
+  return { id, delta }
+}
+
+/** Every movement of one material, newest first. */
+export async function listMaterialLedger(
+  shopId: string,
+  materialId: string,
+): Promise<StockEntry[]> {
+  const d = await db()
+  const purchases = await d.select<
+    { id: string; on: string; qty: number; cost: number; note: string | null; supplier: string | null }[]
+  >(
+    `select id, purchased_on as "on", qty, total_cost as cost, note, supplier
+       from material_purchases where shop_id = ? and material_id = ?`,
+    [shopId, materialId],
+  )
+  const runs = await d.select<
+    {
+      id: string
+      on: string | null
+      created: string | null
+      qty: number
+      outcome: RunOutcome | null
+      job_id: string
+      ref: string
+      title: string
+      note: string | null
+    }[]
+  >(
+    `select r.id, r.started_at as "on", r.consumed_at as created, r.units_used as qty, r.outcome,
+            j.id as job_id, j.ref, j.title, r.failure_reason as note
+       from print_runs r
+       join jobs j on j.id = r.job_id
+      where r.shop_id = ? and r.material_id = ? and coalesce(r.units_used, 0) > 0`,
+    [shopId, materialId],
+  )
+  const counts = await d.select<
+    { id: string; on: string; counted: number; delta: number; note: string | null }[]
+  >(
+    `select id, counted_on as "on", counted_qty as counted, delta, note
+       from material_counts where shop_id = ? and material_id = ?`,
+    [shopId, materialId],
+  )
+  const out: StockEntry[] = [
+    ...purchases.map(
+      (p): StockEntry => ({
+        id: p.id,
+        kind: 'purchase',
+        on: p.on,
+        qty: Number(p.qty),
+        cost: Number(p.cost),
+        jobId: null,
+        jobRef: null,
+        jobTitle: null,
+        outcome: null,
+        counted: null,
+        note: [p.supplier, p.note].filter(Boolean).join(' · ') || null,
+      }),
+    ),
+    ...runs.map(
+      (r): StockEntry => ({
+        id: r.id,
+        kind: 'print',
+        on: (r.on ?? r.created ?? '').slice(0, 10),
+        qty: -Number(r.qty),
+        cost: null,
+        jobId: r.job_id,
+        jobRef: r.ref,
+        jobTitle: r.title,
+        outcome: r.outcome,
+        counted: null,
+        note: r.note,
+      }),
+    ),
+    ...counts.map(
+      (c): StockEntry => ({
+        id: c.id,
+        kind: 'count',
+        on: c.on,
+        qty: Number(c.delta),
+        cost: null,
+        jobId: null,
+        jobRef: null,
+        jobTitle: null,
+        outcome: null,
+        counted: Number(c.counted),
+        note: c.note,
+      }),
+    ),
+  ]
+  return out.sort((a, b) => (a.on < b.on ? 1 : a.on > b.on ? -1 : 0))
 }
 
 export async function listMaterialPurchases(

@@ -11,7 +11,7 @@
  */
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { isDemo, switchWorkspace } from '../lib/workspace'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   priceQuote,
   makeMoney,
@@ -32,6 +32,9 @@ import {
   saveMaterial,
   recordMaterialPurchase,
   listMaterialPurchases,
+  recordStockCount,
+  listMaterialLedger,
+  type StockEntry,
   deleteMaterialPurchase,
   toRateSet,
   type ShopContext,
@@ -1548,7 +1551,11 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
         unit: row.unit,
         costPerUnit: row.costPerUnit,
         sellOverride: row.sellOverride,
-        onHand: row.onHand,
+        // Never from this row. It was loaded when the screen opened; a
+        // print since then took filament off the shelf, and saving a
+        // rename used to put it back. Stock moves by purchase, print or
+        // count -- see 0024_stock_counts.sql.
+        onHand: null,
         reorderAt: row.reorderAt,
         archived: row.archived,
       })
@@ -1584,9 +1591,10 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
             : `${measured} of ${rows.length} material${rows.length === 1 ? '' : 's'} priced off real purchases. The rest are still running on the figure typed at setup.`}
         </p>
         <div className="hint">
-          On hand rises when you log a purchase and never falls on its own — Guma does not watch your
-          machines, so it cannot know what a print consumed. Correct the count yourself after you
-          weigh a spool. A number that only ever goes up would be worse than no number.
+          On hand goes up with every purchase and down with every print recorded against a project —
+          failed prints too, because they burned the filament. When you weigh a spool, record the
+          count under Stock: the difference from what Guma expected is kept, not overwritten, so a
+          print that never got logged shows up instead of vanishing.
         </div>
       </div>
 
@@ -1670,18 +1678,12 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
                       onChange={(e) => patch(m.id, 'costPerUnit', e.target.value)}
                     />
                   </td>
-                  <td className="r">
-                    <input
-                      type="number"
-                      min="0"
-                      value={m.onHand}
-                      style={{
-                        width: 90,
-                        textAlign: 'right',
-                        color: m.reorderAt > 0 && m.onHand <= m.reorderAt ? 'var(--warn)' : undefined,
-                      }}
-                      onChange={(e) => patch(m.id, 'onHand', e.target.value)}
-                    />
+                  <td
+                    className="r mono"
+                    style={{ color: m.reorderAt > 0 && m.onHand <= m.reorderAt ? 'var(--warn)' : undefined }}
+                    title="Moves by purchase, print and count. Weigh it under Stock to correct it."
+                  >
+                    {fmtQty(m.onHand, m.unit)}
                   </td>
                   <td className="r">
                     <input
@@ -1710,7 +1712,7 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
                           setOpenId(openId === m.id ? null : m.id)
                         }}
                       >
-                        {openId === m.id ? 'Close' : 'Purchases'}
+                        {openId === m.id ? 'Close' : 'Stock'}
                       </button>
                       <button
                         type="button"
@@ -1730,6 +1732,14 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
                         ctx={ctx}
                         material={m}
                         money={money}
+                        onChanged={async () => {
+                          await reload()
+                          onSaved()
+                        }}
+                      />
+                      <StockPanel
+                        ctx={ctx}
+                        material={m}
                         onChanged={async () => {
                           await reload()
                           onSaved()
@@ -1760,6 +1770,190 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
         </button>
       )}
     </>
+  )
+}
+
+/** Grams read as kilos once there are enough of them; mL as litres. */
+function fmtQty(qty: number, unit: 'g' | 'ml'): string {
+  const a = Math.abs(qty)
+  if (unit === 'g' && a >= 1000) return `${(qty / 1000).toFixed(2)} kg`
+  if (unit === 'ml' && a >= 1000) return `${(qty / 1000).toFixed(2)} L`
+  return `${Math.round(qty)} ${unit}`
+}
+
+/**
+ * One material's stock: weigh it, and see every reason the number moved.
+ *
+ * The ledger is the point. A shop that sees "−412 g · Oʻahu" and "−380 g ·
+ * Maui (failed)" next to "+1.00 kg · purchase" can answer where its
+ * filament went without guessing, and a count that comes up 300 g short
+ * says a print went unlogged or the slicer is optimistic -- both worth
+ * knowing, and both invisible when a count simply overwrote the number.
+ */
+function StockPanel({
+  ctx,
+  material,
+  onChanged,
+}: {
+  ctx: ShopContext
+  material: MaterialRow
+  onChanged: () => Promise<void>
+}) {
+  const [entries, setEntries] = useState<StockEntry[] | null>(null)
+  const [counted, setCounted] = useState('')
+  const [inKg, setInKg] = useState(material.unit === 'g')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [said, setSaid] = useState<string | null>(null)
+
+  const load = () =>
+    listMaterialLedger(ctx.shop.id, material.id)
+      .then(setEntries)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [material.id])
+
+  async function count() {
+    const n = Number(counted)
+    if (!Number.isFinite(n) || n < 0 || counted.trim() === '') return
+    setBusy(true)
+    setError(null)
+    try {
+      const qty = inKg ? n * 1000 : n
+      const { delta } = await recordStockCount(ctx.shop.id, material.id, ctx.profile.id, {
+        countedOn: todayISO(),
+        counted: qty,
+        note: note.trim() || null,
+      })
+      setSaid(
+        delta === 0
+          ? 'Exactly what Guma expected.'
+          : `${fmtQty(Math.abs(delta), material.unit)} ${delta < 0 ? 'less' : 'more'} than Guma expected — recorded, so the difference is on the history below.`,
+      )
+      setCounted('')
+      setNote('')
+      await onChanged()
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <h4 style={{ margin: '0 0 6px' }}>Weigh it</h4>
+      <div className="btnrow" style={{ alignItems: 'flex-end' }}>
+        <div className="fld" style={{ margin: 0, minWidth: 160 }}>
+          <label className="lbl" htmlFor={`count-${material.id}`}>
+            What is actually there
+          </label>
+          <input
+            id={`count-${material.id}`}
+            type="number"
+            min="0"
+            step="any"
+            value={counted}
+            placeholder={inKg ? 'kg' : material.unit}
+            onChange={(e) => setCounted(e.target.value)}
+          />
+        </div>
+        {material.unit === 'g' && (
+          <label className="hint" style={{ display: 'flex', gap: 6, alignItems: 'center', margin: 0 }}>
+            <input type="checkbox" checked={inKg} onChange={(e) => setInKg(e.target.checked)} />
+            in kilos
+          </label>
+        )}
+        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
+          <label className="lbl" htmlFor={`count-note-${material.id}`}>
+            Note
+          </label>
+          <input
+            id={`count-note-${material.id}`}
+            value={note}
+            placeholder="Weighed the open spools, minus the empty reels"
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </div>
+        <button
+          type="button"
+          className="btn sm primary"
+          disabled={busy || counted.trim() === ''}
+          onClick={() => void count()}
+        >
+          Record the count
+        </button>
+      </div>
+      {said && (
+        <div className="hint" style={{ color: 'var(--ok)' }}>
+          {said}
+        </div>
+      )}
+      {error && <div className="err">{error}</div>}
+
+      <h4 style={{ margin: '14px 0 6px' }}>Where it went</h4>
+      {!entries ? (
+        <div className="hint">Loading…</div>
+      ) : entries.length === 0 ? (
+        <div className="hint">Nothing yet — a purchase adds to the shelf, every print takes from it.</div>
+      ) : (
+        <div className="sheetwrap" style={{ maxHeight: 280 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>What</th>
+                <th className="r">Change</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((e) => (
+                <tr key={`${e.kind}-${e.id}`}>
+                  <td className="mono" style={{ fontSize: 11 }}>
+                    {e.on || '—'}
+                  </td>
+                  <td>
+                    {e.kind === 'purchase' && <>Bought{e.note ? ` · ${e.note}` : ''}</>}
+                    {e.kind === 'count' && (
+                      <>
+                        Counted {fmtQty(e.counted ?? 0, material.unit)}
+                        {e.note ? ` · ${e.note}` : ''}
+                      </>
+                    )}
+                    {e.kind === 'print' && (
+                      <>
+                        <Link to={`/project/${e.jobId}`}>
+                          {e.jobRef} · {e.jobTitle}
+                        </Link>
+                        {e.outcome && e.outcome !== 'success' && (
+                          <span style={{ color: 'var(--red)' }}>
+                            {' '}
+                            · {e.outcome}
+                            {e.note ? ` — ${e.note}` : ''}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </td>
+                  <td
+                    className="r mono"
+                    style={{ color: e.qty < 0 ? 'var(--red)' : e.qty > 0 ? 'var(--ok)' : undefined }}
+                  >
+                    {e.qty > 0 ? '+' : ''}
+                    {fmtQty(e.qty, material.unit)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   )
 }
 

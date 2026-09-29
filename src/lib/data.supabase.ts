@@ -118,6 +118,8 @@ import type {
   PartRow,
   PartVariant,
   RelatedProject,
+  StockCountInput,
+  StockEntry,
   SellBranch,
   PartInput,
   PartStatus,
@@ -1548,6 +1550,118 @@ export async function saveMaterial(shopId: string, next: MaterialInput): Promise
   const { data, error } = await query.select(MATERIAL_SELECT).single()
   if (error) throw error
   return toMaterialRow(data)
+}
+
+/** See data.local.ts's recordStockCount. */
+export async function recordStockCount(
+  shopId: string,
+  materialId: string,
+  actorId: string,
+  input: StockCountInput,
+): Promise<{ id: string; delta: number }> {
+  const counted = Number(input.counted)
+  if (!Number.isFinite(counted) || counted < 0) {
+    throw new Error('A count is zero or more — weigh what is actually there.')
+  }
+  const { data: m, error: mErr } = await supabase
+    .from('materials')
+    .select('on_hand')
+    .eq('id', materialId)
+    .eq('shop_id', shopId)
+    .single()
+  if (mErr) throw mErr
+  const delta = Math.round((counted - Number(m.on_hand ?? 0)) * 1000) / 1000
+  const { data, error } = await supabase
+    .from('material_counts')
+    .insert({
+      shop_id: shopId,
+      material_id: materialId,
+      counted_on: input.countedOn,
+      counted_qty: counted,
+      delta,
+      note: input.note,
+      recorded_by: actorId,
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  return { id: data.id as string, delta }
+}
+
+/** See data.local.ts's listMaterialLedger. */
+export async function listMaterialLedger(
+  shopId: string,
+  materialId: string,
+): Promise<StockEntry[]> {
+  const [p, r, c] = await Promise.all([
+    supabase
+      .from('material_purchases')
+      .select('id, purchased_on, qty, total_cost, note, supplier')
+      .eq('shop_id', shopId)
+      .eq('material_id', materialId),
+    supabase
+      .from('print_runs')
+      .select('id, started_at, consumed_at, units_used, outcome, failure_reason, jobs ( id, ref, title )')
+      .eq('shop_id', shopId)
+      .eq('material_id', materialId)
+      .gt('units_used', 0),
+    supabase
+      .from('material_counts')
+      .select('id, counted_on, counted_qty, delta, note')
+      .eq('shop_id', shopId)
+      .eq('material_id', materialId),
+  ])
+  if (p.error) throw p.error
+  if (r.error) throw r.error
+  if (c.error) throw c.error
+  const out: StockEntry[] = [
+    ...((p.data ?? []) as any[]).map(
+      (x): StockEntry => ({
+        id: x.id,
+        kind: 'purchase',
+        on: String(x.purchased_on).slice(0, 10),
+        qty: Number(x.qty),
+        cost: Number(x.total_cost),
+        jobId: null,
+        jobRef: null,
+        jobTitle: null,
+        outcome: null,
+        counted: null,
+        note: [x.supplier, x.note].filter(Boolean).join(' · ') || null,
+      }),
+    ),
+    ...((r.data ?? []) as any[]).map(
+      (x): StockEntry => ({
+        id: x.id,
+        kind: 'print',
+        on: String(x.started_at ?? x.consumed_at ?? '').slice(0, 10),
+        qty: -Number(x.units_used),
+        cost: null,
+        jobId: x.jobs?.id ?? null,
+        jobRef: x.jobs?.ref ?? null,
+        jobTitle: x.jobs?.title ?? null,
+        outcome: x.outcome ?? null,
+        counted: null,
+        note: x.failure_reason ?? null,
+      }),
+    ),
+    ...((c.data ?? []) as any[]).map(
+      (x): StockEntry => ({
+        id: x.id,
+        kind: 'count',
+        on: String(x.counted_on).slice(0, 10),
+        qty: Number(x.delta),
+        cost: null,
+        jobId: null,
+        jobRef: null,
+        jobTitle: null,
+        outcome: null,
+        counted: Number(x.counted_qty),
+        note: x.note ?? null,
+      }),
+    ),
+  ]
+  return out.sort((a, b) => (a.on < b.on ? 1 : a.on > b.on ? -1 : 0))
 }
 
 /** See data.local.ts's recordMaterialPurchase. */

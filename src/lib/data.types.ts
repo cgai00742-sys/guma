@@ -815,6 +815,39 @@ export interface MaterialPurchaseInput {
   note: string | null
 }
 
+/** Somebody weighed the spool. See 0024_stock_counts.sql. */
+export interface StockCountInput {
+  countedOn: string
+  /** What is actually there, in the material's own unit. */
+  counted: number
+  note: string | null
+}
+
+/**
+ * One movement of one material: every reason on-hand has changed, in one
+ * list. Purchases add, prints take away (failed ones too -- they burned it),
+ * and counts correct the difference between what Guma believed and what
+ * the scale said.
+ */
+export interface StockEntry {
+  id: string
+  kind: 'purchase' | 'print' | 'count'
+  /** ISO date the movement belongs to. */
+  on: string
+  /** Signed, in the material's unit: + onto the shelf, − off it. */
+  qty: number
+  /** Purchases only. */
+  cost: number | null
+  /** Prints only: which project burned it, and whether it worked. */
+  jobId: string | null
+  jobRef: string | null
+  jobTitle: string | null
+  outcome: RunOutcome | null
+  /** Counts only: what the scale said. */
+  counted: number | null
+  note: string | null
+}
+
 /* ------------------------------------------------------------------ */
 /* What a project actually took                                        */
 /* ------------------------------------------------------------------ */

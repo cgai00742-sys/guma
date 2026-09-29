@@ -85,6 +85,8 @@ import type {
   QuoteStatus,
   RelatedProject,
   SellBranch,
+  StockCountInput,
+  StockEntry,
   ChangeCause,
   QuoteChange,
 } from './data.types'
@@ -113,6 +115,8 @@ export {
 export type {
   RelatedProject,
   SellBranch,
+  StockCountInput,
+  StockEntry,
   ChangeCause,
   QuoteChange,
   Shop,
@@ -376,6 +380,19 @@ export async function listMaterials(shopId: string): Promise<MaterialRow[]> {
 
 export async function saveSellBranch(shopId: string, branch: SellBranch | null): Promise<void> {
   return (await backend()).saveSellBranch(shopId, branch)
+}
+
+export async function recordStockCount(
+  shopId: string,
+  materialId: string,
+  actorId: string,
+  input: StockCountInput,
+): Promise<{ id: string; delta: number }> {
+  return (await backend()).recordStockCount(shopId, materialId, actorId, input)
+}
+
+export async function listMaterialLedger(shopId: string, materialId: string): Promise<StockEntry[]> {
+  return (await backend()).listMaterialLedger(shopId, materialId)
 }
 
 export async function saveMaterial(shopId: string, next: MaterialInput): Promise<MaterialRow> {
