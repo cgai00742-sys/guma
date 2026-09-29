@@ -184,6 +184,23 @@ export const QUESTIONS: Question[] = [
 
   /* ---- part two, for shops quoting clients ---------------------------- */
   {
+    // The setup checklist has always wanted an email or phone before it
+    // calls a quoting shop "set up" -- a quote with no way to reply to it --
+    // and no question ever asked for one. So a shop could answer every
+    // question here and still be told setup was unfinished, with nowhere
+    // in setup to finish it.
+    id: 'contact',
+    part: 2,
+    ask: 'How do clients reach you?',
+    why: 'It goes on every quote. A quote with no way to reply to it is a quote that does not come back.',
+    fields: [
+      { key: 'email', label: 'Email', kind: 'text', placeholder: 'you@yourshop.com' },
+      { key: 'phone', label: 'Phone', kind: 'text', placeholder: '(808) 555-0100' },
+    ],
+    when: quotes,
+    optional: true,
+  },
+  {
     id: 'deposit',
     part: 2,
     ask: 'What do you take up front?',
@@ -244,6 +261,30 @@ export function partOneDone(answers: Answers): boolean {
   return partOne().every((q) => q.fields.every((f) => (answers[f.key] ?? '').trim() !== ''))
 }
 
+/**
+ * What the app genuinely cannot work without -- the gate that opens setup
+ * at launch.
+ *
+ * Deliberately narrower than partOneDone. Where the shop is (a US state in
+ * particular) shapes hints, not arithmetic: a shop in Berlin has no state,
+ * and requiring one held it in the wizard forever. The gate asks only for
+ * what every price is built from -- a name, what power costs, a machine and
+ * its wear, a material and its cost, and what an hour is worth.
+ */
+export function essentialsDone(answers: Answers): boolean {
+  const has = (k: string) => (answers[k] ?? '').trim() !== ''
+  return (
+    has('name') &&
+    has('kwh') &&
+    has('pName') &&
+    has('pPrice') &&
+    has('pLife') &&
+    has('mName') &&
+    has('mPerKg') &&
+    has('designHourly')
+  )
+}
+
 /** Where to resume: the first unanswered question that applies. */
 export function firstUnanswered(answers: Answers): Question | null {
   return (
@@ -289,12 +330,17 @@ export function answersFrom(ctx: ShopContext): Answers {
     mPerKg: Number(material?.costPerUnit) > 0 ? String(Number(material!.costPerUnit) * 1000) : '',
     designHourly: rate(rc.design_hourly),
     finishingHourly: rate(rc.finishing_hourly),
+    email: str(shop.email),
+    phone: str(shop.phone),
     taxLabel: str(shop.tax_label),
-    taxPct: rate(shop.tax_pct),
+    // Zero is a real tax rate once the tax has a name (see setupPlan).
+    taxPct: str(shop.tax_label) ? String(Number(shop.tax_pct ?? 0)) : '',
     depositPct: rate(rc.deposit_pct),
     minimumOrder: rate(rc.minimum_order),
     markup: Number(rc.material_markup) > 1 ? String(rc.material_markup) : '',
-    branch: str((shop as { sell_branch?: string }).sell_branch),
+    // Stored since 0023. Before that the answer was thrown away, so every
+    // return to setup opened on this question again.
+    branch: str(shop.sell_branch),
     channels: '',
   }
 }

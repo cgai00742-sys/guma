@@ -76,6 +76,7 @@ import type {
   PartVariant,
   RelatedProject,
   JobKind,
+  SellBranch,
   PartInput,
   QuoteBuildInput,
   QuoteBuildRow,
@@ -472,6 +473,12 @@ export async function saveShopIdentity(shopId: string, next: ShopIdentityInput):
   )
   const rows = await d.select<Shop[]>('select * from shops where id = ?', [shopId])
   return rows[0]
+}
+
+/** How the shop mostly gets paid. See 0023_sell_branch.sql. */
+export async function saveSellBranch(shopId: string, branch: SellBranch | null): Promise<void> {
+  const d = await db()
+  await d.execute('update shops set sell_branch = ? where id = ?', [branch, shopId])
 }
 
 /**
@@ -2028,7 +2035,8 @@ export async function saveMaterial(shopId: string, next: MaterialInput): Promise
   if (next.id) {
     await d.execute(
       `update materials set name = ?, kind = ?, swatch = ?, unit = ?, cost_per_unit = ?,
-              sell_override = ?, on_hand = ?, reorder_at = ?, archived = ?
+              sell_override = ?, on_hand = coalesce(?, on_hand),
+              reorder_at = coalesce(?, reorder_at), archived = ?
        where id = ? and shop_id = ?`,
       [
         name,
@@ -2058,8 +2066,8 @@ export async function saveMaterial(shopId: string, next: MaterialInput): Promise
         next.unit,
         next.costPerUnit,
         next.sellOverride,
-        next.onHand,
-        next.reorderAt,
+        next.onHand ?? 0,
+        next.reorderAt ?? 0,
         next.archived ? 1 : 0,
       ],
     )

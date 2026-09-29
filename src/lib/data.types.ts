@@ -56,7 +56,12 @@ export interface Shop {
    *  "don't show this again". SQLite stores it as 0/1; data.local.ts
    *  coerces it to a real boolean on the way out. */
   show_welcome: boolean
+  /** How the shop mostly gets paid, as answered in setup. Null until
+   *  answered -- which decides which setup questions apply. */
+  sell_branch: SellBranch | null
 }
+
+export type SellBranch = 'clients' | 'selling' | 'both'
 
 export interface RateCardRow {
   id: string
@@ -779,8 +784,12 @@ export interface MaterialInput {
   unit: 'g' | 'ml'
   costPerUnit: number
   sellOverride: number | null
-  onHand: number
-  reorderAt: number
+  /** Null on an UPDATE means "leave the stock count alone". The setup
+   *  wizard edits a material's name and price and must never touch how
+   *  much of it is on the shelf -- it used to pass 0, which quietly wiped
+   *  the stock every time somebody re-answered the material question. */
+  onHand: number | null
+  reorderAt: number | null
   archived?: boolean
 }
 

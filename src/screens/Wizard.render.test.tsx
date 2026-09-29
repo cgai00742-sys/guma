@@ -32,12 +32,13 @@ const saveChannel = vi.fn(async (_shopId: string, _input: Record<string, unknown
   id: 'ch-1', name: 'Etsy', fee_pct: 9.5, fee_flat: 0.45, archived: 0,
 }))
 
+const saveSellBranch = vi.fn(async () => {})
 vi.mock('../lib/data', async () => {
   const types = await import('../lib/data.types')
   return {
     ...types,
     setupShop, saveShopIdentity, savePrinter, saveMaterial, saveRateCard,
-    saveShopQuoteTerms, createInHouseJob, listChannels, saveChannel,
+    saveShopQuoteTerms, createInHouseJob, listChannels, saveChannel, saveSellBranch,
   }
 })
 

@@ -118,6 +118,7 @@ import type {
   PartRow,
   PartVariant,
   RelatedProject,
+  SellBranch,
   PartInput,
   PartStatus,
   QuoteStatus,
@@ -1518,11 +1519,17 @@ export async function listMaterials(shopId: string): Promise<MaterialRow[]> {
   return ((data ?? []) as any[]).map(toMaterialRow)
 }
 
+/** See data.local.ts's saveSellBranch. */
+export async function saveSellBranch(shopId: string, branch: SellBranch | null): Promise<void> {
+  const { error } = await supabase.from('shops').update({ sell_branch: branch }).eq('id', shopId)
+  if (error) throw error
+}
+
 /** See data.local.ts's saveMaterial, including why on_hand is writable. */
 export async function saveMaterial(shopId: string, next: MaterialInput): Promise<MaterialRow> {
   const name = next.name.trim()
   if (!name) throw new Error('A material needs a name.')
-  const row = {
+  const row: Record<string, unknown> = {
     shop_id: shopId,
     name,
     kind: next.kind,
@@ -1530,10 +1537,11 @@ export async function saveMaterial(shopId: string, next: MaterialInput): Promise
     unit: next.unit,
     cost_per_unit: next.costPerUnit,
     sell_override: next.sellOverride,
-    on_hand: next.onHand,
-    reorder_at: next.reorderAt,
     archived: next.archived === true,
   }
+  // Null on an update leaves the stock alone -- see MaterialInput.onHand.
+  if (next.onHand != null || !next.id) row.on_hand = next.onHand ?? 0
+  if (next.reorderAt != null || !next.id) row.reorder_at = next.reorderAt ?? 0
   const query = next.id
     ? supabase.from('materials').update(row).eq('id', next.id).eq('shop_id', shopId)
     : supabase.from('materials').insert(row)

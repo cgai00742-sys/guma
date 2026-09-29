@@ -108,9 +108,18 @@ export function planFor({ shop, rateCard, printerRows, materials }: ShopSnapshot
   const sections: Section[] = []
 
   /* ---- who you are ---------------------------------------------------- */
+  // What applies depends on how the shop gets paid. A shop that only sells
+  // what it makes sends no quotes, so a contact line on a quote and the
+  // terms of a quote are not unfinished setup for it -- they are simply not
+  // its business. Asking anyway meant a selling shop could answer every
+  // question in setup and still be told it was not done. Unknown (null)
+  // is treated as quoting, the stricter reading, until it is answered.
+  const branch = (shop as { sell_branch?: string | null }).sell_branch ?? null
+  const quotes = branch !== 'selling'
+
   const identityMissing: string[] = []
   if (!filled(shop.name)) identityMissing.push('shop name')
-  if (!filled(shop.email) && !filled(shop.phone)) identityMissing.push('an email or phone')
+  if (quotes && !filled(shop.email) && !filled(shop.phone)) identityMissing.push('an email or phone')
   sections.push({
     id: 'identity',
     title: 'Your shop',
@@ -127,7 +136,10 @@ export function planFor({ shop, rateCard, printerRows, materials }: ShopSnapshot
   const placeMissing: string[] = []
   if (!filled(shop.currency)) placeMissing.push('currency')
   if (!filled(shop.address)) placeMissing.push('address')
-  if (!filled(shop.tax_label) || num(shop.tax_pct) === 0) placeMissing.push('tax name and rate')
+  // A named tax at 0% is an answer, not a gap: Oregon, Montana, a shop
+  // under a registration threshold. Requiring a non-zero rate meant those
+  // shops could never finish setup, whatever they typed.
+  if (!filled(shop.tax_label)) placeMissing.push('tax name and rate')
   sections.push({
     id: 'place',
     title: 'Where you are',
@@ -213,14 +225,17 @@ export function planFor({ shop, rateCard, printerRows, materials }: ShopSnapshot
 
   /* ---- the terms ------------------------------------------------------ */
   const termsMissing: string[] = []
-  if (num(rateCard.minimum_order) <= 0) termsMissing.push('shop minimum')
-  if (num(rateCard.deposit_pct) <= 0) termsMissing.push('deposit')
-  if (num(rateCard.material_markup) <= 1) termsMissing.push('material markup')
+  if (quotes) {
+    if (num(rateCard.minimum_order) <= 0) termsMissing.push('shop minimum')
+    if (num(rateCard.deposit_pct) <= 0) termsMissing.push('deposit')
+    if (num(rateCard.material_markup) <= 1) termsMissing.push('material markup')
+  }
+  if (branch === null) termsMissing.push('how you get paid')
   sections.push({
     id: 'terms',
     title: 'How you sell',
     decides: 'Your floor, what you take up front, and what you make on material.',
-    status: statusOf(termsMissing, num(rateCard.deposit_pct) > 0),
+    status: statusOf(termsMissing, !quotes || num(rateCard.deposit_pct) > 0),
     missing: termsMissing,
     cost:
       termsMissing.includes('material markup')

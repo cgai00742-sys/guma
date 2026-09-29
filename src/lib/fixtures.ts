@@ -40,6 +40,8 @@ export function makeShop(over: Partial<Shop> = {}): Shop {
     failure_pct: null,
     paper: null,
     show_welcome: false,
+    // A configured shop has answered how it gets paid (0023).
+    sell_branch: 'both',
     ...over,
   }
 }

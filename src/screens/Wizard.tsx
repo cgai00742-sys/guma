@@ -34,6 +34,7 @@ import {
   saveRateCard,
   saveShopIdentity,
   saveShopQuoteTerms,
+  saveSellBranch,
   setupShop,
   type ShopContext,
 } from '../lib/data'
@@ -86,6 +87,7 @@ export default function Wizard({
   fullName,
   onSaved,
   onDefer,
+  onLeave,
 }: {
   /** Null on a brand-new install: the shop does not exist yet. */
   ctx: ShopContext | null
@@ -93,6 +95,16 @@ export default function Wizard({
   onSaved: () => void
   /** Leaving without finishing. Absent when there is no app to fall back to. */
   onDefer?: () => void
+  /**
+   * Leaving for somewhere specific: the first job, the dashboard.
+   *
+   * The wizard used to call navigate() itself. That changes the URL -- and
+   * when App is rendering the wizard IN PLACE of the routes, which it does
+   * on first run, nothing on screen moves. "Log my first job" created the
+   * job and then sat there; "finish setup" did nothing. Leaving has to tell
+   * App to stop showing the wizard, so App owns it.
+   */
+  onLeave?: (to: string) => void
 }) {
   const navigate = useNavigate()
   const [answers, setAnswers] = useState<Answers>(() => (ctx ? answersFrom(ctx) : {}))
@@ -101,6 +113,17 @@ export default function Wizard({
   const [error, setError] = useState<string | null>(null)
   const [shopId, setShopId] = useState<string | null>(ctx?.shop.id ?? null)
   const [finished, setFinished] = useState(false)
+  /** Everything that applies has been through, part two included. The
+   *  landing after THAT is a different screen from the one after part one
+   *  -- showing the same "that is enough to start" again was what made the
+   *  end of setup look like nothing had happened. */
+  const [allDone, setAllDone] = useState(false)
+
+  /** Go somewhere, and stop being the wizard on the way. */
+  function leave(to: string) {
+    if (onLeave) onLeave(to)
+    else navigate(to)
+  }
 
   // Resume where the shop actually left off, once, on entry.
   useEffect(() => {
@@ -109,7 +132,13 @@ export default function Wizard({
     const idx = list.findIndex(
       (q) => !q.optional && q.fields.some((f) => (answersFrom(ctx)[f.key] ?? '').trim() === ''),
     )
-    setAt(idx === -1 ? 0 : idx)
+    // Nothing left that applies: open on the "setup is finished" landing
+    // rather than back at question one with every answer filled in, which
+    // read as being asked everything again.
+    if (idx === -1) {
+      setAllDone(true)
+      setFinished(true)
+    } else setAt(idx)
     // Deliberately only on mount: re-running this while somebody is typing
     // would yank them back to an earlier question mid-answer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -234,16 +263,20 @@ export default function Wizard({
     const id = await ensureShop()
     const shop = ctx?.shop
 
-    if (q.id === 'where' || q.id === 'power' || q.id === 'name') {
+    if (q.id === 'where' || q.id === 'power' || q.id === 'name' || q.id === 'contact') {
       await saveShopIdentity(id, {
         name: val('name').trim() || shop?.name || 'My shop',
         legal_name: shop?.legal_name ?? '',
-        address: val('address').trim(),
-        state: val('state'),
-        email: shop?.email ?? '',
-        phone: shop?.phone ?? '',
+        // Each of these reads the answer first and the stored value second:
+        // saving one question must never blank another's answer. The first
+        // version of this sent shop.email for every save, which was fine
+        // only because nothing ever asked for an email.
+        address: val('address').trim() || shop?.address || '',
+        state: val('state') || shop?.state || '',
+        email: val('email').trim() || shop?.email || '',
+        phone: val('phone').trim() || shop?.phone || '',
         license_no: shop?.license_no ?? '',
-        electricity_rate_kwh: orNull(val('kwh')),
+        electricity_rate_kwh: orNull(val('kwh')) ?? shop?.electricity_rate_kwh ?? null,
         currency,
         locale,
         paper: shop?.paper ?? '',
@@ -286,11 +319,12 @@ export default function Wizard({
         // filament is bought.
         costPerUnit: num(val('mPerKg')) / 1000,
         sellOverride: null,
-        // ctx.materials are MaterialRef (what pricing needs), which does not
-        // carry stock levels. A material edited here keeps whatever it had;
-        // a new one starts at nothing on hand, which is true.
-        onHand: 0,
-        reorderAt: 0,
+        // Null = leave the stock alone on an edit, nothing on hand for a new
+        // one. This used to be 0, and "a material edited here keeps whatever
+        // it had" was a comment, not a fact: re-answering this question
+        // wiped the shelf count every time.
+        onHand: existing ? null : 0,
+        reorderAt: existing ? null : 0,
       })
     }
 
@@ -323,6 +357,13 @@ export default function Wizard({
       }
     }
 
+    // How the shop gets paid. Asked, used to choose the questions after
+    // it, and until 0023 thrown away -- so every return to setup opened on
+    // it again and the questions hanging off it vanished.
+    if (q.id === 'branch' && ['clients', 'selling', 'both'].includes(val('branch'))) {
+      await saveSellBranch(id, val('branch') as 'clients' | 'selling' | 'both')
+    }
+
     if (q.id === 'tax' && ctx) {
       await saveShopQuoteTerms(id, {
         tax_label: val('taxLabel').trim() || ctx.shop.tax_label,
@@ -353,6 +394,7 @@ export default function Wizard({
       } else if (at < list.length - 1) {
         setAt(at + 1)
       } else {
+        setAllDone(true)
         setFinished(true)
       }
     } catch (e) {
@@ -368,7 +410,7 @@ export default function Wizard({
     try {
       const jobId = await createInHouseJob(shopId, { title: 'First job', brief: null })
       onSaved()
-      navigate(`/project/${jobId}`)
+      leave(`/project/${jobId}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setBusy(false)
@@ -386,10 +428,20 @@ export default function Wizard({
       <div className="wrap" style={{ paddingTop: 48, maxWidth: 560 }}>
         <div className="pane">
           <h2 style={{ marginBottom: 4 }}>
-            {partOneDone(answers) ? 'That is enough to start.' : 'Picked up where you left it.'}
+            {allDone
+              ? 'Setup is finished.'
+              : partOneDone(answers)
+                ? 'That is enough to start.'
+                : 'Picked up where you left it.'}
           </h2>
           <div style={{ fontSize: 13, lineHeight: '19px', color: 'var(--txt-2)', marginTop: 8 }}>
-            {partOneDone(answers) ? (
+            {allDone ? (
+              <>
+                You have been through everything that applies to how you work. Anything you
+                skipped stays on the banner on your dashboard, and every answer can be changed
+                under Shop settings — nothing here is locked in.
+              </>
+            ) : partOneDone(answers) ? (
               <>
                 Guma can now tell you what a job costs you — material, machine, wear and your own
                 hours. Log something you are working on and it will show you the number.
@@ -413,17 +465,51 @@ export default function Wizard({
             </div>
           )}
           {error && <div className="alert" style={{ marginTop: 12 }}><span>{error}</span></div>}
-          <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
-            <button type="button" className="btn primary" onClick={startFirstJob} disabled={busy}>
-              {busy ? 'Starting…' : 'Log my first job'}
-            </button>
-            {inPartTwo && (
-              <button type="button" className="btn" onClick={() => { setFinished(false); setAt(partOne().length) }} disabled={busy}>
+          {/* Three ways out, and every one of them goes somewhere. They
+              used to call navigate() from inside a wizard App was rendering
+              in place of the routes -- so the URL changed and the screen did
+              not. "Finish setup did nothing" was exactly that. */}
+          <div style={{ display: 'flex', gap: 8, marginTop: 20, flexWrap: 'wrap' }}>
+            {allDone ? (
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => leave('/dashboard')}
+                disabled={busy}
+              >
+                Go to my dashboard
+              </button>
+            ) : (
+              <button type="button" className="btn primary" onClick={startFirstJob} disabled={busy}>
+                {busy ? 'Starting…' : 'Log my first job'}
+              </button>
+            )}
+            {allDone && (
+              <button type="button" className="btn" onClick={startFirstJob} disabled={busy}>
+                {busy ? 'Starting…' : 'Log my first job'}
+              </button>
+            )}
+            {!allDone && inPartTwo && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setFinished(false)
+                  setAt(partOne().length)
+                }}
+                disabled={busy}
+              >
                 Keep setting up
               </button>
             )}
-            {onDefer && (
-              <button type="button" className="btn ghost" onClick={onDefer} disabled={busy} style={{ marginLeft: 'auto' }}>
+            {!allDone && (onLeave || onDefer) && (
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => (onLeave ? onLeave('/dashboard') : onDefer?.())}
+                disabled={busy}
+                style={{ marginLeft: 'auto' }}
+              >
                 Just look around
               </button>
             )}

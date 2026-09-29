@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { lazy, startTransition, Suspense, useCallback, useEffect, useState } from 'react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { isTauri } from '@tauri-apps/api/core'
@@ -15,7 +15,7 @@ import Shelf from './screens/Shelf'
 import QuoteDoc from './screens/QuoteDoc'
 import Closeout from './screens/Closeout'
 import WelcomeModal from './components/WelcomeModal'
-import { planFor } from './lib/setupPlan'
+import { answersFrom, essentialsDone } from './lib/wizard'
 import GlobalSearch from './components/GlobalSearch'
 
 // SignIn is the ONE screen that still statically imports supabase.ts (it
@@ -70,6 +70,16 @@ export default function App() {
   })
   const location = useLocation()
   const navigate = useNavigate()
+  /**
+   * The setup wizard, once it is on screen, stays on screen until somebody
+   * leaves it -- by an exit on the landing, "finish later", or a tab.
+   *
+   * Without this latch the wizard vanished out from under the person the
+   * moment their last part-one answer saved: the gate flipped, App drew
+   * the routes instead, and the landing -- "log my first job", "keep
+   * setting up", "just look around" -- was never seen.
+   */
+  const [setupOpen, setSetupOpen] = useState(false)
 
   /**
    * Leaving setup has to actually leave.
@@ -84,7 +94,6 @@ export default function App() {
    * So leaving does both: stop blocking, and go to the work.
    */
   const leaveSetup = useCallback((to = '/projects') => {
-    setSetupDeferred(true)
     try {
       localStorage.setItem('guma.setupDeferred', '1')
     } catch {
@@ -92,7 +101,19 @@ export default function App() {
       // is no worse than it was before -- and better than refusing to
       // leave the wizard because a preference could not be written.
     }
-    navigate(to)
+    // ONE transition, not three updates. React Router 7 applies a
+    // navigation inside startTransition, which is lower priority than a
+    // plain setState. So closing the wizard committed first, the routes
+    // rendered at the OLD address -- "/" on a first run -- and "/"
+    // redirected to the dashboard before the navigation landed, throwing
+    // it away. "Log my first job" created the job and showed the dashboard
+    // instead. Putting the close inside the same transition as the
+    // navigation makes them one render, at the new address.
+    startTransition(() => {
+      navigate(to)
+      setSetupOpen(false)
+      setSetupDeferred(true)
+    })
   }, [navigate])
 
   useEffect(() => {
@@ -138,6 +159,20 @@ export default function App() {
     if (desktop || session) void refresh()
     else setCtx(null)
   }, [desktop, session, refresh])
+
+  /**
+   * What forces the wizard open at launch: part one unanswered.
+   *
+   * It used to be the whole setup checklist, which included things no
+   * question asked for and optional things a shop may rationally skip. So
+   * a shop could answer everything, press the last button, and land back
+   * in the wizard at launch forever. Part one is what the app cannot price
+   * anything without; the rest is carried by the banner, not the doorway.
+   */
+  const mustSetup = !!ctx && !setupDeferred && !essentialsDone(answersFrom(ctx))
+  useEffect(() => {
+    if (mustSetup) setSetupOpen(true)
+  }, [mustSetup])
 
   if (!ready) return null
 
@@ -203,33 +238,15 @@ export default function App() {
   }
 
   /**
-   * A shop that is not set up opens on setting itself up.
-   *
-   * Having a shop row is not the same as being ready to price anything.
-   * The old first run created the row from three thin steps and then
-   * dropped somebody onto an empty board with no electricity rate, no
-   * material cost and no machine wattage -- a program that looks like it
-   * works while reporting break-even machine time on every quote.
-   *
-   * So the guide is the front door until the numbers behind it are real.
-   * It is not modal and not a gate: "Finish later" goes straight through
-   * for this session, and the banner on Projects carries the rest. But it
-   * opens on launch, every launch, until the shop is actually configured,
-   * because the alternative is a setup screen nobody ever goes looking for.
+   * A shop that is not set up opens on setting itself up -- until part one
+   * is answered (see mustSetup above). The rest of the checklist lives on
+   * the banner on the Dashboard and Projects, which is where "finish
+   * setting up" leads.
    */
-  const plan = ctx
-    ? planFor({
-        shop: ctx.shop,
-        rateCard: ctx.rateCard,
-        printerRows: ctx.printerRows,
-        materials: ctx.materials as never,
-      })
-    : null
-
   // Once the shop is actually configured the deferral has no job left, and
   // a stale flag would silently suppress the wizard for a shop that later
   // lost a rate or a machine.
-  if (plan?.done && setupDeferred) {
+  if (ctx && essentialsDone(answersFrom(ctx)) && setupDeferred) {
     try {
       localStorage.removeItem('guma.setupDeferred')
     } catch {
@@ -237,7 +254,7 @@ export default function App() {
     }
   }
 
-  if (ctx && plan && !plan.done && !setupDeferred) {
+  if (ctx && (mustSetup || setupOpen)) {
     return (
       <>
         <WelcomeModal
@@ -262,6 +279,7 @@ export default function App() {
             fullName={ownerName}
             onSaved={refresh}
             onDefer={() => leaveSetup()}
+            onLeave={(to) => leaveSetup(to)}
           />
         </main>
       </>
@@ -376,6 +394,7 @@ export default function App() {
                   // Reached on purpose from the banner, so leaving means
                   // going back to the work rather than falling through.
                   onDefer={() => leaveSetup()}
+                  onLeave={(to) => leaveSetup(to)}
                 />
               }
             />
