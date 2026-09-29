@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-r
 import type { Session } from '@supabase/supabase-js'
 import { isTauri } from '@tauri-apps/api/core'
 import { loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
-import { isDemo } from './lib/workspace'
+import { isDemo, switchWorkspace } from './lib/workspace'
 import Wizard from './screens/Wizard'
 import Settings from './screens/Settings'
 import Intake from './screens/Intake'
@@ -288,6 +288,27 @@ export default function App() {
             <div className="attn crit" style={{ marginTop: 16 }}>
               <b>Could not load the shop.</b>
               <div style={{ marginTop: 6, fontFamily: 'var(--mono)', fontSize: 11 }}>{ctxError}</div>
+              {/* The way out, when the demo is what broke. The chosen
+                  workspace is remembered across launches, so a demo that
+                  cannot open is a demo the app reopens every time -- with
+                  no route back to the real shop, because every route lives
+                  behind the shop that failed to load. That is what "the app
+                  is down" looked like. Your shop is a different file and was
+                  never touched. */}
+              {isDemo() && (
+                <div style={{ marginTop: 12, fontSize: 12, lineHeight: 1.6 }}>
+                  This is the demo shop, which is a separate file — your own shop is untouched.
+                  <div className="btnrow" style={{ marginTop: 8 }}>
+                    <button
+                      type="button"
+                      className="btn sm primary"
+                      onClick={() => switchWorkspace('shop')}
+                    >
+                      Back to my shop
+                    </button>
+                  </div>
+                </div>
+              )}
               {/* The one startup failure with a known, specific fix. Showing
                   the raw sqlx string and nothing else is how a two-minute
                   repair becomes a bug report. */}

@@ -1,10 +1,13 @@
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-  // Every migration here is the SQLite translation of one file in
-  // supabase/migrations/. No RLS, no auth.uid() - a local install has
-  // exactly one tenant, so the policies that existed to isolate shops
-  // sharing a Postgres database simply have nothing to do here.
-  let migrations = vec![
+/// Every migration, in order. A function rather than a value because the
+/// plugin takes the list by value, once per database file, and there are
+/// two files -- see `run()`.
+///
+/// Every migration here is the SQLite translation of one file in
+/// cloud/supabase/migrations/. No RLS, no auth.uid() - a local install has
+/// exactly one tenant, so the policies that existed to isolate shops
+/// sharing a Postgres database simply have nothing to do here.
+fn migrations() -> Vec<tauri_plugin_sql::Migration> {
+  vec![
     tauri_plugin_sql::Migration {
       version: 1,
       description: "initial schema",
@@ -131,12 +134,26 @@ pub fn run() {
       sql: include_str!("../migrations/0021_archive_and_family.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
-  ];
+  ]
+}
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
   tauri::Builder::default()
     .plugin(
+      // BOTH database files get the schema.
+      //
+      // The plugin only migrates a file it was told about. The demo
+      // workspace (guma-demo.db, see src/lib/workspace.ts) was never
+      // registered, so opening it gave a database with no tables at all:
+      // "no such table: shops" on launch, and because the chosen workspace
+      // is remembered, on every launch after that. The tests could not see
+      // it -- their stand-in for the plugin migrates whatever file it is
+      // handed. workspaceFiles.test.ts now reads this file and fails if a
+      // workspace is added without being registered here.
       tauri_plugin_sql::Builder::default()
-        .add_migrations("sqlite:guma.db", migrations)
+        .add_migrations("sqlite:guma.db", migrations())
+        .add_migrations("sqlite:guma-demo.db", migrations())
         .build(),
     )
     .setup(|app| {

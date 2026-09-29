@@ -27,7 +27,7 @@ export type Workspace = 'shop' | 'demo'
 
 const KEY = 'guma.workspace'
 
-const FILES: Record<Workspace, string> = {
+export const FILES: Record<Workspace, string> = {
   shop: 'guma.db',
   // Beside the real one, never instead of it.
   demo: 'guma-demo.db',
