@@ -9,6 +9,7 @@
  * see supabase.ts) never happens in the desktop build once that build stops
  * carrying Supabase secrets.
  */
+import { describePartEdit, describeProjectEdits, type ProjectBefore } from './edits'
 import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
@@ -1349,6 +1350,7 @@ export async function updateProjectFields(
   shopId: string,
   jobId: string,
   fields: ProjectFieldsInput,
+  actorId: string | null = null,
 ): Promise<void> {
   const map: Record<string, string> = {
     brief: 'brief',
@@ -1368,8 +1370,22 @@ export async function updateProjectFields(
   }
   if (Object.keys(row).length === 0) return
   row.updated_at = new Date().toISOString()
+  const { data: before, error: readErr } = await supabase
+    .from('jobs')
+    .select('title, brief, poc, needed_by, window_from, window_locked, at_risk, delivery_on, delivery_how, priority')
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+    .single()
+  if (readErr) throw readErr
   const { error } = await supabase.from('jobs').update(row).eq('id', jobId).eq('shop_id', shopId)
   if (error) throw error
+  const said = describeProjectEdits(before as ProjectBefore, fields)
+  if (said.length > 0) {
+    const { error: evErr } = await supabase
+      .from('job_events')
+      .insert({ job_id: jobId, actor_id: actorId, kind: 'edit', body: said.join(' ') })
+    if (evErr) throw evErr
+  }
 }
 
 /**
@@ -1941,17 +1957,42 @@ export async function choosePartVariant(
   if (error) throw error
 }
 
-export async function updatePart(shopId: string, partId: string, input: PartInput): Promise<void> {
+export async function updatePart(
+  shopId: string,
+  partId: string,
+  input: PartInput,
+  actorId: string | null = null,
+): Promise<void> {
   const label = input.label.trim()
   if (!label) throw new Error('A part needs a name.')
   const qty = Math.floor(Number(input.qty))
   if (!Number.isFinite(qty) || qty < 1) throw new Error('A part needs at least one copy.')
+  const note = input.note?.trim() || null
+  const { data: before, error: readErr } = await supabase
+    .from('job_parts')
+    .select('job_id, label, qty, note')
+    .eq('id', partId)
+    .eq('shop_id', shopId)
+    .single()
+  if (readErr) throw readErr
   const { error } = await supabase
     .from('job_parts')
-    .update({ label, qty, note: input.note ?? null, updated_at: new Date().toISOString() })
+    .update({ label, qty, note, updated_at: new Date().toISOString() })
     .eq('id', partId)
     .eq('shop_id', shopId)
   if (error) throw error
+  const said = describePartEdit(before, { label, qty, note })
+  if (said.length > 0) {
+    const body = said.join(' ')
+    const { error: pErr } = await supabase
+      .from('part_events')
+      .insert({ part_id: partId, job_id: before.job_id, kind: 'note', note: body, actor_id: actorId })
+    if (pErr) throw pErr
+    const { error: jErr } = await supabase
+      .from('job_events')
+      .insert({ job_id: before.job_id, actor_id: actorId, kind: 'edit', body })
+    if (jErr) throw jErr
+  }
 }
 
 export async function deletePart(shopId: string, partId: string): Promise<void> {

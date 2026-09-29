@@ -341,8 +341,9 @@ export async function updateProjectFields(
   shopId: string,
   jobId: string,
   fields: ProjectFieldsInput,
+  actorId: string | null = null,
 ): Promise<void> {
-  return (await backend()).updateProjectFields(shopId, jobId, fields)
+  return (await backend()).updateProjectFields(shopId, jobId, fields, actorId)
 }
 
 export async function listClients(shopId: string): Promise<ClientRow[]> {
@@ -468,8 +469,9 @@ export async function updatePart(
   shopId: string,
   partId: string,
   input: PartInput,
+  actorId: string | null = null,
 ): Promise<void> {
-  return (await backend()).updatePart(shopId, partId, input)
+  return (await backend()).updatePart(shopId, partId, input, actorId)
 }
 
 export async function choosePartVariant(

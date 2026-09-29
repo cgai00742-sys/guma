@@ -54,6 +54,7 @@ import {
   listJobs,
   type JobListRow,
   deletePart,
+  updatePart,
   choosePartVariant,
   setPartStatus,
   deletePrintRun,
@@ -258,7 +259,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   async function patch(fields: ProjectFieldsInput) {
     setBusy(true)
     try {
-      await updateProjectFields(ctx.shop.id, jobId, fields)
+      await updateProjectFields(ctx.shop.id, jobId, fields, ctx.profile.id)
       await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -417,7 +418,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
 
       {/* ---- head: who, what, where in the process, what's wrong ---- */}
       <div className="dlg-title" style={{ alignItems: 'baseline' }}>
-        <h3 style={{ fontSize: 18 }}>{detail.title}</h3>
+        <TitleEditor title={detail.title} busy={busy} onSave={(title) => patch({ title })} />
         <span className="pmeta">
           {detail.ref} · {detail.client.name} · {CLIENT_KIND_LABEL[detail.client.kind]}
           {detail.facts.poc ? ` · ${detail.facts.poc}` : ''}
@@ -1103,7 +1104,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
               <div key={e.id} className="upd">
                 <div className="m">
                   {e.actorName ?? 'Someone'} · {e.at.slice(0, 10)}
-                  {e.kind === 'phase_change' ? ' · stage change' : ''}
+                  {e.kind === 'phase_change' ? ' · stage change' : e.kind === 'edit' ? ' · edit' : ''}
                 </div>
                 {e.kind === 'phase_change'
                   ? `Moved from ${label(e.fromPhase ?? 'intake')} to ${label(e.toPhase ?? 'intake')}.`
@@ -2918,6 +2919,7 @@ function BuildSheet({
   // whatever you click next. See rowAnchor.ts.
   const holdRow = useRowAnchor(openId)
   const [why, setWhy] = useState('')
+  const [editId, setEditId] = useState<string | null>(null)
 
   async function guard(fn: () => Promise<unknown>) {
     setSaving(true)
@@ -3107,6 +3109,16 @@ function BuildSheet({
                               {st === 'printed' ? 'Printed' : st === 'passed' ? 'Pass' : 'Send back'}
                             </button>
                           ))}
+                        <button
+                          type="button"
+                          className="linkbtn"
+                          style={{ fontSize: 10 }}
+                          disabled={busy || saving}
+                          aria-label={`Edit ${p.label}`}
+                          onClick={() => setEditId(editId === p.id ? null : p.id)}
+                        >
+                          edit
+                        </button>
                         {!locked && (
                           <button
                             type="button"
@@ -3121,6 +3133,23 @@ function BuildSheet({
                       </div>
                     </td>
                   </tr>
+                  {editId === p.id && (
+                    <tr>
+                      <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
+                        <PartEditor
+                          part={p}
+                          busy={busy || saving}
+                          onCancel={() => setEditId(null)}
+                          onSave={(input) =>
+                            guard(async () => {
+                              await updatePart(ctx.shop.id, p.id, input, ctx.profile.id)
+                              setEditId(null)
+                            })
+                          }
+                        />
+                      </td>
+                    </tr>
+                  )}
                   {reprintFor === p.id && (
                     <tr>
                       <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
@@ -4076,5 +4105,133 @@ function MadeSection({
         )}
       </div>
     </section>
+  )
+}
+
+/**
+ * The project's name, renamable from the header at any stage.
+ *
+ * It used to be editable only inside "The brief", which is folded shut on a
+ * delivered project -- so a finished project looked impossible to rename.
+ * Every rename is logged to Activity by the data layer.
+ */
+function TitleEditor({
+  title,
+  busy,
+  onSave,
+}: {
+  title: string
+  busy: boolean
+  onSave: (title: string) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(title)
+  if (!editing) {
+    return (
+      <h3 style={{ fontSize: 18 }}>
+        {title}{' '}
+        <button
+          type="button"
+          className="linkbtn"
+          style={{ fontSize: 11, fontWeight: 400 }}
+          aria-label="Rename project"
+          onClick={() => {
+            setDraft(title)
+            setEditing(true)
+          }}
+        >
+          rename
+        </button>
+      </h3>
+    )
+  }
+  const save = async () => {
+    const v = draft.trim()
+    if (v && v !== title) await onSave(v)
+    setEditing(false)
+  }
+  return (
+    <form
+      style={{ display: 'flex', gap: 6, alignItems: 'center' }}
+      onSubmit={(e) => {
+        e.preventDefault()
+        void save()
+      }}
+    >
+      <input
+        aria-label="Project name"
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setEditing(false)
+        }}
+        style={{ fontSize: 16, minWidth: 260 }}
+      />
+      <button type="submit" className="btn sm" disabled={busy || !draft.trim()}>
+        Save name
+      </button>
+      <button type="button" className="btn sm ghost" onClick={() => setEditing(false)}>
+        Cancel
+      </button>
+    </form>
+  )
+}
+
+/** Rename a part, change its copies or its note. Logged to the part's own
+ *  history and to the project's Activity. */
+function PartEditor({
+  part,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  part: PartRow
+  busy: boolean
+  onSave: (input: { label: string; qty: number; note: string | null }) => Promise<void>
+  onCancel: () => void
+}) {
+  const [label, setLabel] = useState(part.label)
+  const [qty, setQty] = useState(String(part.qty))
+  const [note, setNote] = useState(part.note ?? '')
+  return (
+    <form
+      style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
+      onSubmit={(e) => {
+        e.preventDefault()
+        void onSave({ label, qty: Number(qty), note: note.trim() || null })
+      }}
+    >
+      <div className="fld" style={{ margin: 0, flex: 2 }}>
+        <label className="lbl" htmlFor={`pe-label-${part.id}`}>
+          Part name
+        </label>
+        <input id={`pe-label-${part.id}`} value={label} onChange={(e) => setLabel(e.target.value)} />
+      </div>
+      <div className="fld" style={{ margin: 0, width: 80 }}>
+        <label className="lbl" htmlFor={`pe-qty-${part.id}`}>
+          Copies
+        </label>
+        <input
+          id={`pe-qty-${part.id}`}
+          type="number"
+          min={1}
+          value={qty}
+          onChange={(e) => setQty(e.target.value)}
+        />
+      </div>
+      <div className="fld" style={{ margin: 0, flex: 3 }}>
+        <label className="lbl" htmlFor={`pe-note-${part.id}`}>
+          Note
+        </label>
+        <input id={`pe-note-${part.id}`} value={note} onChange={(e) => setNote(e.target.value)} />
+      </div>
+      <button type="submit" className="btn sm" disabled={busy || !label.trim()}>
+        Save part
+      </button>
+      <button type="button" className="btn sm ghost" onClick={onCancel}>
+        Cancel
+      </button>
+    </form>
   )
 }

@@ -243,6 +243,27 @@ describe('what happens to a project after it is finished', () => {
     return { data, shopId, ctx, jobId }
   }
 
+  it('can still be renamed once delivered, and every edit lands in Activity', async () => {
+    const { data, shopId, ctx, jobId } = await finished()
+    const partId = await data.addPart(shopId, jobId, ctx.profile.id, { label: 'Maui', qty: 1 })
+    await data.updateProjectFields(shopId, jobId, { title: 'Maui — 1:250k relief' }, ctx.profile.id)
+    await data.updatePart(shopId, partId, { label: 'Maui relief tile', qty: 2 }, ctx.profile.id)
+    // Saving the same value again is not an edit and must not clutter the log.
+    await data.updateProjectFields(shopId, jobId, { title: 'Maui — 1:250k relief' }, ctx.profile.id)
+
+    const detail = await data.loadProjectDetail(shopId, jobId)
+    expect(detail.title).toBe('Maui — 1:250k relief')
+    expect(detail.phase).toBe('delivered')
+    const edits = detail.events.filter((e) => e.kind === 'edit').map((e) => e.body)
+    expect(edits).toHaveLength(2)
+    expect(edits).toContain('Renamed from "Keychain run" to "Maui — 1:250k relief".')
+    expect(edits).toContain('Part renamed from "Maui" to "Maui relief tile". "Maui relief tile" copies: 1 → 2.')
+    expect(detail.events.find((e) => e.kind === 'edit')?.actorName).toBe('CG')
+    const part = detail.parts.find((p) => p.id === partId)!
+    expect(part.label).toBe('Maui relief tile')
+    expect(part.history.some((h) => (h.note ?? '').startsWith('Part renamed'))).toBe(true)
+  })
+
   it('files it off the board without deleting anything or stopping any figure', async () => {
     const { data, shopId, ctx, jobId } = await finished()
     await data.archiveProject(shopId, jobId, ctx.profile.id, true)

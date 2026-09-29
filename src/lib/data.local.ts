@@ -22,6 +22,7 @@
  * Treat it as a strong draft, not a proven one, until Phase 4's parity task
  * is checked off.
  */
+import { describePartEdit, describeProjectEdits, type ProjectBefore } from './edits'
 import Database from '@tauri-apps/plugin-sql'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
@@ -1717,6 +1718,7 @@ export async function updateProjectFields(
   shopId: string,
   jobId: string,
   fields: ProjectFieldsInput,
+  actorId: string | null = null,
 ): Promise<void> {
   const map: Record<string, string> = {
     brief: 'brief',
@@ -1741,11 +1743,26 @@ export async function updateProjectFields(
   if (sets.length === 0) return
   sets.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`)
   const d = await db()
+  const [before] = await d.select<ProjectBefore[]>(
+    `select title, brief, poc, needed_by, window_from, window_locked, at_risk,
+            delivery_on, delivery_how, priority
+       from jobs where id = ? and shop_id = ?`,
+    [jobId, shopId],
+  )
+  if (!before) throw new Error('That project is not in this shop.')
   await d.execute(`update jobs set ${sets.join(', ')} where id = ? and shop_id = ?`, [
     ...args,
     jobId,
     shopId,
   ])
+  // Every edit after creation is on the record: who changed what, from what.
+  const said = describeProjectEdits(before, fields)
+  if (said.length > 0) {
+    await d.execute(
+      `insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`,
+      [jobId, actorId, said.join(' ')],
+    )
+  }
 }
 
 /**
@@ -2544,18 +2561,37 @@ export async function updatePart(
   shopId: string,
   partId: string,
   input: PartInput,
+  actorId: string | null = null,
 ): Promise<void> {
   const label = input.label.trim()
   if (!label) throw new Error('A part needs a name.')
   const qty = Math.floor(Number(input.qty))
   if (!Number.isFinite(qty) || qty < 1) throw new Error('A part needs at least one copy.')
+  const note = input.note?.trim() || null
   const d = await db()
+  const [before] = await d.select<{ job_id: string; label: string; qty: number; note: string | null }[]>(
+    'select job_id, label, qty, note from job_parts where id = ? and shop_id = ?',
+    [partId, shopId],
+  )
+  if (!before) throw new Error('That part is not in this shop.')
   await d.execute(
     `update job_parts set label = ?, qty = ?, note = ?,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
      where id = ? and shop_id = ?`,
-    [label, qty, input.note ?? null, partId, shopId],
+    [label, qty, note, partId, shopId],
   )
+  const said = describePartEdit(before, { label, qty, note })
+  if (said.length > 0) {
+    const body = said.join(' ')
+    await d.execute(
+      `insert into part_events (part_id, job_id, kind, note, actor_id) values (?, ?, 'note', ?, ?)`,
+      [partId, before.job_id, body, actorId],
+    )
+    await d.execute(
+      `insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`,
+      [before.job_id, actorId, body],
+    )
+  }
 }
 
 /** Remove a part. Its history goes with it — there is nothing left to be
