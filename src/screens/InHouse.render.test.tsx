@@ -330,3 +330,68 @@ describe('the whole loop', () => {
     expect(kept).toBeGreaterThan(Number(product.design_cost))
   })
 })
+
+describe('a master program — BathyTopo', () => {
+  /**
+   * CG's real structure: BathyTopo holds the Hawaiian Islands, Fiji and
+   * French Polynesia, and the Hawaiian Islands hold the islands already
+   * printed. Walked through the screen, because the last two bugs in this
+   * area were both "it works in the data and cannot be seen".
+   */
+  it('shows up on the board as live work, not a draft', async () => {
+    const { ctx, data } = await seedShop()
+    const bathy = await data.createInHouseJob(ctx.shop.id, { title: 'BathyTopo' })
+    await renderProject(bathy, ctx)
+    await screen.findByText('BathyTopo')
+    expect(screen.queryByText(/Saved as a draft/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /take it into intake/i })).toBeNull()
+  })
+
+  it('starts a sub-project already filed inside it', async () => {
+    const { ctx, data } = await seedShop()
+    const bathy = await data.createInHouseJob(ctx.shop.id, { title: 'BathyTopo' })
+    const user = userEvent.setup()
+    await renderProject(bathy, ctx)
+
+    await user.type(await screen.findByLabelText(/start a project inside BathyTopo/i), 'Fiji')
+    await user.click(screen.getByRole('button', { name: /^start it$/i }))
+
+    await waitFor(async () => {
+      const rows = (await currentDb.select(
+        "select title, related_to, taken_in_at from jobs where title = 'Fiji'",
+      )) as { title: string; related_to: string; taken_in_at: string | null }[]
+      expect(rows).toHaveLength(1)
+      expect(rows[0].related_to).toBe(bathy)
+      expect(rows[0].taken_in_at).not.toBeNull()
+    })
+  })
+
+  it('adds up the whole program, islands included, and draws the path back up', async () => {
+    const { ctx, data } = await seedShop()
+    const bathy = await data.createInHouseJob(ctx.shop.id, { title: 'BathyTopo' })
+    const hi = await data.createInHouseJob(ctx.shop.id, { title: 'Hawaiian Islands', relatedTo: bathy })
+    const oahu = await data.createInHouseJob(ctx.shop.id, { title: 'Oʻahu', relatedTo: hi })
+    await data.recordPrintRun(ctx.shop.id, oahu, ctx.profile.id, {
+      printerId: ctx.printers[0].id,
+      materialId: ctx.materials[0].id,
+      unitsUsed: 410,
+      hours: 18,
+      outcome: 'success',
+      failureReason: null,
+      note: null,
+      startedAt: '2026-08-14',
+    })
+
+    await renderProject(bathy, ctx)
+    // The region is listed, with the island's print counted inside it.
+    await screen.findByRole('link', { name: 'Hawaiian Islands' })
+    expect(screen.getAllByText('410 g').length).toBeGreaterThan(0)
+    expect(screen.getByText(/1 inside, included/)).toBeDefined()
+
+    cleanup()
+    await renderProject(oahu, ctx)
+    // From the island, the way back up is one click per level.
+    expect(await screen.findByRole('link', { name: 'BathyTopo' })).toBeDefined()
+    expect(screen.getByRole('link', { name: 'Hawaiian Islands' })).toBeDefined()
+  })
+})

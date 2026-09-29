@@ -63,6 +63,7 @@ import {
   recordPrintRun,
   setQuoteStatus,
   takeProjectIn,
+  createInHouseJob,
   deleteProject,
   recordPayment,
   setGateItem,
@@ -114,6 +115,14 @@ import { makeMoney } from '../lib/pricing'
 import { todayISO, formatDate } from '../lib/dates'
 import { startBy } from '../lib/schedule'
 import { defaultOpen, readFolds, writeFolds, type FoldScope } from '../lib/folds'
+import {
+  ancestorsOf,
+  childrenOf,
+  descendantsOf,
+  eligibleParents,
+  pathLabel,
+  programTotals,
+} from '../lib/programs'
 import { buildComparison, type Comparison } from '../lib/actuals'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
@@ -170,10 +179,18 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   const rates = useMemo(() => toRateSet(ctx.rateCard, ctx.shop), [ctx.rateCard, ctx.shop])
   const { money } = useMemo(() => makeMoney(rates.currency, rates.locale), [rates])
 
+  /** Every project, for the program tree -- the path above this one and
+   *  everything under it. See lib/programs.ts. */
+  const [allRows, setAllRows] = useState<JobListRow[] | null>(null)
+
   const reload = useCallback(async () => {
     try {
-      const d = await loadProjectDetail(ctx.shop.id, jobId)
+      const [d, rows] = await Promise.all([
+        loadProjectDetail(ctx.shop.id, jobId),
+        listJobs(ctx.shop.id),
+      ])
       setDetail(d)
+      setAllRows(rows)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -382,9 +399,20 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   return (
     <div className="wrap" style={{ paddingTop: 16, paddingBottom: 96 }}>
       <div style={{ marginBottom: 10 }}>
-        <Link to="/projects" className="linkbtn" style={{ fontSize: 12 }}>
+        <Link to="/projects" className="linkbtn" style={{ fontSize: 12, width: 'auto', display: 'inline' }}>
           ← Projects
         </Link>
+        {/* Where this lives in a program. Each step is a link, so getting
+            from Oʻahu back up to BathyTopo is one click, not a search. */}
+        {allRows &&
+          ancestorsOf(allRows, detail.jobId).map((a) => (
+            <span key={a.jobId} style={{ fontSize: 12, color: 'var(--txt-3)' }}>
+              {' › '}
+              <Link to={`/project/${a.jobId}`} style={{ color: 'var(--txt-2)' }}>
+                {a.title}
+              </Link>
+            </span>
+          ))}
       </div>
 
       {/* ---- head: who, what, where in the process, what's wrong ---- */}
@@ -489,7 +517,16 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       )}
 
       {/* ---- the family ---- */}
-      <Family ctx={ctx} detail={detail} busy={busy} onChanged={reload} setError={setError} />
+      <Program
+        ctx={ctx}
+        detail={detail}
+        rows={allRows}
+        busy={busy}
+        open={fold.isOpen('program')}
+        onToggle={(o) => fold.set('program', o)}
+        onChanged={reload}
+        setError={setError}
+      />
 
       {/* ---- what it came to, once it is finished ---- */}
       {detail.phase === 'delivered' && (
@@ -2555,63 +2592,66 @@ function Closeout({
 }
 
 /**
- * Which project paid for the design, and what else came off it.
+ * The program this project belongs to, and the one it runs.
  *
- * Asked for directly: "this project needs a way to be linked to a new
- * project that is related to the same design hours put in. For example if
- * I print multiple other files for this project, or use a different set of
- * files for this project then they need to link to this one."
+ * CG: "BathyTopo be the master program and then I can create sub programs
+ * for the Hawaiian Islands, Fiji, French Polynesia, etc... linking old and
+ * new programs under one." So this does three jobs, in the order a person
+ * needs them:
  *
- * The shape that matters is what it does NOT do. It does not copy the
- * design hours onto the follow-on and it does not re-charge them. The
- * hours were spent once, on one project, and every other member of the
- * family can see that without paying for it again -- which is why a shop's
- * second run of the same part earns more than its first, and the thing
- * that gets lost when the two are separate projects with no thread
- * between them.
+ *   1. WHERE AM I -- the path above this project, each step a link.
+ *   2. WHAT IS IN HERE -- every project under this one, with what each has
+ *      cost and made, and one total for the whole program. The totals ADD;
+ *      nothing is copied between members, so an hour logged on BathyTopo
+ *      is counted once, on BathyTopo.
+ *   3. CHANGE IT -- start a sub-project already filed under this one, move
+ *      this project under another, or take it out.
+ *
+ * The tree is rebuilt from the project list every time (lib/programs.ts),
+ * so it cannot go stale and needs nothing from either backend beyond one
+ * column.
  */
-function Family({
+function Program({
   ctx,
   detail,
+  rows,
   busy,
+  open,
+  onToggle,
   onChanged,
   setError,
 }: {
   ctx: ShopContext
   detail: ProjectDetail
+  rows: JobListRow[] | null
   busy: boolean
+  open: boolean
+  onToggle: (open: boolean) => void
   onChanged: () => Promise<void>
   setError: (m: string | null) => void
 }) {
-  const [picking, setPicking] = useState(false)
-  const [options, setOptions] = useState<JobListRow[] | null>(null)
+  const navigate = useNavigate()
   const [saving, setSaving] = useState(false)
+  const [newTitle, setNewTitle] = useState('')
+  const [moving, setMoving] = useState(false)
+  const [filter, setFilter] = useState('')
 
-  const parent = detail.relatedTo
-  const kids = detail.related
-  const familyDesign =
-    (parent?.designHours ?? 0) +
-    detail.actuals.designHours +
-    kids.reduce((a, k) => a + k.designHours, 0)
+  if (!rows) return null
+  const id = detail.jobId
+  const kids = childrenOf(rows, id)
+  const inside = descendantsOf(rows, id)
+  const path = ancestorsOf(rows, id)
+  const parent = path[path.length - 1] ?? null
+  const total = programTotals(rows, id)
+  const g = (n: number) => `${Math.round(n)} g`
+  const h = (n: number) => `${Math.round(n * 10) / 10} h`
+  const { money } = makeMoney(ctx.shop.currency, ctx.shop.locale)
 
-  async function openPicker() {
-    setPicking(true)
-    setError(null)
-    if (options) return
-    try {
-      const rows = await listJobs(ctx.shop.id)
-      setOptions(rows.filter((r) => r.jobId !== detail.jobId))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  async function link(to: string | null) {
+  async function guard(fn: () => Promise<unknown>) {
     setSaving(true)
     setError(null)
     try {
-      await setRelatedProject(ctx.shop.id, detail.jobId, to)
-      setPicking(false)
+      await fn()
       await onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -2620,107 +2660,221 @@ function Family({
     }
   }
 
-  const row = (
-    r: { jobId: string; ref: string; title: string; designHours: number },
-    what: string,
-  ) => (
-    <div className="flagrow" key={r.jobId}>
-      <Link to={`/project/${r.jobId}`} className="pn" style={{ textDecoration: 'none' }}>
-        {r.ref} · {r.title}
-      </Link>
-      <span className="pmeta" style={{ marginLeft: 'auto' }}>
-        {what}
-        {r.designHours > 0 && ` · ${Math.round(r.designHours * 10) / 10} h of design`}
-      </span>
-    </div>
+  async function startSub() {
+    const title = newTitle.trim()
+    if (!title) return
+    setSaving(true)
+    setError(null)
+    try {
+      const newId = await createInHouseJob(ctx.shop.id, { title, relatedTo: id })
+      setNewTitle('')
+      navigate(`/project/${newId}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const options = eligibleParents(rows, id).filter((r) =>
+    filter.trim()
+      ? `${r.title} ${r.ref} ${pathLabel(rows, r.jobId) ?? ''}`
+          .toLowerCase()
+          .includes(filter.trim().toLowerCase())
+      : true,
   )
 
   return (
-    <details className="sec fold" data-fold="family" style={{ marginTop: 18 }}>
+    <details
+      className="sec fold"
+      data-fold="program"
+      style={{ marginTop: 18 }}
+      open={open}
+      onToggle={(e) => onToggle(e.currentTarget.open)}
+    >
       <summary className="sechead">
-        <h4>Related work</h4>
+        <h4>Program</h4>
         <span className="secstat">
-          {parent
-            ? `continues ${parent.ref}`
-            : kids.length
-              ? `${kids.length} follow-on${kids.length === 1 ? '' : 's'}`
+          {inside.length
+            ? `${inside.length} project${inside.length === 1 ? '' : 's'} inside`
+            : parent
+              ? `inside ${parent.title}`
               : 'stands alone'}
         </span>
       </summary>
 
-      {parent && row(parent, 'the original')}
-      {kids.map((k) => row(k, 'came off this one'))}
-
-      {(parent || kids.length > 0) && (
-        <div className="hint" style={{ marginTop: 8 }}>
-          {Math.round(familyDesign * 10) / 10} hours of design across this family, logged once on
-          the project that did the work. A follow-on does not pay for it again — which is exactly
-          why a second run of a part earns more than the first, and why that has to be visible
-          rather than inferred.
+      {inside.length > 0 && (
+        <div className="pane">
+          <div className="hint" style={{ marginTop: 0, marginBottom: 8 }}>
+            The whole program — this project and everything under it, added up. Each project keeps
+            its own figures; nothing is copied or counted twice.
+          </div>
+          <div className="dtiles" style={{ margin: 0 }}>
+            <div className="dtile biolum">
+              <span className="dt-lab">Projects</span>
+              <span className="dt-v">{total.projects}</span>
+              <span className="dt-sub">{total.done} finished</span>
+            </div>
+            <div className="dtile ember">
+              <span className="dt-lab">Cost so far</span>
+              <span className="dt-v">{money(total.cost)}</span>
+              <span className="dt-sub">material, machine, wear, power, hours</span>
+            </div>
+            <div className="dtile teal">
+              <span className="dt-lab">Printed</span>
+              <span className="dt-v">{g(total.materialUnits)}</span>
+              <span className="dt-sub">
+                {total.runs} run{total.runs === 1 ? '' : 's'} · {h(total.machineHours)} machine
+                {total.failedUnits > 0 ? ` · ${g(total.failedUnits)} failed` : ''}
+              </span>
+            </div>
+            <div className="dtile violet">
+              <span className="dt-lab">Your time</span>
+              <span className="dt-v">{h(total.hours)}</span>
+              <span className="dt-sub">design, finishing and admin</span>
+            </div>
+          </div>
         </div>
       )}
 
-      <div className="btnrow" style={{ marginTop: 10 }}>
-        {parent ? (
-          <button
-            type="button"
-            className="btn sm"
-            disabled={busy || saving}
-            onClick={() => void link(null)}
-          >
-            Unlink from {parent.ref}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="btn sm"
-            disabled={busy || saving}
-            onClick={() => void openPicker()}
-          >
-            Link to the project that did the design
-          </button>
-        )}
-        <span className="hint" style={{ marginTop: 0 }}>
-          {kids.length > 0
-            ? 'Projects that continue from this one link themselves to it from their own page.'
-            : 'For a reprint, a second run, or the same design sliced for another machine.'}
-        </span>
+      {kids.length > 0 && (
+        <div className="sheetwrap" style={{ maxHeight: 'none', marginTop: 10 }}>
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: '38%' }}>Inside this program</th>
+                <th>Stage</th>
+                <th className="r">Printed</th>
+                <th className="r">Machine</th>
+                <th className="r">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {kids.map((k) => {
+                const t = programTotals(rows, k.jobId)
+                const deeper = t.projects - 1
+                return (
+                  <tr key={k.jobId}>
+                    <td>
+                      <Link to={`/project/${k.jobId}`} className="pn" style={{ textDecoration: 'none' }}>
+                        {k.title}
+                      </Link>
+                      <div className="pmeta">
+                        {k.ref}
+                        {deeper > 0 && ` · ${deeper} inside, included`}
+                      </div>
+                    </td>
+                    <td>
+                      <span className="chip">{phaseLabel(k.phase, k.facts.kind)}</span>
+                    </td>
+                    <td className="r mono">{t.materialUnits ? g(t.materialUnits) : '—'}</td>
+                    <td className="r mono">{t.machineHours ? h(t.machineHours) : '—'}</td>
+                    <td className="r mono">{t.cost ? money(t.cost) : '—'}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Start a sub-project already filed here. Creating a project and
+          then hunting for it to link was the long way round, and it is how
+          the drafts confusion started. */}
+      <div className="btnrow" style={{ marginTop: 12, alignItems: 'flex-end' }}>
+        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
+          <label className="lbl" htmlFor="sub-title">
+            Start a project inside {detail.title}
+          </label>
+          <input
+            id="sub-title"
+            value={newTitle}
+            placeholder="Fiji, French Polynesia, Oʻahu…"
+            onChange={(e) => setNewTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void startSub()
+            }}
+          />
+        </div>
+        <button
+          type="button"
+          className="btn sm primary"
+          disabled={busy || saving || !newTitle.trim()}
+          onClick={() => void startSub()}
+        >
+          Start it
+        </button>
       </div>
 
-      {picking && (
-        <div className="pane" style={{ marginTop: 10 }}>
-          {!options ? (
-            <div className="hint" style={{ marginTop: 0 }}>
-              Loading…
-            </div>
-          ) : options.length === 0 ? (
-            <div className="hint" style={{ marginTop: 0 }}>
-              Nothing else to link to yet.
-            </div>
-          ) : (
-            <div className="stack">
-              {options.slice(0, 12).map((o) => (
-                <button
-                  key={o.jobId}
-                  type="button"
-                  className="btn sm"
-                  disabled={saving}
-                  style={{ justifyContent: 'flex-start' }}
-                  onClick={() => void link(o.jobId)}
-                >
-                  {o.ref} · {o.title}
-                </button>
-              ))}
-            </div>
-          )}
+      <div className="btnrow" style={{ marginTop: 10 }}>
+        <button
+          type="button"
+          className="btn sm"
+          disabled={busy || saving}
+          onClick={() => setMoving((v) => !v)}
+        >
+          {parent ? 'Move to another program' : 'Put this inside a program'}
+        </button>
+        {parent && (
           <button
             type="button"
             className="btn sm ghost"
-            style={{ marginTop: 8 }}
-            onClick={() => setPicking(false)}
+            disabled={busy || saving}
+            onClick={() => void guard(() => setRelatedProject(ctx.shop.id, id, null))}
           >
-            Cancel
+            Take it out of {parent.title}
           </button>
+        )}
+      </div>
+
+      {moving && (
+        <div className="pane" style={{ marginTop: 10 }}>
+          <div className="fld" style={{ marginTop: 0 }}>
+            <label className="lbl" htmlFor="move-find">
+              Which program? Anything already inside this one is left out — that would be a loop.
+            </label>
+            <input
+              id="move-find"
+              value={filter}
+              placeholder="Find by name or reference"
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          </div>
+          {options.length === 0 ? (
+            <div className="hint">Nothing matches.</div>
+          ) : (
+            <div className="stack" style={{ maxHeight: 280, overflow: 'auto' }}>
+              {options.slice(0, 40).map((o) => {
+                const where = pathLabel(rows, o.jobId)
+                return (
+                  <button
+                    key={o.jobId}
+                    type="button"
+                    className="btn sm"
+                    disabled={saving || o.jobId === parent?.jobId}
+                    style={{ justifyContent: 'space-between', gap: 10 }}
+                    onClick={() =>
+                      void guard(async () => {
+                        await setRelatedProject(ctx.shop.id, id, o.jobId)
+                        setMoving(false)
+                        setFilter('')
+                      })
+                    }
+                  >
+                    <span style={{ textAlign: 'left' }}>
+                      {where ? <span style={{ color: 'var(--txt-3)' }}>{where} › </span> : null}
+                      {o.title}
+                    </span>
+                    <span className="chip">
+                      {o.facts.takenInAt || o.facts.kind === 'inhouse'
+                        ? phaseLabel(o.phase, o.facts.kind)
+                        : 'Draft'}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
     </details>

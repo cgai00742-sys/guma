@@ -49,6 +49,7 @@ import {
 } from '../lib/data'
 import { flagsFor, gateStatus, ladderFor, phaseLabel, worstTone, type Flag } from '../lib/gates'
 import { filterBy } from '../lib/search'
+import { pathLabel } from '../lib/programs'
 import { asSearchItem } from '../lib/searchItems'
 
 const COLUMN_HUE: Record<JobPhase, string> = {
@@ -387,6 +388,7 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
                 <Card
                   key={job.jobId}
                   job={job}
+                  where={pathLabel(jobs ?? [], job.jobId)}
                   dragging={dragId === job.jobId}
                   onOpen={() => navigate(`/project/${job.jobId}`)}
                   onDragStart={(e) => {
@@ -420,8 +422,11 @@ function Card({
   onDragStart,
   onDragEnd,
   onCyclePriority,
+  where,
 }: {
   job: Decorated
+  /** "BathyTopo › Hawaiian Islands" when this card lives in a program. */
+  where: string | null
   dragging: boolean
   onOpen: () => void
   onDragStart: (e: React.DragEvent) => void
@@ -466,7 +471,10 @@ function Card({
         {job.title}
       </button>
       <div className="pmeta">
-        {job.clientName} · {job.ref}
+        {/* In a program, WHERE it lives says more than who it is for:
+            every in-house card reads "In-house", and a board of islands
+            named only "Oʻahu" and "Maui" loses which program they belong to. */}
+        {where ?? job.clientName} · {job.ref}
       </div>
 
       {/* Three fixed slots, always all three, lit or dark. See the block

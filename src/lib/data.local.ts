@@ -922,6 +922,7 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     reprintsEver: Number(r.reprints_ever ?? 0),
     unitsMade: Number(r.units_made ?? 0),
     archivedAt: r.archived_at ?? null,
+    relatedTo: r.related_to ?? null,
   }
 }
 
@@ -2984,16 +2985,24 @@ export async function archiveProject(
 }
 
 /**
- * Say which project this one continues from.
+ * Put this project under another one -- or take it out, with null.
  *
- * Families are one level deep on purpose: linking to a project that is
- * itself a follow-on attaches to ITS original instead. A chain would make
- * "where were the design hours spent" a graph walk, and the question a
- * shop actually asks is the flat one -- what else came off this design.
+ * PROGRAMS NEST. The first version flattened everything to one level: a
+ * project linked under a follow-on was quietly re-pointed at the original.
+ * That was the wrong call, and CG's first real use broke it: BathyTopo is a
+ * master program, the Hawaiian Islands, Fiji and French Polynesia are
+ * programs under it, and each of those holds its own prints. Flattening
+ * would have dropped Fiji's prints straight into BathyTopo and lost the
+ * middle layer that is the whole point.
  *
- * Nothing is copied. The original keeps its design hours; the follow-on
- * keeps its own print time and material. The family view adds them up for
- * reading, which is the opposite of charging them twice.
+ * So the tree is kept as built, and the one thing that must never happen
+ * is refused: a loop. Putting BathyTopo under Fiji while Fiji is under
+ * BathyTopo would make "what is in this program" a question with no
+ * answer, and every rollup would count forever. The walk up from the new
+ * parent is bounded, so a loop that somehow already exists cannot hang it.
+ *
+ * Nothing is copied between members. Each project keeps its own runs,
+ * material and hours; the program view ADDS them up for reading.
  */
 export async function setRelatedProject(
   shopId: string,
@@ -3001,24 +3010,29 @@ export async function setRelatedProject(
   relatedTo: string | null,
 ): Promise<void> {
   const d = await db()
-  if (relatedTo === jobId) throw new Error('A project cannot continue from itself.')
+  if (relatedTo === jobId) throw new Error('A project cannot sit under itself.')
 
-  let target = relatedTo
-  if (target) {
-    const rows = await d.select<{ id: string; related_to: string | null }[]>(
-      'select id, related_to from jobs where id = ? and shop_id = ?',
-      [target, shopId],
-    )
-    const t = rows[0]
-    if (!t) throw new Error('That project no longer exists.')
-    if (t.related_to) target = t.related_to
-    if (target === jobId) throw new Error('Those two projects already point at each other.')
+  if (relatedTo) {
+    let cursor: string | null = relatedTo
+    for (let hops = 0; cursor && hops < 64; hops++) {
+      const rows: { id: string; related_to: string | null }[] = await d.select(
+        'select id, related_to from jobs where id = ? and shop_id = ?',
+        [cursor, shopId],
+      )
+      if (!rows[0]) throw new Error('That project no longer exists.')
+      if (rows[0].related_to === jobId) {
+        throw new Error(
+          'That project is already inside this one — putting this under it would make a loop.',
+        )
+      }
+      cursor = rows[0].related_to
+    }
   }
 
   await d.execute(
     `update jobs set related_to = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
       where id = ? and shop_id = ?`,
-    [target, jobId, shopId],
+    [relatedTo, jobId, shopId],
   )
 }
 

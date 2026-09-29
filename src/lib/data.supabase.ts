@@ -696,6 +696,7 @@ function factsFrom(
     partsReprint: Number(r.job_parts_summary?.[0]?.reprint ?? 0),
     reprintsEver: Number(r.job_parts_summary?.[0]?.reprints_ever ?? 0),
     archivedAt: r.archived_at ?? null,
+    relatedTo: r.related_to ?? null,
     unitsMade: ((r.batches ?? []) as { units_made: number }[]).reduce(
       (a, b) => a + Number(b.units_made ?? 0),
       0,
@@ -2404,28 +2405,37 @@ export async function archiveProject(
   if (evErr) throw evErr
 }
 
-/** See data.local.ts's setRelatedProject. */
+/** See data.local.ts's setRelatedProject: programs nest, loops are refused. */
 export async function setRelatedProject(
   shopId: string,
   jobId: string,
   relatedTo: string | null,
 ): Promise<void> {
-  if (relatedTo === jobId) throw new Error('A project cannot continue from itself.')
-  let target = relatedTo
-  if (target) {
-    const { data, error } = await supabase
-      .from('jobs')
-      .select('id, related_to')
-      .eq('id', target)
-      .eq('shop_id', shopId)
-      .single()
-    if (error) throw error
-    if (data?.related_to) target = data.related_to as string
-    if (target === jobId) throw new Error('Those two projects already point at each other.')
+  if (relatedTo === jobId) throw new Error('A project cannot sit under itself.')
+  if (relatedTo) {
+    let cursor: string | null = relatedTo
+    for (let hops = 0; cursor && hops < 64; hops++) {
+      const res: { data: { id: string; related_to: string | null } | null; error: unknown } =
+        await supabase
+          .from('jobs')
+          .select('id, related_to')
+          .eq('id', cursor)
+          .eq('shop_id', shopId)
+          .maybeSingle()
+      const { data, error } = res
+      if (error) throw error
+      if (!data) throw new Error('That project no longer exists.')
+      if (data.related_to === jobId) {
+        throw new Error(
+          'That project is already inside this one — putting this under it would make a loop.',
+        )
+      }
+      cursor = data.related_to ?? null
+    }
   }
   const { error } = await supabase
     .from('jobs')
-    .update({ related_to: target })
+    .update({ related_to: relatedTo })
     .eq('id', jobId)
     .eq('shop_id', shopId)
   if (error) throw error

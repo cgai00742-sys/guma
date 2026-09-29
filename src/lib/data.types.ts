@@ -522,6 +522,9 @@ export interface ProjectFacts {
    *  twice and then passed costs the shop twice and would otherwise leave
    *  no trace. */
   reprintsEver: number
+  /** The project this one sits under, if any -- BathyTopo for "Fiji".
+   *  Programs nest to any depth; see setRelatedProject and lib/programs.ts. */
+  relatedTo: string | null
   /** Filed off the working board, keeping every figure it contributes.
    *  Only a delivered project can be. Null means it is still on the board. */
   archivedAt: string | null

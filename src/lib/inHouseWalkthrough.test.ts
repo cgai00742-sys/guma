@@ -285,21 +285,31 @@ describe('what happens to a project after it is finished', () => {
     expect(original.related.map((r) => r.jobId)).toEqual([second])
   })
 
-  it('keeps families one level deep — linking to a follow-on attaches to its original', async () => {
-    const { data, shopId, jobId } = await finished()
-    const second = await data.createInHouseJob(shopId, { title: 'Second' })
-    const third = await data.createInHouseJob(shopId, { title: 'Third' })
-    await data.setRelatedProject(shopId, second, jobId)
-    await data.setRelatedProject(shopId, third, second)
+  it('nests programs as built — BathyTopo › Hawaiian Islands › Oʻahu', async () => {
+    const { data, shopId, jobId: bathy } = await finished()
+    const hi = await data.createInHouseJob(shopId, { title: 'Hawaiian Islands', relatedTo: bathy })
+    const oahu = await data.createInHouseJob(shopId, { title: 'Oʻahu', relatedTo: hi })
 
-    const t = await data.loadProjectDetail(shopId, third)
-    expect(t.relatedTo?.jobId).toBe(jobId)
-    const original = await data.loadProjectDetail(shopId, jobId)
-    expect(original.related).toHaveLength(2)
+    // The middle layer survives. The first version flattened this and
+    // would have dropped Oʻahu straight into BathyTopo.
+    expect((await data.loadProjectDetail(shopId, oahu)).relatedTo?.jobId).toBe(hi)
+    expect((await data.loadProjectDetail(shopId, hi)).related.map((r) => r.jobId)).toEqual([oahu])
+    // Born live, so the whole program is on the board.
+    const rows = await data.listJobs(shopId)
+    for (const id of [hi, oahu]) {
+      expect(rows.find((r) => r.jobId === id)?.facts.takenInAt).not.toBeNull()
+    }
+  })
+
+  it('refuses a loop — BathyTopo cannot go under its own island', async () => {
+    const { data, shopId, jobId: bathy } = await finished()
+    const hi = await data.createInHouseJob(shopId, { title: 'Hawaiian Islands', relatedTo: bathy })
+    const oahu = await data.createInHouseJob(shopId, { title: 'Oʻahu', relatedTo: hi })
+    await expect(data.setRelatedProject(shopId, bathy, oahu)).rejects.toThrow(/loop/i)
   })
 
   it('will not let a project continue from itself', async () => {
     const { data, shopId, jobId } = await finished()
-    await expect(data.setRelatedProject(shopId, jobId, jobId)).rejects.toThrow(/itself/i)
+    await expect(data.setRelatedProject(shopId, jobId, jobId)).rejects.toThrow(/under itself/i)
   })
 })

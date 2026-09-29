@@ -40,6 +40,8 @@ import {
   ceilingCheck,
   createInHouseJob,
   listClients,
+  listJobs,
+  type JobListRow,
   loadProjectDetail,
   nextJobRef,
   saveQuote,
@@ -53,6 +55,7 @@ import {
   type ShopContext,
 } from '../lib/data'
 import { addDaysISO } from '../lib/dates'
+import { pathLabel } from '../lib/programs'
 import { normalise, search } from '../lib/search'
 import { clientItem } from '../lib/searchItems'
 
@@ -114,6 +117,19 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
    */
   const [params] = useSearchParams()
   const reviseJobId = params.get('revise')
+  /**
+   * Which program a new piece of the shop's own work goes into -- Fiji
+   * inside BathyTopo. Asked here, at the start, because creating a project
+   * and then hunting for it to link it was the long way round. ?within=
+   * preselects it when arriving from a program's own page.
+   */
+  const [within, setWithin] = useState<string>(params.get('within') ?? '')
+  const [programs, setPrograms] = useState<JobListRow[]>([])
+  useEffect(() => {
+    listJobs(ctx.shop.id)
+      .then((rows) => setPrograms(rows.filter((r) => !r.facts.archivedAt)))
+      .catch(() => setPrograms([]))
+  }, [ctx.shop.id])
   const [acceptedTotal, setAcceptedTotal] = useState<number | null>(null)
   const [cause, setCause] = useState<ChangeCause>('added_work')
   const [why, setWhy] = useState('')
@@ -213,7 +229,12 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
    * own work IS the business, and burying it inside a field labelled
    * "Client" said the opposite.
    */
-  const [whoFor, setWhoFor] = useState<'client' | 'inhouse' | null>(null)
+  // Arriving from a program's page with ?within= means it is the shop's own
+  // work already -- asking "who is this for" again would be a question with
+  // one answer.
+  const [whoFor, setWhoFor] = useState<'client' | 'inhouse' | null>(() =>
+    params.get('within') ? 'inhouse' : null,
+  )
   const inHouse = whoFor === 'inhouse'
 
   function chooseWho(next: 'client' | 'inhouse') {
@@ -276,7 +297,11 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
     // below applies. It lands straight on the board at design.
     if (mode === 'inhouse') {
       try {
-        const jobId = await createInHouseJob(ctx.shop.id, { title: title.trim(), brief })
+        const jobId = await createInHouseJob(ctx.shop.id, {
+          title: title.trim(),
+          brief,
+          relatedTo: within || null,
+        })
         navigate(`/project/${jobId}`)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -633,6 +658,29 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 placeholder="Four sensor mast brackets"
               />
             </div>
+            {inHouse && (
+              <div className="fld" style={{ marginTop: 10 }}>
+                <label className="lbl" htmlFor="q-within">
+                  Inside a program
+                </label>
+                <select id="q-within" value={within} onChange={(e) => setWithin(e.target.value)}>
+                  <option value="">None — it stands on its own</option>
+                  {programs.map((p) => {
+                    const where = pathLabel(programs, p.jobId)
+                    return (
+                      <option key={p.jobId} value={p.jobId}>
+                        {where ? `${where} › ` : ''}
+                        {p.title}
+                      </option>
+                    )
+                  })}
+                </select>
+                <div className="hint">
+                  For work that belongs to something bigger — an island inside BathyTopo. It keeps
+                  its own costs; the program adds them up.
+                </div>
+              </div>
+            )}
             <div className="fld" style={{ marginTop: 10 }}>
               <label className="lbl" htmlFor="q-brief">
                 What they asked for

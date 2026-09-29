@@ -30,6 +30,7 @@ import { filterBy } from '../lib/search'
 import { asSearchItem } from '../lib/searchItems'
 import GuideModal from '../components/GuideModal'
 import { useGuide } from '../lib/useGuide'
+import { pathLabel } from '../lib/programs'
 
 type SortKey = 'saved' | 'stage' | 'due' | 'value' | 'owed' | 'flags'
 type Show = 'live' | 'drafts' | 'all'
@@ -307,7 +308,7 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
                       <td style={{ fontFamily: 'var(--mono)', color: 'var(--txt-3)' }}>{j.ref}</td>
                       <td>
                         <div style={{ fontWeight: 500, color: 'var(--txt)' }}>{j.title}</div>
-                        <div className="pmeta">{j.clientName}</div>
+                        <div className="pmeta">{pathLabel(jobs ?? [], j.jobId) ?? j.clientName}</div>
                       </td>
                       <td>
                         {j.facts.takenInAt ? (
