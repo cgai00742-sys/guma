@@ -757,6 +757,7 @@ export async function updateJobPhase(
   jobId: string,
   actorId: string,
   toPhase: JobPhase,
+  note: string | null = null,
 ): Promise<void> {
   const { data: job, error: readErr } = await supabase
     .from('jobs')
@@ -770,7 +771,11 @@ export async function updateJobPhase(
 
   const { error: updErr } = await supabase
     .from('jobs')
-    .update({ phase: toPhase, updated_at: new Date().toISOString() })
+    .update({
+      phase: toPhase,
+      updated_at: new Date().toISOString(),
+      ...(toPhase === 'delivered' ? {} : { archived_at: null }),
+    })
     .eq('id', jobId)
     .eq('shop_id', shopId)
   if (updErr) throw updErr
@@ -781,6 +786,7 @@ export async function updateJobPhase(
     kind: 'phase_change',
     from_phase: fromPhase,
     to_phase: toPhase,
+    body: note?.trim() || null,
   })
   if (evErr) throw evErr
 }

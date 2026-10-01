@@ -863,3 +863,30 @@ describe("CG's Maui: one G-code uploaded several times, project already Done", (
     expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 1 })
   })
 })
+
+describe('moving a project backwards', () => {
+  it('takes Maui from Done back to Review with a reason, and says so in Activity', async () => {
+    const { ctx, jobId, data } = await seedShop('inhouse')
+    for (const to of ['review', 'delivered'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await data.archiveProject(ctx.shop.id, jobId, ctx.profile.id, true)
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+
+    await user.click(await screen.findByRole('button', { name: /← back to/i }))
+    const move = await screen.findByRole('button', { name: /^move back to/i })
+    expect((move as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
+    await user.type(screen.getByLabelText(/what needs fixing/i), 'Coastline off by a layer')
+    await user.click(move)
+
+    await waitFor(() => {
+      const j = currentDb.sqlite.prepare('select phase, archived_at from jobs where id = ?').get(jobId) as {
+        phase: string
+        archived_at: string | null
+      }
+      expect(j).toEqual({ phase: 'review', archived_at: null })
+    })
+    await screen.findByText(/Moved back from .* to .*\. Why: Coastline off by a layer/)
+  })
+})

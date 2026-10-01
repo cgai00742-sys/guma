@@ -322,6 +322,21 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
     }
   }
 
+  /** Back a stage, or several. Something needs fixing; the reason is
+   *  required and goes in Activity with the move. */
+  async function moveBack(to: JobPhase, why: string) {
+    setBusy(true)
+    try {
+      await updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to, why)
+      setViewPhase(null)
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function takeIn() {
     setBusy(true)
     try {
@@ -615,6 +630,13 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           </span>
         </summary>
 
+        {shown !== detail.phase && phaseIndex(shown, detail.facts.kind) < here && !isDraft && (
+          <MoveBack
+            to={label(shown)}
+            busy={busy}
+            onMove={(why) => moveBack(shown, why)}
+          />
+        )}
         {shown !== detail.phase && (
           <div className="hint" style={{ marginBottom: 6 }}>
             Looking at {label(shown)}, which is{' '}
@@ -1123,7 +1145,14 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                   {e.kind === 'phase_change' ? ' · stage change' : e.kind === 'edit' ? ' · edit' : ''}
                 </div>
                 {e.kind === 'phase_change'
-                  ? `Moved from ${label(e.fromPhase ?? 'intake')} to ${label(e.toPhase ?? 'intake')}.`
+                  ? `Moved ${
+                      phaseIndex(e.toPhase ?? 'intake', detail.facts.kind) <
+                      phaseIndex(e.fromPhase ?? 'intake', detail.facts.kind)
+                        ? 'back '
+                        : ''
+                    }from ${label(e.fromPhase ?? 'intake')} to ${label(e.toPhase ?? 'intake')}.${
+                      e.body ? ` Why: ${e.body}` : ''
+                    }`
                   : (e.body ?? '')}
               </div>
             ))}
@@ -1254,6 +1283,21 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           Back to projects
         </button>
         <DeleteProject detail={detail} busy={busy} onConfirm={destroy} />
+        {!isDraft && here > 0 && (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            title="Something needs fixing? Open the earlier stage and say why."
+            onClick={() => {
+              setViewPhase(ladder[here - 1])
+              fold.set('gate', true)
+              window.scrollTo?.({ top: 0, behavior: 'smooth' })
+            }}
+          >
+            ← Back to {label(ladder[here - 1])}
+          </button>
+        )}
         {!isDraft ? (
           <button
             type="button"
@@ -4609,6 +4653,46 @@ function FromTheFiles({
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  )
+}
+
+/** Move a project back to an earlier stage. A reason is required: going
+ *  backwards is information -- what broke, what is being redone -- and the
+ *  next person reading Activity needs it. */
+function MoveBack({
+  to,
+  busy,
+  onMove,
+}: {
+  to: string
+  busy: boolean
+  onMove: (why: string) => Promise<void>
+}) {
+  const [why, setWhy] = useState('')
+  return (
+    <div className="gatebox" style={{ marginBottom: 8 }}>
+      <div className="fld" style={{ margin: 0 }}>
+        <label className="lbl" htmlFor="move-back-why">
+          Move this project back to {to} — what needs fixing?
+        </label>
+        <input
+          id="move-back-why"
+          value={why}
+          placeholder="Coastline off by a layer, client wants a change, failed QC…"
+          onChange={(e) => setWhy(e.target.value)}
+        />
+      </div>
+      <div className="btnrow" style={{ marginTop: 6 }}>
+        <button
+          type="button"
+          className="btn sm"
+          disabled={busy || !why.trim()}
+          onClick={() => void onMove(why)}
+        >
+          Move back to {to}
+        </button>
       </div>
     </div>
   )

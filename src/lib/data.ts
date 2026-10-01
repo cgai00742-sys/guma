@@ -298,8 +298,9 @@ export async function updateJobPhase(
   jobId: string,
   actorId: string,
   toPhase: JobPhase,
+  note: string | null = null,
 ): Promise<void> {
-  return (await backend()).updateJobPhase(shopId, jobId, actorId, toPhase)
+  return (await backend()).updateJobPhase(shopId, jobId, actorId, toPhase, note)
 }
 
 export async function updateJobPriority(

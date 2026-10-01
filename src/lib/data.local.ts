@@ -985,6 +985,8 @@ export async function updateJobPhase(
   jobId: string,
   actorId: string,
   toPhase: JobPhase,
+  /** Why. Required by the screen when moving BACK a stage; logged either way. */
+  note: string | null = null,
 ): Promise<void> {
   const d = await db()
   const rows = await d.select<{ phase: JobPhase }[]>(
@@ -993,15 +995,19 @@ export async function updateJobPhase(
   )
   const fromPhase = rows[0]?.phase
   if (!fromPhase || fromPhase === toPhase) return
+  // Only delivered work can be archived; moving it back off Delivered
+  // brings it back onto the board.
   await d.execute(
-    `update jobs set phase = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    `update jobs set phase = ?,
+            archived_at = case when ? = 'delivered' then archived_at else null end,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
      where id = ? and shop_id = ?`,
-    [toPhase, jobId, shopId],
+    [toPhase, toPhase, jobId, shopId],
   )
   await d.execute(
-    `insert into job_events (job_id, actor_id, kind, from_phase, to_phase)
-     values (?, ?, 'phase_change', ?, ?)`,
-    [jobId, actorId, fromPhase, toPhase],
+    `insert into job_events (job_id, actor_id, kind, from_phase, to_phase, body)
+     values (?, ?, 'phase_change', ?, ?, ?)`,
+    [jobId, actorId, fromPhase, toPhase, note?.trim() || null],
   )
 }
 
