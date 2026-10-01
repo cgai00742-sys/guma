@@ -2104,6 +2104,7 @@ function SliceRuns({
    */
   const [markParts, setMarkParts] = useState(true)
   const [removing, setRemoving] = useState<string | null>(null)
+  const [rereadMsg, setRereadMsg] = useState<{ id: string; text: string } | null>(null)
 
   /**
    * Write the kept file back out.
@@ -2128,6 +2129,62 @@ function SliceRuns({
       // Let the click start before the URL stops being valid.
       window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
     } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /**
+   * Re-read a kept file with the current reader. The fresh import matches
+   * the same parts by name; the old import is dropped only if no print was
+   * recorded from it (a recorded print stays linked to what it was
+   * recorded from).
+   */
+  async function reread(importId: string, fileName: string, runCount: number) {
+    setSaving(true)
+    setError(null)
+    setRereadMsg(null)
+    try {
+      const row = await sliceFileContent(ctx.shop.id, importId)
+      if (!row) throw new Error('That file was not kept — import it again.')
+      const bytes = await unpackFile(row.content)
+      const file = new File([bytes as unknown as BlobPart], fileName)
+      const parsed = await parseSliceFile(file)
+      if (parsed.totals.estMinutes == null && parsed.totals.estGrams == null) {
+        throw new Error(
+          'Read again — still no print time or filament in it. Export the plate sliced file (.gcode.3mf) and import that.',
+        )
+      }
+      if (runCount === 0) await deleteSliceImport(ctx.shop.id, importId)
+      await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
+        file: await packFile(bytes),
+        fileName: parsed.fileName,
+        kind: parsed.kind,
+        printerModel: parsed.printerModel,
+        printerId:
+          matchPrinter(ctx.printerRows, parsed.printerModel)?.id ??
+          detail.slices.find((x) => x.id === importId)?.printerId ??
+          null,
+        materialText: parsed.totals.material,
+        materialId:
+          matchMaterial(ctx.materials, parsed.totals.material)?.id ??
+          detail.slices.find((x) => x.id === importId)?.materialId ??
+          null,
+        estMinutes: parsed.totals.estMinutes,
+        estGrams: parsed.totals.estGrams,
+        notes: parsed.notes,
+        sections: parsed.sections.map((sec) => ({
+          label: sec.label,
+          qty: sec.qty,
+          estMinutes: sec.estMinutes,
+          estGrams: sec.estGrams,
+          material: sec.material,
+        })),
+      })
+      await onChanged()
+    } catch (e) {
+      setRereadMsg({ id: importId, text: e instanceof Error ? e.message : String(e) })
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
@@ -2278,6 +2335,36 @@ function SliceRuns({
                 </div>
               )}
             </div>
+
+            {s.estGrams == null && s.estMinutes == null && (
+              <div className="attn warn" role="note" style={{ marginTop: 6 }}>
+                <span>
+                  No print time or filament came out of this file, so nothing can be filled in from
+                  it.{' '}
+                  {s.keptBytes != null
+                    ? 'Guma reads more kinds of file now — try reading it again. '
+                    : ''}
+                  If that finds nothing, it was saved before slicing: in Bambu Studio or Orca,
+                  slice, then File → Export → Export plate sliced file (.gcode.3mf), and import
+                  that.
+                </span>
+                {s.keptBytes != null && (
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={busy || saving}
+                    onClick={() => void reread(s.id, s.fileName, runs.length)}
+                  >
+                    Read it again
+                  </button>
+                )}
+              </div>
+            )}
+            {rereadMsg?.id === s.id && (
+              <div className="attn crit" role="alert" style={{ marginTop: 6 }}>
+                <span>{rereadMsg.text}</span>
+              </div>
+            )}
 
             <div className="hint" style={{ marginTop: 4 }}>
               {s.keptBytes != null ? (

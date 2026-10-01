@@ -931,3 +931,47 @@ describe('an import that cannot be saved', () => {
     expect(alerts.some((a) => /not imported/i.test(a.textContent ?? ''))).toBe(true)
   })
 })
+
+describe('a kept 3MF that was imported with no numbers', () => {
+  it('can be read again, and then fills the print in', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const { zipBytes } = await import('../lib/testZip')
+    const { packFile } = await import('../lib/sliceFile')
+    const bytes = zipBytes({
+      'Metadata/slice_info.config':
+        '<config><plate><metadata key="index" value="1"/><object identify_id="1" name="Maui Top" skipped="false"/><filament id="1" type="PETG"/></plate></config>',
+      'Metadata/plate_1.gcode':
+        '; model printing time: 6h 50m; total estimated time: 7h 2m 13s\n; total filament weight [g] : 212.45\n',
+    })
+    const kept = await packFile(bytes)
+    // How CG's row looks today: imported by the old reader, numbers empty.
+    currentDb.sqlite
+      .prepare(
+        `insert into slice_imports (id, shop_id, job_id, file_name, kind, printer_id, material_id, est_minutes, est_grams, notes)
+         values ('old', ?, ?, 'Sliced_Maui_Top.3mf', '3mf', ?, ?, null, null, '[]')`,
+      )
+      .run(ctx.shop.id, jobId, ctx.printers[0].id, ctx.materials[0].id)
+    currentDb.sqlite
+      .prepare('insert into slice_files (import_id, byte_size, stored_size, encoding, content) values (?, ?, ?, ?, ?)')
+      .run('old', kept!.byteSize, kept!.storedSize, kept!.encoding, kept!.content)
+
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.click(await screen.findByRole('button', { name: /read it again/i }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: /from the sliced files/i }).textContent).toMatch(
+        /212 g · 7\.03 h/,
+      ),
+    )
+    const region = screen.getByRole('region', { name: /from the sliced files/i })
+    expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 1 })
+    await user.click(within(region).getByRole('button', { name: /record sliced_maui_top\.3mf from the file/i }))
+    await waitFor(() => {
+      const a = currentDb.sqlite
+        .prepare('select material_units, machine_hours, runs from job_actuals where job_id = ?')
+        .get(jobId) as Record<string, number>
+      expect(a).toMatchObject({ material_units: 212, machine_hours: 7.03, runs: 1 })
+    })
+  })
+})

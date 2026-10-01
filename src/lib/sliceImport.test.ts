@@ -400,3 +400,52 @@ describe('matching the file to what the shop owns', () => {
     expect(matchMaterial(materials, 'ABS')).toBeNull()
   })
 })
+
+describe('a saved project .3mf whose summary has no numbers (CG, Maui)', () => {
+  const emptyInfo = `<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <plate>
+    <metadata key="index" value="1"/>
+    <metadata key="printer_model_id" value="O1D"/>
+    <object identify_id="1" name="Maui_Top" skipped="false"/>
+    <filament id="1" type="PLA"/>
+  </plate>
+</config>`
+  const bambuHeader = `; HEADER_BLOCK_START
+; BambuStudio 02.02.00.85
+; model printing time: 6h 51m 29s; total estimated time: 7h 2m 13s
+; total layer number: 410
+; total filament weight [g] : 212.45
+; HEADER_BLOCK_END
+G28
+`
+  it('reads time and grams from the plate G-code inside it', async () => {
+    const f = await parseSliceFile(
+      zipFile('Sliced_Maui_Top.3mf', {
+        'Metadata/slice_info.config': emptyInfo,
+        'Metadata/plate_1.gcode': bambuHeader,
+      }),
+    )
+    expect(f.totals.estMinutes).toBe(422) // 7h 2m 13s
+    expect(f.totals.estGrams).toBeCloseTo(212.45, 2)
+    expect(f.totals.material).toBe('PLA')
+  })
+
+  it('reads an Orca header too', async () => {
+    const f = await parseSliceFile(
+      zipFile('orca.3mf', {
+        'Metadata/slice_info.config': emptyInfo,
+        'Metadata/plate_1.gcode': '; estimated printing time (normal mode) = 2h 3m\n; total filament used [g] = 86.5\n',
+      }),
+    )
+    expect(f.totals.estMinutes).toBe(123)
+    expect(f.totals.estGrams).toBe(86.5)
+  })
+
+  it('says plainly when there are no numbers anywhere in it', async () => {
+    const f = await parseSliceFile(zipFile('unsliced.3mf', { 'Metadata/slice_info.config': emptyInfo }))
+    expect(f.totals.estMinutes).toBeNull()
+    expect(f.totals.estGrams).toBeNull()
+    expect(f.notes.join(' ')).toMatch(/no print time or filament/i)
+  })
+})

@@ -351,7 +351,62 @@ function pack(
   }
 }
 
+/**
+ * Time and grams from a G-code header -- Bambu Studio, Orca and PrusaSlicer
+ * all write them, in slightly different words:
+ *
+ *   ; model printing time: 2h 51m 29s; total estimated time: 2h 58m 13s  (Bambu)
+ *   ; total filament weight [g] : 88.20                                    (Bambu)
+ *   ; estimated printing time (normal mode) = 2h 3m 5s                     (Orca, Prusa)
+ *   ; total filament used [g] = 88.20                                      (Orca, Prusa)
+ *
+ * Used when a 3MF's slice_info summary is missing or empty but the plate's
+ * G-code is inside it -- which is the case for some saved project files.
+ */
+export function gcodeHeaderTotals(src: string): { minutes: number | null; grams: number | null } {
+  const t =
+    src.match(/total estimated time\s*[:=]\s*([^;\n]+)/i) ??
+    src.match(/estimated printing time[^=\n]*=\s*([^;\n]+)/i) ??
+    src.match(/model printing time\s*[:=]\s*([^;\n]+)/i)
+  const g =
+    src.match(/total filament weight \[g\]\s*[:=]\s*([\d.]+)/i) ??
+    src.match(/total filament used \[g\]\s*[:=]\s*([\d.]+)/i)
+  let grams = g ? parseFloat(g[1]) : null
+  if (grams == null) {
+    const per = src.match(/;[ \t]*filament used \[g\][ \t]*[:=][ \t]*([\d.,\s]+)/i)
+    if (per) {
+      const sum = per[1].split(',').map((n) => parseFloat(n)).filter(Number.isFinite).reduce((a, b) => a + b, 0)
+      grams = sum || null
+    }
+  }
+  return { minutes: t ? parseTimeToMin(t[1]) : null, grams: grams && Number.isFinite(grams) ? grams : null }
+}
+
+/** Sum the totals of every plate G-code inside a 3MF. Headers sit at the
+ *  top of the file (Bambu) or the bottom (Prusa/Orca), so only those ends
+ *  are searched -- a plate G-code can be tens of megabytes. */
+async function plateGcodeTotals(z: { names: string[]; read: (n: string) => Promise<Uint8Array | null> }) {
+  const names = z.names.filter((n) => /plate_\d+\.gcode$/i.test(n) || /\.gcode$/i.test(n))
+  let minutes: number | null = null
+  let grams: number | null = null
+  for (const n of names) {
+    const raw = await z.read(n)
+    if (!raw) continue
+    const text = decode(raw)
+    const ends = text.length > 400_000 ? text.slice(0, 200_000) + '\n' + text.slice(-200_000) : text
+    const t = gcodeHeaderTotals(ends)
+    if (t.minutes != null) minutes = (minutes ?? 0) + t.minutes
+    if (t.grams != null) grams = (grams ?? 0) + t.grams
+  }
+  return { minutes, grams, found: names.length }
+}
+
 // ---------- 3MF (Bambu / Orca sliced project; plain 3MF fallback) ----------
+
+const NO_NUMBERS_NOTE =
+  'This file has no print time or filament in it — it was saved before slicing, or as a ' +
+  'project. In Bambu Studio or Orca: slice, then File → Export → Export plate sliced file ' +
+  '(.gcode.3mf), and import that.'
 
 async function parse3mf(buf: ArrayBuffer, fileName: string): Promise<SliceFile> {
   const z = await unzip(buf)
@@ -418,7 +473,19 @@ async function parse3mf(buf: ArrayBuffer, fileName: string): Promise<SliceFile> 
     const sections = aggregate(names)
     const material = [...mats].join(', ') || null
     if (!Object.keys(typeGrams).length && grams && material) typeGrams[material] = grams
-    const totalMinutes = sawTime ? Math.round(minutes) : null
+    let totalMinutes = sawTime && minutes > 0 ? Math.round(minutes) : null
+    if (totalMinutes == null || !grams) {
+      // The summary is missing or zero. The plate G-code, when it is in the
+      // file, says the same thing in its header.
+      const g = await plateGcodeTotals(z)
+      if (totalMinutes == null && g.minutes != null) totalMinutes = g.minutes
+      if (!grams && g.grams != null) {
+        grams = g.grams
+        if (material) typeGrams[material] = grams
+      }
+    }
+    if (totalMinutes == null && !grams)
+      notes.push(NO_NUMBERS_NOTE)
     spread(sections, totalMinutes, grams || null, material, typeGrams)
     notes.push(
       'Time and filament are slicer estimates' +
@@ -447,6 +514,15 @@ async function parse3mf(buf: ArrayBuffer, fileName: string): Promise<SliceFile> 
   const build = chunks(src, 'build').join('')
   const names = tags(build, 'item').map((it, i) => nameById[it.objectid ?? ''] || `Part ${i + 1}`)
   if (!names.length) throw new Error('This 3MF contains no buildable objects.')
+  // No summary, but the plate G-code may still be in here.
+  const g = await plateGcodeTotals(z)
+  if (g.minutes != null || g.grams != null) {
+    const sections = aggregate(names)
+    spread(sections, g.minutes, g.grams, null, {})
+    return pack('3mf', fileName, sections, g.minutes, g.grams, null, [
+      'Time and filament read from the G-code inside this 3MF — slicer estimates.',
+    ], null)
+  }
   return pack('3mf-model', fileName, aggregate(names), null, null, null, [
     "This 3MF isn't sliced — section names imported, but no time or filament estimates. " +
       'Export the sliced project (.gcode.3mf) or G-code to get those.',
