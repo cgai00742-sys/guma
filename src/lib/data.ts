@@ -111,6 +111,7 @@ export {
   CHANGE_CAUSE_LABEL,
   ceilingCheck,
   validateRevision,
+  sameSliceFile,
 } from './data.types'
 export type {
   RelatedProject,

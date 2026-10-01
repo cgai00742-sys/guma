@@ -47,8 +47,9 @@ describe('what is open before anybody says', () => {
     }
   })
 
-  it('opens only the money on a finished one — the rest is a record', () => {
+  it('opens the money and what it took on a finished one — the rest is a record', () => {
     expect(defaultOpen('done', 'money')).toBe(true)
+    expect(defaultOpen('done', 'actuals')).toBe(true)
     expect(defaultOpen('done', 'build')).toBe(false)
     expect(defaultOpen('done', 'gate')).toBe(false)
     expect(defaultOpen('done', 'activity')).toBe(false)

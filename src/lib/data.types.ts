@@ -1159,6 +1159,24 @@ export interface SliceImportResult {
   partsAdded: number
   /** Rows that already existed and were matched by name -- a re-slice. */
   partsMatched: number
+  /** Set when this exact file (same name, same slicer numbers) was already
+   *  on the project: nothing new was written, and importId is the earlier
+   *  import. The date it first arrived, so the screen can say so. */
+  duplicateOf?: string | null
+}
+
+/** Two imports are the same file when the name and the slicer's own numbers
+ *  agree. Re-uploading a file must never count its print twice. */
+export function sameSliceFile(
+  a: { fileName: string; estMinutes: number | null; estGrams: number | null },
+  b: { fileName: string; estMinutes: number | null; estGrams: number | null },
+): boolean {
+  const n = (v: number | null) => (v == null ? null : Math.round(Number(v) * 10) / 10)
+  return (
+    a.fileName.trim().toLowerCase() === b.fileName.trim().toLowerCase() &&
+    n(a.estMinutes) === n(b.estMinutes) &&
+    n(a.estGrams) === n(b.estGrams)
+  )
 }
 
 /* ---- the selling side ------------------------------------------------- */

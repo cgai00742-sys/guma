@@ -15,7 +15,7 @@ import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
-import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, validateRevision, CHANGE_CAUSE_LABEL, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
+import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
   toRateSet,
@@ -2355,6 +2355,35 @@ export async function importSlice(
   input: SliceImportInput,
 ): Promise<SliceImportResult> {
   if (!input.sections.length) throw new Error('That file had nothing on the plate.')
+
+  // See data.local.ts: the same file again is not a second import.
+  const { data: prior, error: priorErr } = await supabase
+    .from('slice_imports')
+    .select('id, file_name, est_minutes, est_grams, imported_at, slice_files ( import_id )')
+    .eq('job_id', jobId)
+    .eq('shop_id', shopId)
+    .order('imported_at')
+  if (priorErr) throw priorErr
+  const dup = (prior ?? []).find((r) =>
+    sameSliceFile(
+      { fileName: r.file_name as string, estMinutes: r.est_minutes as number | null, estGrams: r.est_grams as number | null },
+      input,
+    ),
+  )
+  if (dup) {
+    const kept = Array.isArray(dup.slice_files) ? dup.slice_files.length > 0 : !!dup.slice_files
+    if (input.file && !kept) {
+      const { error } = await supabase.from('slice_files').insert({
+        import_id: dup.id,
+        byte_size: input.file.byteSize,
+        stored_size: input.file.storedSize,
+        encoding: input.file.encoding,
+        content: input.file.content,
+      })
+      if (error) throw error
+    }
+    return { importId: dup.id as string, partsAdded: 0, partsMatched: 0, duplicateOf: dup.imported_at as string }
+  }
 
   const { data: head, error: headErr } = await supabase
     .from('slice_imports')

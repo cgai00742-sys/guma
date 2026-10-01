@@ -116,6 +116,7 @@ import {
 } from '../lib/parts'
 import { makeMoney } from '../lib/pricing'
 import { todayISO, formatDate } from '../lib/dates'
+import { groupSliceFiles, machineFor, type FileGroup } from '../lib/fromFiles'
 import { startBy } from '../lib/schedule'
 import { defaultOpen, readFolds, writeFolds, type FoldScope } from '../lib/folds'
 import {
@@ -247,6 +248,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
 
   const shown = viewPhase ?? detail.phase
   const facts = detail.facts
+  const unrecordedFiles = groupSliceFiles(detail.slices, detail.runs).filter((g) => !g.recorded).length
   // Only client work can be a draft. A draft is a price nobody has agreed
   // to; the shop's own work has neither, and treating it as one hid every
   // in-house project from the board (see 0022_inhouse_live.sql). The data
@@ -1001,7 +1003,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           <h4>What it actually took</h4>
           <span
             className={`secstat ${
-              mine
+              unrecordedFiles > 0
+                ? 'warn'
+                : mine
                 ? ''
                 : comparison === null
                 ? ''
@@ -1014,7 +1018,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                       : 'ok'
             }`}
           >
-            {mine
+            {unrecordedFiles > 0
+              ? `${unrecordedFiles} sliced file${unrecordedFiles === 1 ? '' : 's'} not recorded yet`
+              : mine
               ? detail.facts.hasActuals
                 ? `${money(detail.facts.actualCost)} spent so far`
                 : 'nothing recorded yet'
@@ -1048,6 +1054,8 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           ) : (
             <Variance comparison={comparison} money={money} />
           )}
+
+          <FromTheFiles ctx={ctx} detail={detail} busy={busy} onChanged={reload} setError={setError} />
 
           <RunLog
             ctx={ctx}
@@ -1662,7 +1670,11 @@ function SliceImport({
         })),
       })
       let recorded: string | null = null
-      if (printedNow && printerId) {
+      const alreadyRecorded =
+        !!res.duplicateOf && detail.runs.some((r) => r.sliceImportId === res.importId)
+      if (alreadyRecorded) {
+        recorded = 'Its print was already recorded, so nothing was counted twice.'
+      } else if (printedNow && printerId) {
         const grams = read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)
         const hours =
           read.totals.estMinutes == null ? 0 : Math.round((read.totals.estMinutes / 60) * 100) / 100
@@ -1698,6 +1710,8 @@ function SliceImport({
           '.'
       }
       const bits: string[] = []
+      if (res.duplicateOf)
+        bits.push(`already on this project since ${res.duplicateOf.slice(0, 10)}, not added again`)
       if (res.partsAdded) bits.push(`${res.partsAdded} part${res.partsAdded === 1 ? '' : 's'} added`)
       if (res.partsMatched)
         bits.push(
@@ -3082,7 +3096,9 @@ function BuildSheet({
           footnote. Reported as "I uploaded a gcode and nothing happened".
           Reading a file is the primary action here; typing parts by hand is
           the fallback, and is now ordered that way. */}
-      {!locked && (
+      {/* Import is open at every stage. It was hidden from Review on, so a
+          finished project -- Maui -- had nowhere to put the file that made it. */}
+      {(
         <SliceImport
           ctx={ctx}
           detail={detail}
@@ -4415,5 +4431,185 @@ function PartEditor({
         Cancel
       </button>
     </form>
+  )
+}
+
+/**
+ * The sliced files, inside "What it actually took" -- where CG looked for
+ * them. Each distinct file with what the slicer said and what has been
+ * recorded; one click turns a file's numbers into the run (hours on the
+ * machine, filament off the shelf, the plate's parts marked printed).
+ * Recording is still a person's click -- an estimate is not an actual --
+ * but it is one click, here, not a form under a folded build sheet.
+ */
+function FromTheFiles({
+  ctx,
+  detail,
+  busy,
+  onChanged,
+  setError,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  busy: boolean
+  onChanged: () => Promise<void>
+  setError: (m: string | null) => void
+}) {
+  const groups = groupSliceFiles(detail.slices, detail.runs)
+  const [picked, setPicked] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
+  if (groups.length === 0) return null
+
+  const hrs = (h: number | null) => (h == null ? '—' : `${h} h`)
+  const machineOf = (g: FileGroup) => picked[g.first.id] || machineFor(g, ctx.printers)
+  const waiting = groups.filter((g) => !g.recorded)
+  const ready = waiting.filter((g) => machineOf(g))
+
+  async function recordOne(g: FileGroup) {
+    const printerId = machineOf(g)
+    if (!printerId) return
+    await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
+      printerId,
+      materialId: g.first.materialId,
+      unitsUsed: g.first.materialId ? (g.estGrams ?? 0) : 0,
+      hours: g.estHours ?? 0,
+      outcome: 'success',
+      failureReason: null,
+      note: `From ${g.first.fileName}`,
+      // The day the file arrived is the closest thing to a print date the
+      // record has; it is shown, and editable on the run afterwards.
+      startedAt: g.first.importedAt.slice(0, 10),
+      sliceImportId: g.first.id,
+    })
+    if (allowedStatuses(detail.phase, detail.facts.kind).includes('printed')) {
+      const partIds = new Set(
+        detail.slices.filter((s) => g.ids.includes(s.id)).flatMap((s) => s.sections.map((x) => x.partId)),
+      )
+      for (const p of detail.parts) {
+        if (partIds.has(p.id) && p.status === 'pending') {
+          await setPartStatus(ctx.shop.id, p.id, ctx.profile.id, 'printed', null)
+        }
+      }
+    }
+  }
+
+  async function run(list: FileGroup[]) {
+    setSaving(true)
+    setError(null)
+    try {
+      for (const g of list) await recordOne(g)
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const recordedHours = groups.reduce((a, g) => a + g.usedHours, 0)
+  const recordedUnits = groups.reduce((a, g) => a + g.usedUnits, 0)
+
+  return (
+    <div style={{ marginTop: 12 }} aria-label="From the sliced files" role="region">
+      <div className="sechead">
+        <h4>From the sliced files</h4>
+        <span className="sub">
+          {Math.round(recordedHours * 100) / 100} machine h · {recordedUnits} g recorded from{' '}
+          {groups.length - waiting.length} of {groups.length} file{groups.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      {waiting.length > 0 && (
+        <div className="attn warn" style={{ marginBottom: 8 }}>
+          <span>
+            {waiting.length === 1 ? 'One file has' : `${waiting.length} files have`} numbers that are
+            not in this project&rsquo;s cost yet. If it printed, record it — the hours go on the
+            machine and the filament comes off the shelf.
+          </span>
+          {ready.length > 1 && (
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={busy || saving}
+              onClick={() => void run(ready)}
+            >
+              Record all {ready.length} from the files
+            </button>
+          )}
+        </div>
+      )}
+      <div className="sheetwrap" style={{ maxHeight: 'none' }}>
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: '38%' }}>File</th>
+              <th>Machine</th>
+              <th className="r">Slicer said</th>
+              <th className="r">Recorded</th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((g) => {
+              const machine = machineOf(g)
+              return (
+                <tr key={g.first.id}>
+                  <td>
+                    <span className="pn">{g.first.fileName}</span>
+                    {g.uploads > 1 && (
+                      <div className="pmeta">uploaded {g.uploads} times — counted once</div>
+                    )}
+                  </td>
+                  <td>
+                    {g.recorded || machine ? (
+                      <span style={{ fontSize: 12 }}>
+                        {ctx.printers.find((p) => p.id === (g.runs[0]?.printerId ?? machine))?.name ??
+                          g.first.printerName ??
+                          g.first.printerModel ??
+                          '—'}
+                      </span>
+                    ) : (
+                      <select
+                        aria-label={`Machine for ${g.first.fileName}`}
+                        value={picked[g.first.id] ?? ''}
+                        onChange={(e) => setPicked((m) => ({ ...m, [g.first.id]: e.target.value }))}
+                      >
+                        <option value="">
+                          Pick the machine{g.first.printerModel ? ` (file says ${g.first.printerModel})` : ''}
+                        </option>
+                        {ctx.printers.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </td>
+                  <td className="r mono">
+                    {g.estGrams != null ? `${g.estGrams} g` : '—'} · {hrs(g.estHours)}
+                  </td>
+                  <td className="r">
+                    {g.recorded ? (
+                      <span className="mono" style={{ color: 'var(--ok)' }}>
+                        ✓ {g.usedUnits} g · {g.usedHours} h
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn sm primary"
+                        disabled={busy || saving || !machine}
+                        title={machine ? undefined : 'Pick the machine it printed on first.'}
+                        aria-label={`Record ${g.first.fileName} from the file`}
+                        onClick={() => void run([g])}
+                      >
+                        Record it
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }

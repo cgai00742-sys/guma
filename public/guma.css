@@ -1293,6 +1293,11 @@ details.snap .snapbody,.snapbody{padding:2px 12px 12px}
   border-color:color-mix(in srgb, var(--red) 35%, transparent);
   background:color-mix(in srgb, var(--red) 9%, transparent);
 }
+.attn.warn{
+  border-color:color-mix(in srgb, var(--warn) 40%, transparent);
+  background:color-mix(in srgb, var(--warn) 9%, transparent);
+  display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;
+}
 .attn.ok,.okbar{
   border-color:color-mix(in srgb, var(--ok) 35%, transparent);
   background:color-mix(in srgb, var(--ok) 8%, transparent);

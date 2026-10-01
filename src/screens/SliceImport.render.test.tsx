@@ -803,3 +803,63 @@ describe('a failed part, Voltage-style', () => {
     expect(note.textContent).toMatch(/1 send-back across 1 part/)
   })
 })
+
+describe("CG's Maui: one G-code uploaded several times, project already Done", () => {
+  it('shows the file once under What it actually took, and one click records it', async () => {
+    const { ctx, jobId, data } = await seedShop('inhouse')
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    // How his data looks: the same file imported three times, each as an
+    // estimate (before import could record a print), then moved to Done.
+    const parsed = await (await import('../lib/sliceImport')).parseSliceFile(gcodeFile('Maui bathy.gcode'))
+    const input = {
+      fileName: parsed.fileName,
+      kind: parsed.kind,
+      printerModel: parsed.printerModel,
+      printerId: null,
+      materialText: parsed.totals.material,
+      materialId: ctx.materials[0].id,
+      estMinutes: parsed.totals.estMinutes,
+      estGrams: parsed.totals.estGrams,
+      notes: parsed.notes,
+      sections: parsed.sections,
+    }
+    for (let i = 0; i < 3; i++) {
+      currentDb.sqlite
+        .prepare(
+          `insert into slice_imports (id, shop_id, job_id, file_name, kind, printer_model, material_id, est_minutes, est_grams, notes, imported_at)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?)`,
+        )
+        .run(`old-${i}`, ctx.shop.id, jobId, input.fileName, input.kind, input.printerModel, input.materialId, input.estMinutes, input.estGrams, `2026-09-2${i}T10:00:00Z`)
+    }
+    for (const to of ['review', 'delivered'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+
+    const region = await screen.findByRole('region', { name: /from the sliced files/i })
+    // Open on a finished project, not folded away.
+    expect(region.closest('details')?.hasAttribute('open')).toBe(true)
+    expect(within(region).getAllByText('Maui bathy.gcode')).toHaveLength(1)
+    within(region).getByText(/uploaded 3 times — counted once/i)
+    within(region).getByText(/87 g · 2\.05 h/)
+
+    // One machine in the shop, so nothing to pick.
+    await user.click(within(region).getByRole('button', { name: /record maui bathy\.gcode from the file/i }))
+    await waitFor(() => {
+      const a = currentDb.sqlite
+        .prepare('select material_units, machine_hours, runs from job_actuals where job_id = ?')
+        .get(jobId) as Record<string, number>
+      expect(a).toMatchObject({ material_units: 87, machine_hours: 2.05, runs: 1 })
+    })
+    await within(region).findByText(/✓ 87 g · 2\.05 h/)
+
+    // Uploading it yet again, at Done, adds nothing and counts nothing twice.
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile('Maui bathy.gcode'))
+    await user.click(await screen.findByRole('button', { name: /record the print/i }))
+    await screen.findByText(/not added again/i)
+    expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 3 })
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 1 })
+  })
+})

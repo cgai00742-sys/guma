@@ -67,7 +67,9 @@ const DONE_DEFAULTS: Record<string, boolean> = {
   people: false,
   handover: false,
   build: false,
-  actuals: false,
+  // What it took is the point of a finished project -- CG opened Maui
+  // expecting the file's hours and grams and found this folded shut.
+  actuals: true,
   activity: false,
 }
 

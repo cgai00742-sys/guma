@@ -34,6 +34,7 @@ import {
   runEventBody,
   validateRevision,
   CHANGE_CAUSE_LABEL,
+  sameSliceFile,
 } from './data.types'
 import { osCurrency, osLocale } from './locale'
 import { LATEST_RATE_CARD } from './rateCards'
@@ -3018,6 +3019,34 @@ export async function importSlice(
 ): Promise<SliceImportResult> {
   if (!input.sections.length) throw new Error('That file had nothing on the plate.')
   const d = await db()
+
+  // The same file again is not a second print, and not a second import.
+  // Reported by CG: one file uploaded several times onto Maui. If the
+  // earlier copy was imported before files were kept, keep this one's bytes.
+  const prior = await d.select<
+    { id: string; file_name: string; est_minutes: number | null; est_grams: number | null; imported_at: string; kept: number }[]
+  >(
+    `select i.id, i.file_name, i.est_minutes, i.est_grams, i.imported_at,
+            (select count(*) from slice_files f where f.import_id = i.id) as kept
+       from slice_imports i where i.job_id = ? and i.shop_id = ? order by i.imported_at`,
+    [jobId, shopId],
+  )
+  const dup = prior.find((r) =>
+    sameSliceFile(
+      { fileName: r.file_name, estMinutes: r.est_minutes, estGrams: r.est_grams },
+      input,
+    ),
+  )
+  if (dup) {
+    if (input.file && Number(dup.kept) === 0) {
+      await d.execute(
+        `insert into slice_files (import_id, byte_size, stored_size, encoding, content)
+         values (?, ?, ?, ?, ?)`,
+        [dup.id, input.file.byteSize, input.file.storedSize, input.file.encoding, input.file.content],
+      )
+    }
+    return { importId: dup.id, partsAdded: 0, partsMatched: 0, duplicateOf: dup.imported_at }
+  }
   const importId = crypto.randomUUID()
 
   await d.execute(
