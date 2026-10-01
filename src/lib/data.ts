@@ -91,6 +91,7 @@ import type {
   QuoteChange,
 } from './data.types'
 
+import type { SeriesRow, SeriesInput } from './data.types'
 export {
   NeedsSetup,
   toRateSet,
@@ -114,6 +115,8 @@ export {
   sameSliceFile,
 } from './data.types'
 export type {
+  SeriesRow,
+  SeriesInput,
   RelatedProject,
   SellBranch,
   StockCountInput,
@@ -260,7 +263,7 @@ export async function listGuideSeen(shopId: string): Promise<string[]> {
 
 export async function createInHouseJob(
   shopId: string,
-  input: { title: string; brief?: string | null; relatedTo?: string | null },
+  input: { title: string; brief?: string | null; relatedTo?: string | null; seriesId?: string | null },
 ): Promise<string> {
   return (await backend()).createInHouseJob(shopId, input)
 }
@@ -594,4 +597,28 @@ export async function listQuoteBuilds(quoteId: string): Promise<QuoteBuildRow[]>
  *  only. See lib/workspace.ts. */
 export async function resetWorkspace(): Promise<void> {
   return (await backend()).resetWorkspace()
+}
+
+export async function listSeries(shopId: string): Promise<SeriesRow[]> {
+  return (await backend()).listSeries(shopId)
+}
+
+export async function createSeries(
+  shopId: string,
+  input: { name: string; brief?: string | null; parentId?: string | null },
+): Promise<string> {
+  return (await backend()).createSeries(shopId, input)
+}
+
+export async function updateSeries(shopId: string, id: string, input: SeriesInput): Promise<void> {
+  return (await backend()).updateSeries(shopId, id, input)
+}
+
+export async function setJobSeries(
+  shopId: string,
+  jobId: string,
+  seriesId: string | null,
+  actorId: string | null = null,
+): Promise<void> {
+  return (await backend()).setJobSeries(shopId, jobId, seriesId, actorId)
 }

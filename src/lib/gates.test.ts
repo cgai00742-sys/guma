@@ -80,6 +80,7 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     unitsMade: 0,
     archivedAt: null,
     relatedTo: null,
+    seriesId: null,
     ...over,
   }
 }

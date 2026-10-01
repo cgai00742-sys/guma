@@ -347,30 +347,43 @@ describe('a master program — BathyTopo', () => {
     expect(screen.queryByRole('button', { name: /take it into intake/i })).toBeNull()
   })
 
-  it('starts a sub-project already filed inside it', async () => {
-    const { ctx, data } = await seedShop()
-    const bathy = await data.createInHouseJob(ctx.shop.id, { title: 'BathyTopo' })
+  it('builds BathyTopo › Hawaiian Islands › Maui from the Series screen', async () => {
+    const { ctx } = await seedShop()
     const user = userEvent.setup()
-    await renderProject(bathy, ctx)
-
-    await user.type(await screen.findByLabelText(/start a project inside BathyTopo/i), 'Fiji')
+    const { default: Series } = await import('./Series')
+    const { default: Project } = await import('./Project')
+    render(
+      <MemoryRouter initialEntries={['/series']}>
+        <Routes>
+          <Route path="/series" element={<Series ctx={ctx} />} />
+          <Route path="/series/:seriesId" element={<Series ctx={ctx} />} />
+          <Route path="/project/:jobId" element={<Project ctx={ctx} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await user.type(await screen.findByLabelText(/start a series/i), 'BathyTopo')
     await user.click(screen.getByRole('button', { name: /^start it$/i }))
+    await user.type(await screen.findByLabelText(/start a series inside BathyTopo/i), 'Hawaiian Islands')
+    await user.click(screen.getAllByRole('button', { name: /^start it$/i })[0])
+    await user.click(await screen.findByRole('link', { name: /Hawaiian Islands/ }))
+    await user.type(await screen.findByLabelText(/add a piece to Hawaiian Islands/i), 'Maui')
+    await user.click(screen.getByRole('button', { name: /start the piece/i }))
 
-    await waitFor(async () => {
-      const rows = (await currentDb.select(
-        "select title, related_to, taken_in_at from jobs where title = 'Fiji'",
-      )) as { title: string; related_to: string; taken_in_at: string | null }[]
-      expect(rows).toHaveLength(1)
-      expect(rows[0].related_to).toBe(bathy)
-      expect(rows[0].taken_in_at).not.toBeNull()
-    })
+    // Lands on Maui: an ordinary project at its first stage, with the way
+    // back up one click per level.
+    expect(await screen.findByRole('link', { name: 'BathyTopo' })).toBeDefined()
+    expect(screen.getByRole('link', { name: 'Hawaiian Islands' })).toBeDefined()
+    const rows = (await currentDb.select(
+      "select j.phase, s.name from jobs j join series s on s.id = j.series_id where j.title = 'Maui'",
+    )) as { phase: string; name: string }[]
+    expect(rows).toEqual([{ phase: 'design', name: 'Hawaiian Islands' }])
   })
 
-  it('adds up the whole program, islands included, and draws the path back up', async () => {
+  it('adds up the whole series, islands included, and shows each piece at its stage', async () => {
     const { ctx, data } = await seedShop()
-    const bathy = await data.createInHouseJob(ctx.shop.id, { title: 'BathyTopo' })
-    const hi = await data.createInHouseJob(ctx.shop.id, { title: 'Hawaiian Islands', relatedTo: bathy })
-    const oahu = await data.createInHouseJob(ctx.shop.id, { title: 'Oʻahu', relatedTo: hi })
+    const bathy = await data.createSeries(ctx.shop.id, { name: 'BathyTopo' })
+    const hi = await data.createSeries(ctx.shop.id, { name: 'Hawaiian Islands', parentId: bathy })
+    const oahu = await data.createInHouseJob(ctx.shop.id, { title: 'Oʻahu', seriesId: hi })
     await data.recordPrintRun(ctx.shop.id, oahu, ctx.profile.id, {
       printerId: ctx.printers[0].id,
       materialId: ctx.materials[0].id,
@@ -381,17 +394,27 @@ describe('a master program — BathyTopo', () => {
       note: null,
       startedAt: '2026-08-14',
     })
-
-    await renderProject(bathy, ctx)
-    // The region is listed, with the island's print counted inside it.
-    await screen.findByRole('link', { name: 'Hawaiian Islands' })
-    expect(screen.getAllByText('410 g').length).toBeGreaterThan(0)
-    expect(screen.getByText(/1 inside, included/)).toBeDefined()
+    await data.updateJobPhase(ctx.shop.id, oahu, ctx.profile.id, 'review')
+    const { default: Series } = await import('./Series')
+    render(
+      <MemoryRouter initialEntries={[`/series/${bathy}`]}>
+        <Routes>
+          <Route path="/series/:seriesId" element={<Series ctx={ctx} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByText('410 g')
+    expect(screen.getByRole('link', { name: /Hawaiian Islands/ })).toBeDefined()
 
     cleanup()
-    await renderProject(oahu, ctx)
-    // From the island, the way back up is one click per level.
-    expect(await screen.findByRole('link', { name: 'BathyTopo' })).toBeDefined()
-    expect(screen.getByRole('link', { name: 'Hawaiian Islands' })).toBeDefined()
+    render(
+      <MemoryRouter initialEntries={[`/series/${hi}`]}>
+        <Routes>
+          <Route path="/series/:seriesId" element={<Series ctx={ctx} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('link', { name: 'Oʻahu' })).toBeDefined()
+    expect(screen.getAllByText('Made').length).toBeGreaterThan(0)
   })
 })

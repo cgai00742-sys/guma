@@ -122,7 +122,7 @@ when('flags, from Hawaii', () => {
     minimumOrder: 0, actualCost: 0, hasActuals: false, actualRuns: 0,
     actualHours: 0, machineHours: 0, materialUnits: 0, failedUnits: 0,
     parts: 0, partsPrinted: 0, partsPassed: 0,
-    partsReprint: 0, reprintsEver: 0, unitsMade: 0, archivedAt: null, relatedTo: null, ...over,
+    partsReprint: 0, reprintsEver: 0, unitsMade: 0, archivedAt: null, relatedTo: null, seriesId: null, ...over,
   })
 
   it('a project due today is not overdue at 3pm local', () => {

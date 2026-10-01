@@ -11,6 +11,7 @@ import Dashboard from './screens/Dashboard'
 import Projects from './screens/Projects'
 import Project from './screens/Project'
 import Clients from './screens/Clients'
+import Series from './screens/Series'
 import Shelf from './screens/Shelf'
 import QuoteDoc from './screens/QuoteDoc'
 import Closeout from './screens/Closeout'
@@ -381,6 +382,8 @@ export default function App() {
             <Route path="/jobs" element={<Navigate to="/projects?view=list" replace />} />
             <Route path="/project/:jobId" element={<Project ctx={ctx} />} />
             <Route path="/clients" element={<Clients ctx={ctx} />} />
+            <Route path="/series" element={<Series ctx={ctx} />} />
+            <Route path="/series/:seriesId" element={<Series ctx={ctx} />} />
             <Route path="/shelf" element={<Shelf ctx={ctx} />} />
             <Route path="/settings" element={<Settings ctx={ctx} onSaved={refresh} />} />
             {/* Reachable any time, resuming wherever the shop left off. */}
@@ -640,6 +643,8 @@ function TopBar({
             {tab('/dashboard', 'Dashboard')}
             {tab('/projects', 'Projects')}
             {tab('/clients', 'Clients')}
+            {/* The shop's own work, held the way Clients holds theirs. */}
+            {tab('/series', 'Series')}
             {/* The other half of the business. A shop selling at a market or
                 on Etsy does work nobody commissioned, and until this tab
                 existed none of it was anywhere in the program. */}

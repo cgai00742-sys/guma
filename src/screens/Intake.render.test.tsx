@@ -24,12 +24,13 @@ const listClients = vi.fn(async (): Promise<any[]> => [])
 const createInHouseJob = vi.fn(async (_s: string, _i: any) => 'job-ih')
 // The program picker for in-house work reads the project list.
 const listJobs = vi.fn(async (): Promise<any[]> => [])
+const listSeries = vi.fn(async (): Promise<any[]> => [])
 const navigate = vi.fn()
 
 vi.mock('../lib/data', async () => {
   const types = await import('../lib/data.types')
   return {
-    nextJobRef, saveQuote, takeProjectIn, listClients, createInHouseJob, listJobs,
+    nextJobRef, saveQuote, takeProjectIn, listClients, createInHouseJob, listJobs, listSeries,
     toRateSet: types.toRateSet,
   }
 })
@@ -300,7 +301,7 @@ describe('a job nobody is paying for', () => {
         title: 'Calibrating the new PETG',
         brief: '',
         // No program chosen: it stands on its own.
-        relatedTo: null,
+        seriesId: null,
       }),
     )
     // It never went near the quote machinery.

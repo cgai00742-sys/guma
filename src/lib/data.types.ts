@@ -533,6 +533,8 @@ export interface ProjectFacts {
   /** The project this one sits under, if any -- BathyTopo for "Fiji".
    *  Programs nest to any depth; see setRelatedProject and lib/programs.ts. */
   relatedTo: string | null
+  /** The series this project is a piece of (0026_series.sql), or null. */
+  seriesId: string | null
   /** Filed off the working board, keeping every figure it contributes.
    *  Only a delivered project can be. Null means it is still on the board. */
   archivedAt: string | null
@@ -1281,4 +1283,22 @@ export interface SaleInput {
   unitPrice: number
   soldOn: string
   note?: string | null
+}
+
+/** A series: the shop's own body of work, holding projects the way a client
+ *  holds theirs. Nests -- BathyTopo › Hawaiian Islands. See 0026_series.sql. */
+export interface SeriesRow {
+  id: string
+  name: string
+  brief: string | null
+  parentId: string | null
+  createdAt: string
+  archivedAt: string | null
+}
+
+export interface SeriesInput {
+  name?: string
+  brief?: string | null
+  parentId?: string | null
+  archived?: boolean
 }

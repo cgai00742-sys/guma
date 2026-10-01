@@ -417,3 +417,72 @@ describe('the material shelf, as a ledger', () => {
     expect(ledger[1].jobTitle).toBe('Oʻahu')
   })
 })
+
+describe('series — the shop\'s own work, held like a client holds projects', () => {
+  async function shop() {
+    const data = await import('./data')
+    const shopId = await data.setupShop(SETUP)
+    const ctx = await data.loadShopContext()
+    return { data, shopId, ctx }
+  }
+
+  it('moves an old program tree into series without losing a figure (0026)', async () => {
+    const { data, shopId, ctx } = await shop()
+    // The tree as CG built it under the old model: projects inside projects.
+    const bathy = await data.createInHouseJob(shopId, { title: 'BathyTopo', brief: 'Islands in relief' })
+    const hi = await data.createInHouseJob(shopId, { title: 'Hawaiian Islands', relatedTo: bathy })
+    const maui = await data.createInHouseJob(shopId, { title: 'Maui', relatedTo: hi })
+    await data.logWork(shopId, hi, ctx.profile.id, { kind: 'design', hours: 3, workedOn: '2026-09-10', note: null })
+    const loose = await data.createInHouseJob(shopId, { title: 'Keychains' })
+
+    // Re-run the data half of 0026 against it.
+    const sql = readFileSync(join(MIGRATIONS, '0026_series.sql'), 'utf8')
+    currentDb.sqlite.exec(sql.slice(sql.indexOf('insert into series')))
+
+    const series = await data.listSeries(shopId)
+    expect(series.map((s) => s.name).sort()).toEqual(['BathyTopo', 'Hawaiian Islands'])
+    const { seriesPath } = await import('./series')
+    const rows = await data.listJobs(shopId)
+    const byId = new Map(rows.map((r) => [r.jobId, r]))
+    expect(byId.get(maui)?.facts.seriesId).toBe(hi)
+    expect(seriesPath(series, byId.get(maui)!.facts.seriesId)).toBe('BathyTopo › Hawaiian Islands')
+    expect(byId.get(maui)?.facts.relatedTo).toBeNull()
+    // Hawaiian Islands had hours on it: it stays, as a piece of its own series.
+    expect(byId.get(hi)?.facts.seriesId).toBe(hi)
+    expect(byId.get(hi)?.facts.archivedAt).toBeNull()
+    // BathyTopo had nothing: archived, with a note, not deleted.
+    expect(byId.get(bathy)?.facts.archivedAt).not.toBeNull()
+    const d = await data.loadProjectDetail(shopId, bathy)
+    expect(d.events.some((e) => /Became the BathyTopo series/.test(e.body ?? ''))).toBe(true)
+    expect(byId.get(loose)?.facts.seriesId).toBeNull()
+  })
+
+  it('files new pieces, nests series, refuses loops, adds up across the tree', async () => {
+    const { data, shopId, ctx } = await shop()
+    const bathy = await data.createSeries(shopId, { name: 'BathyTopo' })
+    const hi = await data.createSeries(shopId, { name: 'Hawaiian Islands', parentId: bathy })
+    const maui = await data.createInHouseJob(shopId, { title: 'Maui', seriesId: hi })
+    const fiji = await data.createInHouseJob(shopId, { title: 'Fiji' })
+    await data.setJobSeries(shopId, fiji, bathy, ctx.profile.id)
+    await data.logWork(shopId, maui, ctx.profile.id, { kind: 'design', hours: 5, workedOn: '2026-09-12', note: null })
+    await data.logWork(shopId, fiji, ctx.profile.id, { kind: 'design', hours: 2, workedOn: '2026-09-12', note: null })
+
+    await expect(data.updateSeries(shopId, bathy, { parentId: hi })).rejects.toThrow(/loop/)
+    await expect(data.updateSeries(shopId, bathy, { parentId: bathy })).rejects.toThrow(/itself/)
+
+    const { seriesTotals, piecesOf } = await import('./series')
+    const all = await data.listSeries(shopId)
+    const rows = await data.listJobs(shopId)
+    expect(piecesOf(rows, bathy).map((r) => r.title)).toEqual(['Fiji'])
+    const t = seriesTotals(rows, all, bathy)
+    expect(t.projects).toBe(2)
+    expect(t.hours).toBe(7)
+    expect(seriesTotals(rows, all, hi).hours).toBe(5)
+
+    // Maui moves through its own stages, inside the series.
+    await data.updateJobPhase(shopId, maui, ctx.profile.id, 'review')
+    expect((await data.loadProjectDetail(shopId, maui)).phase).toBe('review')
+    const ev = (await data.loadProjectDetail(shopId, fiji)).events.map((e) => e.body)
+    expect(ev).toContain('Filed in the BathyTopo series.')
+  })
+})

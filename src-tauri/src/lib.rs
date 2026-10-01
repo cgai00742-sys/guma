@@ -158,6 +158,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0025_over_ceiling.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 26,
+      description: "a series holds the shop's own projects like a client holds theirs",
+      sql: include_str!("../migrations/0026_series.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

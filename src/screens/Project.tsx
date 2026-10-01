@@ -52,6 +52,9 @@ import {
   archiveProject,
   setRelatedProject,
   listJobs,
+  listSeries,
+  setJobSeries,
+  type SeriesRow,
   type JobListRow,
   deletePart,
   updatePart,
@@ -117,6 +120,7 @@ import {
 import { makeMoney } from '../lib/pricing'
 import { todayISO, formatDate } from '../lib/dates'
 import { groupSliceFiles, machineFor, type FileGroup } from '../lib/fromFiles'
+import { seriesAncestors, seriesPath } from '../lib/series'
 import { startBy } from '../lib/schedule'
 import { defaultOpen, readFolds, writeFolds, type FoldScope } from '../lib/folds'
 import {
@@ -186,15 +190,18 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   /** Every project, for the program tree -- the path above this one and
    *  everything under it. See lib/programs.ts. */
   const [allRows, setAllRows] = useState<JobListRow[] | null>(null)
+  const [allSeries, setAllSeries] = useState<SeriesRow[]>([])
 
   const reload = useCallback(async () => {
     try {
-      const [d, rows] = await Promise.all([
+      const [d, rows, series] = await Promise.all([
         loadProjectDetail(ctx.shop.id, jobId),
         listJobs(ctx.shop.id),
+        listSeries(ctx.shop.id),
       ])
       setDetail(d)
       setAllRows(rows)
+      setAllSeries(series)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -248,6 +255,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
 
   const shown = viewPhase ?? detail.phase
   const facts = detail.facts
+  const mySeriesId = allRows?.find((r) => r.jobId === detail.jobId)?.facts.seriesId ?? null
   const unrecordedFiles = groupSliceFiles(detail.slices, detail.runs).filter((g) => !g.recorded).length
   // Only client work can be a draft. A draft is a price nobody has agreed
   // to; the shop's own work has neither, and treating it as one hid every
@@ -424,6 +432,16 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         </Link>
         {/* Where this lives in a program. Each step is a link, so getting
             from Oʻahu back up to BathyTopo is one click, not a search. */}
+        {/* A piece of a series: the series path, each step a link. */}
+        {mySeriesId &&
+          [...seriesAncestors(allSeries, mySeriesId), ...allSeries.filter((x) => x.id === mySeriesId)].map((x) => (
+            <span key={x.id} style={{ fontSize: 12, color: 'var(--txt-3)' }}>
+              {' › '}
+              <Link to={`/series/${x.id}`} style={{ color: 'var(--txt-2)' }}>
+                {x.name}
+              </Link>
+            </span>
+          ))}
         {allRows &&
           ancestorsOf(allRows, detail.jobId).map((a) => (
             <span key={a.jobId} style={{ fontSize: 12, color: 'var(--txt-3)' }}>
@@ -536,7 +554,20 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         </div>
       )}
 
-      {/* ---- the family ---- */}
+      {/* ---- the family ----
+          The shop's own work lives in a series (0026_series.sql); client
+          work keeps the older "continues from" program link. */}
+      {detail.facts.kind === 'inhouse' ? (
+        <SeriesSection
+          ctx={ctx}
+          jobId={detail.jobId}
+          seriesId={mySeriesId}
+          all={allSeries}
+          busy={busy}
+          onChanged={reload}
+          setError={setError}
+        />
+      ) : (
       <Program
         ctx={ctx}
         detail={detail}
@@ -547,6 +578,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         onChanged={reload}
         setError={setError}
       />
+      )}
 
       {/* ---- what it came to, once it is finished ---- */}
       {detail.phase === 'delivered' && (
@@ -4695,5 +4727,78 @@ function MoveBack({
         </button>
       </div>
     </div>
+  )
+}
+
+/**
+ * Which series this piece belongs to. One select: file it, move it, or take
+ * it out -- each logged to Activity. The series page is where the pieces
+ * are seen together.
+ */
+function SeriesSection({
+  ctx,
+  jobId,
+  seriesId,
+  all,
+  busy,
+  onChanged,
+  setError,
+}: {
+  ctx: ShopContext
+  jobId: string
+  seriesId: string | null
+  all: SeriesRow[]
+  busy: boolean
+  onChanged: () => Promise<void>
+  setError: (m: string | null) => void
+}) {
+  const options = all
+    .filter((s) => !s.archivedAt || s.id === seriesId)
+    .map((s) => ({ id: s.id, label: seriesPath(all, s.id) ?? s.name }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+  return (
+    <section className="sec" style={{ marginTop: 18 }}>
+      <div className="sechead">
+        <h4>Series</h4>
+        <span className="secstat">
+          {seriesId ? (
+            <Link to={`/series/${seriesId}`}>{seriesPath(all, seriesId)}</Link>
+          ) : (
+            'not in a series'
+          )}
+        </span>
+      </div>
+      <div className="btnrow" style={{ alignItems: 'center' }}>
+        <label className="lbl" htmlFor="piece-series" style={{ margin: 0 }}>
+          Piece of
+        </label>
+        <select
+          id="piece-series"
+          value={seriesId ?? ''}
+          disabled={busy}
+          onChange={(e) => {
+            const next = e.target.value || null
+            void (async () => {
+              try {
+                await setJobSeries(ctx.shop.id, jobId, next, ctx.profile.id)
+                await onChanged()
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err))
+              }
+            })()
+          }}
+        >
+          <option value="">No series</option>
+          {options.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <Link to="/series" className="linkbtn" style={{ width: 'auto' }}>
+          {all.length ? 'All series' : 'Start a series'}
+        </Link>
+      </div>
+    </section>
   )
 }

@@ -40,8 +40,8 @@ import {
   ceilingCheck,
   createInHouseJob,
   listClients,
-  listJobs,
-  type JobListRow,
+  listSeries,
+  type SeriesRow,
   loadProjectDetail,
   nextJobRef,
   saveQuote,
@@ -55,7 +55,7 @@ import {
   type ShopContext,
 } from '../lib/data'
 import { addDaysISO } from '../lib/dates'
-import { pathLabel } from '../lib/programs'
+import { seriesPath } from '../lib/series'
 import { normalise, search } from '../lib/search'
 import { clientItem } from '../lib/searchItems'
 
@@ -124,11 +124,13 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
    * preselects it when arriving from a program's own page.
    */
   const [within, setWithin] = useState<string>(params.get('within') ?? '')
-  const [programs, setPrograms] = useState<JobListRow[]>([])
+  // Since 0026 the shop's own work is filed in a SERIES, not under another
+  // project. ?within= now names a series.
+  const [seriesList, setSeriesList] = useState<SeriesRow[]>([])
   useEffect(() => {
-    listJobs(ctx.shop.id)
-      .then((rows) => setPrograms(rows.filter((r) => !r.facts.archivedAt)))
-      .catch(() => setPrograms([]))
+    listSeries(ctx.shop.id)
+      .then((rows) => setSeriesList(rows.filter((r) => !r.archivedAt)))
+      .catch(() => setSeriesList([]))
   }, [ctx.shop.id])
   const [acceptedTotal, setAcceptedTotal] = useState<number | null>(null)
   const [cause, setCause] = useState<ChangeCause>('added_work')
@@ -300,7 +302,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
         const jobId = await createInHouseJob(ctx.shop.id, {
           title: title.trim(),
           brief,
-          relatedTo: within || null,
+          seriesId: within || null,
         })
         navigate(`/project/${jobId}`)
       } catch (e) {
@@ -661,23 +663,22 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             {inHouse && (
               <div className="fld" style={{ marginTop: 10 }}>
                 <label className="lbl" htmlFor="q-within">
-                  Inside a program
+                  Piece of a series
                 </label>
                 <select id="q-within" value={within} onChange={(e) => setWithin(e.target.value)}>
                   <option value="">None — it stands on its own</option>
-                  {programs.map((p) => {
-                    const where = pathLabel(programs, p.jobId)
-                    return (
-                      <option key={p.jobId} value={p.jobId}>
-                        {where ? `${where} › ` : ''}
-                        {p.title}
+                  {seriesList
+                    .map((x) => ({ id: x.id, label: seriesPath(seriesList, x.id) ?? x.name }))
+                    .sort((a, b) => a.label.localeCompare(b.label))
+                    .map((x) => (
+                      <option key={x.id} value={x.id}>
+                        {x.label}
                       </option>
-                    )
-                  })}
+                    ))}
                 </select>
                 <div className="hint">
-                  For work that belongs to something bigger — an island inside BathyTopo. It keeps
-                  its own costs; the program adds them up.
+                  For a piece of something bigger — Maui inside BathyTopo › Hawaiian Islands. It
+                  moves through its own stages and keeps its own costs; the series adds them up.
                 </div>
               </div>
             )}

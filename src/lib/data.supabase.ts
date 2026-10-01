@@ -15,6 +15,7 @@ import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
+import type { SeriesRow, SeriesInput } from './data.types'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
@@ -454,7 +455,7 @@ async function systemClientId(shopId: string): Promise<string> {
  *  intake is where a client brief becomes a quote, and neither applies. */
 export async function createInHouseJob(
   shopId: string,
-  input: { title: string; brief?: string | null; relatedTo?: string | null },
+  input: { title: string; brief?: string | null; relatedTo?: string | null; seriesId?: string | null },
 ): Promise<string> {
   const title = input.title.trim()
   if (!title) throw new Error('An in-house job needs a title — what are you working on?')
@@ -474,6 +475,7 @@ export async function createInHouseJob(
       asset_origin: 'model',
       // Live at birth -- see data.local.ts's createInHouseJob.
       taken_in_at: new Date().toISOString(),
+      series_id: input.seriesId ?? null,
     })
     .select('id')
     .single()
@@ -607,7 +609,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
 }
 
 const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_in_at, phase, priority,
-   asset_origin, poc, needed_by, window_from, window_locked, at_risk, over_ceiling, archived_at, related_to,
+   asset_origin, poc, needed_by, window_from, window_locked, at_risk, over_ceiling, archived_at, related_to, series_id,
    delivery_on, delivery_how,
    clients!inner ( id, name, kind, contact, email, phone ),
    quotes ( id, status, total, design_billing, design_qty, revisions_incl, quantity,
@@ -702,6 +704,7 @@ function factsFrom(
     reprintsEver: Number(r.job_parts_summary?.[0]?.reprints_ever ?? 0),
     archivedAt: r.archived_at ?? null,
     relatedTo: r.related_to ?? null,
+    seriesId: (r.series_id as string | null) ?? null,
     unitsMade: ((r.batches ?? []) as { units_made: number }[]).reduce(
       (a, b) => a + Number(b.units_made ?? 0),
       0,
@@ -2669,4 +2672,121 @@ export async function deleteSliceImport(shopId: string, importId: string): Promi
  */
 export async function resetWorkspace(): Promise<void> {
   throw new Error('The demo workspace is only available in the desktop app.')
+}
+
+// ---------------------------------------------------------------------------
+// Series -- see data.local.ts and 0030_series.sql.
+// ---------------------------------------------------------------------------
+
+export async function listSeries(shopId: string): Promise<SeriesRow[]> {
+  const { data, error } = await supabase
+    .from('series')
+    .select('id, name, brief, parent_id, created_at, archived_at')
+    .eq('shop_id', shopId)
+    .order('name')
+  if (error) throw error
+  return (data ?? []).map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    brief: (r.brief as string | null) ?? null,
+    parentId: (r.parent_id as string | null) ?? null,
+    createdAt: r.created_at as string,
+    archivedAt: (r.archived_at as string | null) ?? null,
+  }))
+}
+
+async function checkSeriesParent(shopId: string, id: string | null, parentId: string | null) {
+  if (!parentId) return
+  if (parentId === id) throw new Error('A series cannot sit inside itself.')
+  let cursor: string | null = parentId
+  for (let hops = 0; cursor && hops < 64; hops++) {
+    const res: { data: { parent_id: string | null } | null; error: unknown } = await supabase
+      .from('series')
+      .select('parent_id')
+      .eq('id', cursor)
+      .eq('shop_id', shopId)
+      .maybeSingle()
+    if (res.error) throw res.error
+    if (!res.data) throw new Error('That series no longer exists.')
+    if (id && res.data.parent_id === id) {
+      throw new Error('That series is already inside this one — that would make a loop.')
+    }
+    cursor = res.data.parent_id ?? null
+  }
+}
+
+export async function createSeries(
+  shopId: string,
+  input: { name: string; brief?: string | null; parentId?: string | null },
+): Promise<string> {
+  const name = input.name.trim()
+  if (!name) throw new Error('A series needs a name.')
+  await checkSeriesParent(shopId, null, input.parentId ?? null)
+  const { data, error } = await supabase
+    .from('series')
+    .insert({ shop_id: shopId, name, brief: input.brief?.trim() || null, parent_id: input.parentId ?? null })
+    .select('id')
+    .single()
+  if (error) throw error
+  return data.id as string
+}
+
+export async function updateSeries(shopId: string, id: string, input: SeriesInput): Promise<void> {
+  const row: Record<string, unknown> = {}
+  if (input.name !== undefined) {
+    const name = input.name.trim()
+    if (!name) throw new Error('A series needs a name.')
+    row.name = name
+  }
+  if (input.brief !== undefined) row.brief = input.brief?.trim() || null
+  if (input.parentId !== undefined) {
+    await checkSeriesParent(shopId, id, input.parentId)
+    row.parent_id = input.parentId
+  }
+  if (input.archived !== undefined) row.archived_at = input.archived ? new Date().toISOString() : null
+  if (!Object.keys(row).length) return
+  const { error } = await supabase.from('series').update(row).eq('id', id).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+export async function setJobSeries(
+  shopId: string,
+  jobId: string,
+  seriesId: string | null,
+  actorId: string | null = null,
+): Promise<void> {
+  const { data: job, error: jErr } = await supabase
+    .from('jobs')
+    .select('series_id')
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+    .single()
+  if (jErr) throw jErr
+  if ((job.series_id ?? null) === seriesId) return
+  const name = async (id: string | null) => {
+    if (!id) return null
+    const { data, error } = await supabase.from('series').select('name').eq('id', id).eq('shop_id', shopId).maybeSingle()
+    if (error) throw error
+    return (data?.name as string | undefined) ?? null
+  }
+  const to = await name(seriesId)
+  if (seriesId && !to) throw new Error('That series no longer exists.')
+  const from = await name(job.series_id as string | null)
+  const { error } = await supabase
+    .from('jobs')
+    .update({ series_id: seriesId, updated_at: new Date().toISOString() })
+    .eq('id', jobId)
+    .eq('shop_id', shopId)
+  if (error) throw error
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: jobId,
+    actor_id: actorId,
+    kind: 'edit',
+    body: to
+      ? from
+        ? `Moved from the ${from} series to ${to}.`
+        : `Filed in the ${to} series.`
+      : `Taken out of the ${from} series.`,
+  })
+  if (evErr) throw evErr
 }

@@ -49,7 +49,7 @@ import {
 } from '../lib/data'
 import { flagsFor, gateStatus, ladderFor, phaseLabel, worstTone, type Flag } from '../lib/gates'
 import { filterBy } from '../lib/search'
-import { pathLabel } from '../lib/programs'
+import { useSeries, whereLabel } from '../lib/useSeries'
 import { asSearchItem } from '../lib/searchItems'
 
 const COLUMN_HUE: Record<JobPhase, string> = {
@@ -82,6 +82,7 @@ interface Decorated extends JobListRow {
 export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch?: React.ReactNode }) {
   const navigate = useNavigate()
   const [jobs, setJobs] = useState<JobListRow[] | null>(null)
+  const seriesRows = useSeries(ctx.shop.id)
   const [error, setError] = useState<string | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [overPhase, setOverPhase] = useState<JobPhase | null>(null)
@@ -388,7 +389,7 @@ export default function Pipeline({ ctx, viewSwitch }: { ctx: ShopContext; viewSw
                 <Card
                   key={job.jobId}
                   job={job}
-                  where={pathLabel(jobs ?? [], job.jobId)}
+                  where={whereLabel(jobs ?? [], seriesRows, job.jobId)}
                   dragging={dragId === job.jobId}
                   onOpen={() => navigate(`/project/${job.jobId}`)}
                   onDragStart={(e) => {

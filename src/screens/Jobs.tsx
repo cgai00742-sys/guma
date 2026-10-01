@@ -30,7 +30,7 @@ import { filterBy } from '../lib/search'
 import { asSearchItem } from '../lib/searchItems'
 import GuideModal from '../components/GuideModal'
 import { useGuide } from '../lib/useGuide'
-import { pathLabel } from '../lib/programs'
+import { useSeries, whereLabel } from '../lib/useSeries'
 
 type SortKey = 'saved' | 'stage' | 'due' | 'value' | 'owed' | 'flags'
 type Show = 'live' | 'drafts' | 'all'
@@ -62,6 +62,7 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
   const { money } = useMemo(() => makeMoney(rates.currency, rates.locale), [rates.currency, rates.locale])
 
   const [jobs, setJobs] = useState<JobListRow[] | null>(null)
+  const seriesRows = useSeries(ctx.shop.id)
   const [error, setError] = useState<string | null>(null)
 
   /**
@@ -308,7 +309,7 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
                       <td style={{ fontFamily: 'var(--mono)', color: 'var(--txt-3)' }}>{j.ref}</td>
                       <td>
                         <div style={{ fontWeight: 500, color: 'var(--txt)' }}>{j.title}</div>
-                        <div className="pmeta">{pathLabel(jobs ?? [], j.jobId) ?? j.clientName}</div>
+                        <div className="pmeta">{whereLabel(jobs ?? [], seriesRows, j.jobId) ?? j.clientName}</div>
                       </td>
                       <td>
                         {j.facts.takenInAt ? (

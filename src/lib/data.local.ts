@@ -36,6 +36,7 @@ import {
   CHANGE_CAUSE_LABEL,
   sameSliceFile,
 } from './data.types'
+import type { SeriesRow, SeriesInput } from './data.types'
 import { osCurrency, osLocale } from './locale'
 import { LATEST_RATE_CARD } from './rateCards'
 import { activeDbUrl, isDemo } from './workspace'
@@ -712,7 +713,7 @@ async function systemClientId(shopId: string): Promise<string> {
  */
 export async function createInHouseJob(
   shopId: string,
-  input: { title: string; brief?: string | null; relatedTo?: string | null },
+  input: { title: string; brief?: string | null; relatedTo?: string | null; seriesId?: string | null },
 ): Promise<string> {
   const title = input.title.trim()
   if (!title) throw new Error('An in-house job needs a title — what are you working on?')
@@ -730,10 +731,10 @@ export async function createInHouseJob(
   // CG as "the drafts feature isn't working"; fixed for old rows by 0022.
   await d.execute(
     `insert into jobs (id, shop_id, ref, client_id, title, brief, kind, phase, asset_origin,
-                       taken_in_at)
+                       taken_in_at, series_id)
      values (?, ?, ?, ?, ?, ?, 'inhouse', 'design', 'model',
-             strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-    [jobId, shopId, ref, clientId, title, input.brief?.trim() || null],
+             strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?)`,
+    [jobId, shopId, ref, clientId, title, input.brief?.trim() || null, input.seriesId ?? null],
   )
   if (input.relatedTo) await setRelatedProject(shopId, jobId, input.relatedTo)
   return jobId
@@ -790,7 +791,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
  *  about what a project's facts are. */
 const JOB_LIST_SQL = `
   select j.id as job_id, j.ref, j.title, j.brief, j.created_at, j.updated_at,
-         j.archived_at, j.related_to,
+         j.archived_at, j.related_to, j.series_id,
          j.taken_in_at,
          j.phase, j.kind, j.priority, j.asset_origin, j.poc,
          j.needed_by, j.window_from, j.window_locked, j.at_risk, j.over_ceiling,
@@ -892,6 +893,7 @@ interface JobListSqlRow {
   units_made: number
   archived_at: string | null
   related_to: string | null
+  series_id: string | null
 }
 
 function factsFrom(r: JobListSqlRow): ProjectFacts {
@@ -937,6 +939,7 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     unitsMade: Number(r.units_made ?? 0),
     archivedAt: r.archived_at ?? null,
     relatedTo: r.related_to ?? null,
+    seriesId: r.series_id ?? null,
   }
 }
 
@@ -3388,4 +3391,120 @@ export async function sliceFileContent(
 export async function deleteSliceImport(shopId: string, importId: string): Promise<void> {
   const d = await db()
   await d.execute('delete from slice_imports where id = ? and shop_id = ?', [importId, shopId])
+}
+
+// ---------------------------------------------------------------------------
+// Series (0026_series.sql)
+// ---------------------------------------------------------------------------
+
+export async function listSeries(shopId: string): Promise<SeriesRow[]> {
+  const d = await db()
+  const rows = await d.select<
+    { id: string; name: string; brief: string | null; parent_id: string | null; created_at: string; archived_at: string | null }[]
+  >('select id, name, brief, parent_id, created_at, archived_at from series where shop_id = ? order by name', [shopId])
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    brief: r.brief,
+    parentId: r.parent_id,
+    createdAt: r.created_at,
+    archivedAt: r.archived_at,
+  }))
+}
+
+/** Refuse a parent that is this series or sits inside it. */
+async function checkSeriesParent(shopId: string, id: string | null, parentId: string | null) {
+  if (!parentId) return
+  if (parentId === id) throw new Error('A series cannot sit inside itself.')
+  const d = await db()
+  let cursor: string | null = parentId
+  for (let hops = 0; cursor && hops < 64; hops++) {
+    const rows: { parent_id: string | null }[] = await d.select(
+      'select parent_id from series where id = ? and shop_id = ?',
+      [cursor, shopId],
+    )
+    if (!rows.length) throw new Error('That series no longer exists.')
+    if (id && rows[0].parent_id === id) {
+      throw new Error('That series is already inside this one — that would make a loop.')
+    }
+    cursor = rows[0].parent_id
+  }
+}
+
+export async function createSeries(
+  shopId: string,
+  input: { name: string; brief?: string | null; parentId?: string | null },
+): Promise<string> {
+  const name = input.name.trim()
+  if (!name) throw new Error('A series needs a name.')
+  await checkSeriesParent(shopId, null, input.parentId ?? null)
+  const id = crypto.randomUUID()
+  const d = await db()
+  await d.execute('insert into series (id, shop_id, name, brief, parent_id) values (?, ?, ?, ?, ?)', [
+    id,
+    shopId,
+    name,
+    input.brief?.trim() || null,
+    input.parentId ?? null,
+  ])
+  return id
+}
+
+export async function updateSeries(shopId: string, id: string, input: SeriesInput): Promise<void> {
+  const sets: string[] = []
+  const args: unknown[] = []
+  if (input.name !== undefined) {
+    const name = input.name.trim()
+    if (!name) throw new Error('A series needs a name.')
+    sets.push('name = ?')
+    args.push(name)
+  }
+  if (input.brief !== undefined) {
+    sets.push('brief = ?')
+    args.push(input.brief?.trim() || null)
+  }
+  if (input.parentId !== undefined) {
+    await checkSeriesParent(shopId, id, input.parentId)
+    sets.push('parent_id = ?')
+    args.push(input.parentId)
+  }
+  if (input.archived !== undefined) {
+    sets.push(input.archived ? "archived_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')" : 'archived_at = null')
+  }
+  if (!sets.length) return
+  const d = await db()
+  await d.execute(`update series set ${sets.join(', ')} where id = ? and shop_id = ?`, [...args, id, shopId])
+}
+
+/** File a project into a series, or take it out. Logged to Activity. */
+export async function setJobSeries(
+  shopId: string,
+  jobId: string,
+  seriesId: string | null,
+  actorId: string | null = null,
+): Promise<void> {
+  const d = await db()
+  const [job] = await d.select<{ series_id: string | null }[]>(
+    'select series_id from jobs where id = ? and shop_id = ?',
+    [jobId, shopId],
+  )
+  if (!job) throw new Error('That project is not in this shop.')
+  if ((job.series_id ?? null) === seriesId) return
+  const name = async (id: string | null) =>
+    id
+      ? ((await d.select<{ name: string }[]>('select name from series where id = ? and shop_id = ?', [id, shopId]))[0]
+          ?.name ?? null)
+      : null
+  const to = await name(seriesId)
+  if (seriesId && !to) throw new Error('That series no longer exists.')
+  const from = await name(job.series_id)
+  await d.execute(
+    `update jobs set series_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ? and shop_id = ?`,
+    [seriesId, jobId, shopId],
+  )
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [
+    jobId,
+    actorId,
+    to ? (from ? `Moved from the ${from} series to ${to}.` : `Filed in the ${to} series.`) : `Taken out of the ${from} series.`,
+  ])
 }
