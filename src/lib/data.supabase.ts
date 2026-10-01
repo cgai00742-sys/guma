@@ -1905,10 +1905,19 @@ export async function addPart(
     job_id: jobId,
     kind: 'status',
     to_status: 'pending',
-    note: 'Added to the build sheet',
+    note: input.reason?.trim() ? `Added after checking: ${input.reason.trim()}` : 'Added to the build sheet',
     actor_id: actorId,
   })
   if (evErr) throw evErr
+  if (input.reason?.trim()) {
+    const { error: jErr } = await supabase.from('job_events').insert({
+      job_id: jobId,
+      actor_id: actorId,
+      kind: 'edit',
+      body: `Added a part, "${label}" ×${qty}. Why: ${input.reason.trim()}`,
+    })
+    if (jErr) throw jErr
+  }
   return data.id as string
 }
 

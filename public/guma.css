@@ -1537,6 +1537,7 @@ td.cell.busy.live,.tlseg.live{box-shadow:0 0 12px color-mix(in srgb, var(--biolu
       a picture of one, which is exactly how a dropped file goes nowhere and
       the program looks broken. */
 .drop{
+  display:block;position:relative;
   border:1.5px dashed color-mix(in srgb, var(--line) 80%, var(--biolum));
   border-radius:10px;padding:18px 16px;text-align:center;cursor:pointer;
   background:color-mix(in srgb, var(--panel-2) 70%, transparent);

@@ -180,6 +180,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
    *  stage rail lets you look back at a cleared gate without moving the
    *  project, which is the whole reason earlier gates are kept. */
   const [viewPhase, setViewPhase] = useState<JobPhase | null>(null)
+  const [backOpen, setBackOpen] = useState(false)
   // Finished projects open differently from live ones: a delivered project
   // is a record behind a summary, not a control panel.
   const fold = useFolds(detail?.phase === 'delivered' ? 'done' : 'live')
@@ -527,6 +528,30 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         })}
       </div>
 
+      {/* Moving backwards lives HERE, beside the stages, not inside the gate
+          section -- which is folded shut on a finished project, and is
+          exactly where CG never saw it. Voltage's rule: going back needs a
+          reason, and the reason goes on the record. */}
+      {!isDraft && here > 0 && (
+        <div style={{ marginTop: 8 }}>
+          {!backOpen ? (
+            <button type="button" className="btn sm" disabled={busy} onClick={() => setBackOpen(true)}>
+              ← Move back a stage
+            </button>
+          ) : (
+            <MoveBack
+              stages={ladder.slice(0, here).map((p) => ({ value: p, label: label(p) }))}
+              busy={busy}
+              onCancel={() => setBackOpen(false)}
+              onMove={async (to, why) => {
+                await moveBack(to, why)
+                setBackOpen(false)
+              }}
+            />
+          )}
+        </div>
+      )}
+
       {flags.length > 0 && (
         <div className="dlg-flags" style={{ marginTop: 10 }}>
           {flags.map((f) => (
@@ -662,13 +687,6 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           </span>
         </summary>
 
-        {shown !== detail.phase && phaseIndex(shown, detail.facts.kind) < here && !isDraft && (
-          <MoveBack
-            to={label(shown)}
-            busy={busy}
-            onMove={(why) => moveBack(shown, why)}
-          />
-        )}
         {shown !== detail.phase && (
           <div className="hint" style={{ marginBottom: 6 }}>
             Looking at {label(shown)}, which is{' '}
@@ -1322,8 +1340,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             disabled={busy}
             title="Something needs fixing? Open the earlier stage and say why."
             onClick={() => {
-              setViewPhase(ladder[here - 1])
-              fold.set('gate', true)
+              setBackOpen(true)
               window.scrollTo?.({ top: 0, behavior: 'smooth' })
             }}
           >
@@ -1674,6 +1691,13 @@ function SliceImport({
    *  silent: the rows appear somewhere below and nothing says the file was
    *  read, which reads as "nothing happened". */
   const [done, setDone] = useState<string | null>(null)
+  /** Errors shown IN the box, where the person is looking. Sent to the
+   *  page banner too, but that sits a screen above on a long project. */
+  const [failed, setFailed] = useState<string | null>(null)
+  const fail = (m: string | null) => {
+    setFailed(m)
+    setError(m)
+  }
   /**
    * Asked once, at import: has this file already been printed? Most files
    * arrive AFTER the plate came off -- that is when people remember to log
@@ -1688,7 +1712,7 @@ function SliceImport({
 
   async function pick(file: File | undefined) {
     if (!file) return
-    setError(null)
+    fail(null)
     setDone(null)
     try {
       const parsed = await parseSliceFile(file)
@@ -1701,11 +1725,18 @@ function SliceImport({
       const packed = await packFile(bytes)
       setKept(packed)
       setTooBig(packed ? null : tooBigNote(bytes.byteLength))
-      setPrinterId(matchPrinter(ctx.printerRows, parsed.printerModel)?.id ?? '')
+      // A shop with one machine has printed it on that machine.
+      // A file that names no machine, in a shop with one, was printed on
+      // that one. A file that names a machine the shop does not own is left
+      // unmatched: a blank is an open question, a guess looks answered.
+      setPrinterId(
+        matchPrinter(ctx.printerRows, parsed.printerModel)?.id ??
+          (!parsed.printerModel && ctx.printerRows.length === 1 ? ctx.printerRows[0].id : ''),
+      )
       setMaterialId(matchMaterial(ctx.materials, parsed.totals.material)?.id ?? '')
     } catch (e) {
       setRead(null)
-      setError(e instanceof Error ? e.message : String(e))
+      fail(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -1724,7 +1755,7 @@ function SliceImport({
   async function confirm() {
     if (!read) return
     setSaving(true)
-    setError(null)
+    fail(null)
     try {
       const res = await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
         file: kept,
@@ -1805,7 +1836,7 @@ function SliceImport({
       clear()
       await onChanged()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      fail(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
@@ -1816,6 +1847,11 @@ function SliceImport({
 
   return (
     <div style={{ marginTop: 12 }}>
+      {failed && (
+        <div className="attn crit" role="alert" style={{ marginTop: 0, marginBottom: 10 }}>
+          <span>That file was not imported: {failed}</span>
+        </div>
+      )}
       {done && (
         <div className="landed-note hint" style={{ marginTop: 0, marginBottom: 10, color: 'var(--ok)' }}>
           {done}
@@ -2004,7 +2040,9 @@ function SliceImport({
               disabled={busy || saving || (printedNow && !printerId)}
               onClick={() => void confirm()}
             >
-              {printedNow ? 'Add to the build sheet and record the print' : `Add ${read.totals.sections} section${read.totals.sections === 1 ? '' : 's'} to the build sheet`}
+              {printedNow && !printerId
+                ? 'Pick the machine above to record the print'
+                : printedNow ? 'Add to the build sheet and record the print' : `Add ${read.totals.sections} section${read.totals.sections === 1 ? '' : 's'} to the build sheet`}
             </button>
             <button type="button" className="btn sm" disabled={saving} onClick={clear}>
               Discard
@@ -3075,6 +3113,7 @@ function BuildSheet({
 }) {
   const [label, setLabel] = useState('')
   const [qty, setQty] = useState('1')
+  const [addWhy, setAddWhy] = useState('')
   const [saving, setSaving] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
   /**
@@ -3501,53 +3540,71 @@ function BuildSheet({
         </div>
       )}
 
-      {locked ? (
-        <div className="hint" style={{ marginTop: 10 }}>
-          The sheet is locked from Review onwards — pass a part or send it back, but the list itself
-          no longer moves. Checking work against a list that can still change is not checking.
+      {/* Parts can be added at any stage. Before Review it is just a list
+          being built. From Review on the list has been checked, so adding to
+          it needs a reason, which goes in Activity -- CG: "allow projects
+          to be editable in terms of adding more pieces". */}
+      <div className="btnrow" style={{ marginTop: 10, alignItems: 'flex-end' }}>
+        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
+          <label className="lbl" htmlFor="part-label">
+            {locked ? 'Add another part' : 'Part'}
+          </label>
+          <input
+            id="part-label"
+            value={label}
+            placeholder="Mast bracket, left"
+            onChange={(e) => setLabel(e.target.value)}
+          />
         </div>
-      ) : (
-        <div className="btnrow" style={{ marginTop: 10, alignItems: 'flex-end' }}>
-          <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
-            <label className="lbl" htmlFor="part-label">
-              Part
+        <div className="fld" style={{ margin: 0, width: 90 }}>
+          <label className="lbl" htmlFor="part-qty">
+            Copies
+          </label>
+          <input
+            id="part-qty"
+            type="number"
+            min="1"
+            value={qty}
+            onChange={(e) => setQty(e.target.value)}
+          />
+        </div>
+        {locked && (
+          <div className="fld" style={{ margin: 0, flex: 1, minWidth: 200 }}>
+            <label className="lbl" htmlFor="part-why">
+              Why, now it has been checked
             </label>
             <input
-              id="part-label"
-              value={label}
-              placeholder="Mast bracket, left"
-              onChange={(e) => setLabel(e.target.value)}
+              id="part-why"
+              value={addWhy}
+              placeholder="Second tile for the client, a missing piece…"
+              onChange={(e) => setAddWhy(e.target.value)}
             />
           </div>
-          <div className="fld" style={{ margin: 0, width: 90 }}>
-            <label className="lbl" htmlFor="part-qty">
-              Copies
-            </label>
-            <input
-              id="part-qty"
-              type="number"
-              min="1"
-              value={qty}
-              onChange={(e) => setQty(e.target.value)}
-            />
-          </div>
-          <button
-            type="button"
-            className="btn sm primary"
-            disabled={busy || saving || !label.trim()}
-            onClick={() =>
-              void guard(async () => {
-                await addPart(ctx.shop.id, detail.jobId, ctx.profile.id, {
-                  label,
-                  qty: Number(qty) || 1,
-                })
-                setLabel('')
-                setQty('1')
+        )}
+        <button
+          type="button"
+          className="btn sm primary"
+          disabled={busy || saving || !label.trim() || (locked && !addWhy.trim())}
+          onClick={() =>
+            void guard(async () => {
+              await addPart(ctx.shop.id, detail.jobId, ctx.profile.id, {
+                label,
+                qty: Number(qty) || 1,
+                reason: locked ? addWhy : null,
               })
-            }
-          >
-            Add
-          </button>
+              setLabel('')
+              setQty('1')
+              setAddWhy('')
+            })
+          }
+        >
+          Add
+        </button>
+      </div>
+      {locked && (
+        <div className="hint" style={{ marginTop: 6 }}>
+          This sheet was checked at Review. A part added now starts as pending and is logged with
+          your reason. If it still has to be printed, move the project back a stage at the top.
         </div>
       )}
 
@@ -4694,36 +4751,56 @@ function FromTheFiles({
  *  backwards is information -- what broke, what is being redone -- and the
  *  next person reading Activity needs it. */
 function MoveBack({
-  to,
+  stages,
   busy,
   onMove,
+  onCancel,
 }: {
-  to: string
+  stages: { value: JobPhase; label: string }[]
   busy: boolean
-  onMove: (why: string) => Promise<void>
+  onMove: (to: JobPhase, why: string) => Promise<void>
+  onCancel: () => void
 }) {
+  const [to, setTo] = useState<JobPhase>(stages[stages.length - 1].value)
   const [why, setWhy] = useState('')
+  const name = stages.find((x) => x.value === to)?.label ?? to
   return (
-    <div className="gatebox" style={{ marginBottom: 8 }}>
-      <div className="fld" style={{ margin: 0 }}>
-        <label className="lbl" htmlFor="move-back-why">
-          Move this project back to {to} — what needs fixing?
-        </label>
-        <input
-          id="move-back-why"
-          value={why}
-          placeholder="Coastline off by a layer, client wants a change, failed QC…"
-          onChange={(e) => setWhy(e.target.value)}
-        />
-      </div>
-      <div className="btnrow" style={{ marginTop: 6 }}>
+    <div className="gatebox">
+      <div className="btnrow" style={{ alignItems: 'flex-end', margin: 0 }}>
+        <div className="fld" style={{ margin: 0, width: 180 }}>
+          <label className="lbl" htmlFor="move-back-to">
+            Move back to
+          </label>
+          <select id="move-back-to" value={to} onChange={(e) => setTo(e.target.value as JobPhase)}>
+            {stages.map((x) => (
+              <option key={x.value} value={x.value}>
+                {x.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 240 }}>
+          <label className="lbl" htmlFor="move-back-why">
+            What needs fixing? (required — it goes in Activity)
+          </label>
+          <input
+            id="move-back-why"
+            value={why}
+            autoFocus
+            placeholder="Coastline off by a layer, client wants a change, failed QC…"
+            onChange={(e) => setWhy(e.target.value)}
+          />
+        </div>
         <button
           type="button"
-          className="btn sm"
+          className="btn sm primary"
           disabled={busy || !why.trim()}
-          onClick={() => void onMove(why)}
+          onClick={() => void onMove(to, why)}
         >
-          Move back to {to}
+          Move back to {name}
+        </button>
+        <button type="button" className="btn sm ghost" onClick={onCancel}>
+          Cancel
         </button>
       </div>
     </div>

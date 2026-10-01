@@ -278,7 +278,7 @@ describe('importing a sliced file from the project screen', () => {
 
     // The message names the exact PrusaSlicer setting to change, because
     // "unsupported file" would send someone hunting.
-    await screen.findByText(/binary G-code/i)
+    expect((await screen.findAllByText(/binary G-code/i)).length).toBeGreaterThan(0)
     expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({
       n: 0,
     })
@@ -865,7 +865,7 @@ describe("CG's Maui: one G-code uploaded several times, project already Done", (
 })
 
 describe('moving a project backwards', () => {
-  it('takes Maui from Done back to Review with a reason, and says so in Activity', async () => {
+  it('is offered beside the stages on a Done project, needs a reason, and logs it', async () => {
     const { ctx, jobId, data } = await seedShop('inhouse')
     for (const to of ['review', 'delivered'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
@@ -874,8 +874,12 @@ describe('moving a project backwards', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
 
-    await user.click(await screen.findByRole('button', { name: /← back to/i }))
-    const move = await screen.findByRole('button', { name: /^move back to/i })
+    await user.click(await screen.findAllByRole('button', { name: /move back a stage/i }).then((b) => b[0]))
+    // Every earlier stage can be chosen, the nearest first-selected.
+    const to = screen.getByLabelText(/^move back to$/i) as HTMLSelectElement
+    expect(to.value).toBe('review')
+    await user.selectOptions(to, 'design')
+    const move = screen.getByRole('button', { name: /^move back to working/i })
     expect((move as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
     await user.type(screen.getByLabelText(/what needs fixing/i), 'Coastline off by a layer')
     await user.click(move)
@@ -885,8 +889,45 @@ describe('moving a project backwards', () => {
         phase: string
         archived_at: string | null
       }
-      expect(j).toEqual({ phase: 'review', archived_at: null })
+      expect(j).toEqual({ phase: 'design', archived_at: null })
     })
     await screen.findByText(/Moved back from .* to .*\. Why: Coastline off by a layer/)
+  })
+})
+
+describe('adding parts after the sheet was checked', () => {
+  it('lets a Done project take another piece, with a reason in Activity', async () => {
+    const { ctx, jobId, data } = await seedShop('inhouse')
+    await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Maui Top', qty: 1 })
+    for (const to of ['review', 'delivered'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.type(await screen.findByLabelText(/add another part/i), 'Maui Base')
+    const add = screen.getByRole('button', { name: /^add$/i })
+    expect((add as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
+    await user.type(screen.getByLabelText(/why, now it has been checked/i), 'Base plate for the display')
+    await user.click(add)
+    await waitFor(() => {
+      const parts = currentDb.sqlite.prepare('select label, status from job_parts order by sort').all()
+      expect(parts).toEqual([
+        { label: 'Maui Top', status: 'pending' },
+        { label: 'Maui Base', status: 'pending' },
+      ])
+    })
+    await screen.findByText(/Added a part, "Maui Base" ×1\. Why: Base plate for the display/)
+  })
+})
+
+describe('an import that cannot be saved', () => {
+  it('says so inside the import box, not only at the top of the page', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    const bad = new File(['\x00\x01binary'], 'part.bgcode', { type: 'application/octet-stream' })
+    await user.upload(screen.getByLabelText(/import a sliced file/i), bad)
+    const alerts = await screen.findAllByRole('alert')
+    expect(alerts.some((a) => /not imported/i.test(a.textContent ?? ''))).toBe(true)
   })
 })

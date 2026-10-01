@@ -38,3 +38,16 @@ describe('the desktop shell migrates every workspace', () => {
     expect(calls.length).toBe(Object.keys(FILES).length)
   })
 })
+
+describe('the desktop window lets a file be dropped on the page', () => {
+  /**
+   * Tauri's window takes file drops for itself by default, so a G-code
+   * dragged onto "Drop a sliced file here" never reached the page: no
+   * import, no error, nothing. jsdom has no such window, so every render
+   * test passed. This is the only place the setting can be checked.
+   */
+  it('turns the native drop handler off', () => {
+    const conf = JSON.parse(readFileSync(join(here, '../../src-tauri/tauri.conf.json'), 'utf8'))
+    for (const w of conf.app.windows) expect(w.dragDropEnabled).toBe(false)
+  })
+})

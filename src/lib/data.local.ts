@@ -2503,8 +2503,15 @@ export async function addPart(
   await d.execute(
     `insert into part_events (part_id, job_id, kind, to_status, note, actor_id)
      values (?, ?, 'status', 'pending', ?, ?)`,
-    [id, jobId, 'Added to the build sheet', actorId],
+    [id, jobId, input.reason?.trim() ? `Added after checking: ${input.reason.trim()}` : 'Added to the build sheet', actorId],
   )
+  if (input.reason?.trim()) {
+    await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [
+      jobId,
+      actorId,
+      `Added a part, "${label}" ×${qty}. Why: ${input.reason.trim()}`,
+    ])
+  }
   return id
 }
 

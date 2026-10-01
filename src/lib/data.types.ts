@@ -1075,6 +1075,9 @@ export interface PartInput {
   qty: number
   note?: string | null
   sort?: number
+  /** Why a part is being added after the sheet was checked (Review on).
+   *  Logged with the part and in Activity. */
+  reason?: string | null
 }
 
 /* ---- slicer imports ---------------------------------------------------- */
