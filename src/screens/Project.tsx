@@ -1716,16 +1716,12 @@ function SliceImport({
     setDone(null)
     try {
       const parsed = await parseSliceFile(file)
-      setRead(parsed)
-      // Keep the file itself, not only what it said. Reported by CG: "I
-      // already uploaded the file that was used to print the piece and
-      // it's not there anymore" -- it never was. Packing cannot fail the
-      // import: the numbers are the part that matters.
+      // Keep the file itself, not only what it said. Packing cannot fail
+      // the import: the numbers are the part that matters. Everything is
+      // worked out BEFORE the preview appears, so the buttons on it never
+      // act on a half-read file (a 22 MB .bgcode takes a moment to pack).
       const bytes = new Uint8Array(await file.arrayBuffer())
       const packed = await packFile(bytes)
-      setKept(packed)
-      setTooBig(packed ? null : tooBigNote(bytes.byteLength))
-      // A shop with one machine has printed it on that machine.
       // A file that names no machine, in a shop with one, was printed on
       // that one. A file that names a machine the shop does not own is left
       // unmatched: a blank is an open question, a guess looks answered.
@@ -1734,6 +1730,9 @@ function SliceImport({
           (!parsed.printerModel && ctx.printerRows.length === 1 ? ctx.printerRows[0].id : ''),
       )
       setMaterialId(matchMaterial(ctx.materials, parsed.totals.material)?.id ?? '')
+      setKept(packed)
+      setTooBig(packed ? null : tooBigNote(bytes.byteLength))
+      setRead(parsed)
     } catch (e) {
       setRead(null)
       fail(e instanceof Error ? e.message : String(e))
@@ -1882,7 +1881,7 @@ function SliceImport({
           {dragging ? 'Drop it' : 'Drop a sliced file here, or click to choose one'}
         </span>
         <span className="drop-sub">
-          .gcode.3mf from Bambu Studio or Orca · .gcode from PrusaSlicer
+          .gcode.3mf from Bambu Studio or Orca · .gcode or .bgcode from PrusaSlicer
         </span>
         <input
           id="slice-file"

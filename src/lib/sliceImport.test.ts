@@ -304,10 +304,8 @@ describe('the same part sliced for two machines', () => {
 })
 
 describe('files it refuses', () => {
-  it('names the exact PrusaSlicer setting for binary G-code', async () => {
-    await expect(parseSliceFile(gcodeFile('part.bgcode', ''))).rejects.toThrow(
-      /binary G-code/i,
-    )
+  it('refuses something called .bgcode that is not binary G-code, by name', async () => {
+    await expect(parseSliceFile(gcodeFile('part.bgcode', ''))).rejects.toThrow(/binary G-code/i)
   })
 
   it('refuses an unknown extension with a list of what it takes', async () => {
@@ -324,7 +322,49 @@ describe('files it refuses', () => {
   })
 })
 
-it('the file input accepts .bgcode so the refusal can explain itself', () => {
+describe("PrusaSlicer binary G-code (.bgcode) — CG's real Maui file", () => {
+  /**
+   * samples/maui-top_prusa-xl.bgcode is the head of CG's own export
+   * (PrusaSlicer 2.9.6, Prusa XL with two tools, second idle): every
+   * metadata block and the thumbnails, cut just after the first G-code
+   * block header -- which is exactly as far as the reader goes. The full
+   * file is 22 MB; the numbers below are what PrusaSlicer wrote into it.
+   */
+  async function maui() {
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const path = fileURLToPath(new URL('../../samples/maui-top_prusa-xl.bgcode', import.meta.url))
+    const bytes = readFileSync(path)
+    return parseSliceFile({
+      name: 'Maui_Top_2mm Base.bgcode',
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+      text: async () => {
+        throw new Error('binary')
+      },
+    })
+  }
+
+  it('reads the filament, the time, the machine and the object', async () => {
+    const f = await maui()
+    expect(f.kind).toBe('gcode')
+    expect(f.totals.estGrams).toBeCloseTo(73.13, 2)
+    expect(f.totals.estMinutes).toBe(454) // 7h 34m 10s
+    expect(f.printerModel).toBe('Prusa XL') // XL2IS
+    expect(f.totals.material).toBe('PLA') // the idle second tool is not counted
+    expect(f.sections.map((s) => s.label)).toEqual(['Maui LAND STANDALONE 3x'])
+  })
+
+  it('matches the shop\'s Prusa XL', async () => {
+    const f = await maui()
+    const shop = [
+      { id: 'h', name: 'Hatsa', model: 'Prusa XL' },
+      { id: 's', name: 'Sakman', model: 'Bambu Lab H2D' },
+    ]
+    expect(matchPrinter(shop, f.printerModel)?.id).toBe('h')
+  })
+})
+
+it('the file input accepts .bgcode', () => {
   expect(SLICE_ACCEPT).toContain('.gcode')
   expect(SLICE_ACCEPT).toContain('.3mf')
   // Left out of accept, the browser greys it out and says nothing. In it,

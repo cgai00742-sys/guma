@@ -975,3 +975,33 @@ describe('a kept 3MF that was imported with no numbers', () => {
     })
   })
 })
+
+describe("CG's PrusaSlicer .bgcode, imported and recorded", () => {
+  it('fills the run from the binary file and takes the filament off the shelf', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    const bytes = readFileSync(join(here, '../../samples/maui-top_prusa-xl.bgcode'))
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(
+      screen.getByLabelText(/import a sliced file/i),
+      new File([bytes], 'Maui_Top_2mm Base.bgcode', { type: 'application/octet-stream' }),
+    )
+    // Matched to the shop's Prusa XL, ticked as already printed.
+    expect(((await screen.findByLabelText(/^machine/i)) as HTMLSelectElement).value).toBe(ctx.printers[0].id)
+    // The shop's only spool here is PETG; the file says PLA, so it is left
+    // for the person to pick rather than guessed.
+    const mat = screen.getByLabelText(/^material — file says “PLA”/i) as HTMLSelectElement
+    expect(mat.value).toBe('')
+    await user.selectOptions(mat, ctx.materials[0].id)
+    await user.click(screen.getByRole('button', { name: /record the print/i }))
+    await waitFor(() => {
+      const a = currentDb.sqlite
+        .prepare('select material_units, machine_hours, runs from job_actuals where job_id = ?')
+        .get(jobId) as Record<string, number>
+      expect(a).toMatchObject({ material_units: 73, machine_hours: 7.57, runs: 1 })
+    })
+    const m = currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }
+    expect(Number(m.on_hand)).toBe(927)
+  })
+})

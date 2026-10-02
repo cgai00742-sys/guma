@@ -623,15 +623,153 @@ function parseGcode(src: string, fileName: string): SliceFile {
   return pack('gcode', fileName, sections, estMinutes, grams || null, material, notes, model)
 }
 
+// ---------- binary G-code (PrusaSlicer .bgcode) ----------
+
+/** zlib inflate without Blob.stream or Response, which not every runtime has. */
+async function inflateZlib(data: Uint8Array): Promise<Uint8Array> {
+  const ds = new DecompressionStream('deflate')
+  const writer = ds.writable.getWriter()
+  void writer.write(data as unknown as BufferSource).then(() => writer.close())
+  const reader = ds.readable.getReader()
+  const parts: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    parts.push(value)
+    total += value.length
+  }
+  const out = new Uint8Array(total)
+  let p = 0
+  for (const part of parts) {
+    out.set(part, p)
+    p += part.length
+  }
+  return out
+}
+
+/** Prusa model codes as the printer writes them: XL2IS is a two-tool XL
+ *  with input shaping, MK4S an MK4S. The shop calls it a Prusa XL. */
+function prusaModel(code: string | undefined): string | null {
+  if (!code) return null
+  const c = code.trim().toUpperCase()
+  if (/^XL\d?(IS)?$/.test(c)) return 'Prusa XL'
+  if (/^MK4S/.test(c)) return 'Prusa MK4S'
+  if (/^MK4/.test(c)) return 'Prusa MK4'
+  if (/^MK3\.?9/.test(c)) return 'Prusa MK3.9'
+  if (/^MK3/.test(c)) return 'Prusa MK3'
+  if (/^MINI/.test(c)) return 'Prusa MINI'
+  if (/^COREONE/.test(c)) return 'Prusa CORE One'
+  return `Prusa ${code.trim()}`
+}
+
+/**
+ * PrusaSlicer's binary G-code (the default for Prusa printers since 2.7).
+ *
+ * Format (libbgcode, v1): "GCDE", version u32, checksum type u16, then
+ * blocks. Each block: type u16, compression u16, uncompressed size u32,
+ * compressed size u32 when compressed, parameters (2 bytes; 6 for a
+ * thumbnail), data, and a 4-byte CRC when the checksum type is 1.
+ *
+ * Everything Guma needs is in the METADATA blocks, which come before the
+ * G-code and are plain key=value text, stored or zlib-deflated:
+ *   printer metadata (3): printer_model, filament_type, objects_info (names)
+ *   print metadata (4):   filament used [g], estimated printing time
+ * So the moves themselves (heatshrink + meatpack) are never decoded --
+ * reading stops at the first G-code block.
+ */
+async function parseBgcode(buf: ArrayBuffer, fileName: string): Promise<SliceFile> {
+  const u8 = new Uint8Array(buf)
+  const dv = new DataView(buf)
+  const N = u8.length
+  if (N < 10 || decode(u8.subarray(0, 4)) !== 'GCDE')
+    throw new Error("That file isn't binary G-code — export it again from PrusaSlicer.")
+  const checksumType = dv.getUint16(8, true)
+  const meta: Record<number, string> = {}
+  let off = 10
+  while (off + 8 <= N) {
+    const type = dv.getUint16(off, true)
+    const comp = dv.getUint16(off + 2, true)
+    const usize = dv.getUint32(off + 4, true)
+    off += 8
+    let csize = usize
+    if (comp !== 0) {
+      csize = dv.getUint32(off, true)
+      off += 4
+    }
+    if (type === 1) break // G-code from here on; the metadata is done.
+    off += type === 5 ? 6 : 2
+    const data = u8.subarray(off, Math.min(N, off + csize))
+    off += csize + (checksumType === 1 ? 4 : 0)
+    if (type === 0 || type === 2 || type === 3 || type === 4) {
+      if (comp === 0) meta[type] = decode(data)
+      else if (comp === 1) meta[type] = decode(await inflateZlib(data))
+      // heatshrink is only ever used on G-code blocks; skip anything else.
+    }
+  }
+  const kv = (src: string | undefined) => {
+    const out: Record<string, string> = {}
+    for (const line of (src ?? '').split(/\r?\n/)) {
+      const i = line.indexOf('=')
+      if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim()
+    }
+    return out
+  }
+  const printer = kv(meta[3])
+  const print = { ...kv(meta[2]), ...kv(meta[3]), ...kv(meta[4]) }
+  if (!meta[3] && !meta[4]) throw new Error('No print information found in this binary G-code.')
+
+  const notes: string[] = []
+  // Object names, from the list the printer uses to cancel objects.
+  let names: string[] = []
+  try {
+    const info = JSON.parse(printer.objects_info ?? '{}') as { objects?: { name?: string }[] }
+    names = (info.objects ?? []).map((o) => o.name ?? '').filter(Boolean)
+  } catch {
+    /* fall through to a single section */
+  }
+  let sections: SliceSection[]
+  if (names.length) sections = aggregate(names)
+  else {
+    sections = [{ label: stemOf(fileName), qty: 1, estMinutes: null, estGrams: null, material: null }]
+    notes.push('No object names in this file — imported as a single section.')
+  }
+
+  const perTool = (print['filament used [g]'] ?? '')
+    .split(',')
+    .map((n) => parseFloat(n))
+    .filter((n) => Number.isFinite(n))
+  const total = parseFloat(print['total filament used [g]'] ?? '')
+  const grams = Number.isFinite(total) ? total : perTool.reduce((a, b) => a + b, 0) || null
+  const estMinutes = parseTimeToMin(print['estimated printing time (normal mode)'] ?? '')
+
+  // Only the tools that actually printed: a two-tool XL with the second
+  // tool idle writes "PLA;PLA" and "73.13, 0.00".
+  const types = (print.filament_type ?? '').split(';').map((x) => x.trim())
+  const typeGrams: Record<string, number> = {}
+  types.forEach((ty, i) => {
+    const g = perTool[i] ?? (types.length === 1 ? grams ?? 0 : 0)
+    if (ty && g > 0) typeGrams[ty] = (typeGrams[ty] ?? 0) + g
+  })
+  const material = Object.keys(typeGrams).join(', ') || types.filter(Boolean)[0] || null
+
+  spread(sections, estMinutes, grams, material, typeGrams)
+  notes.push(
+    'Time and filament are slicer estimates' +
+      (sections.length > 1 ? ', split across sections by quantity.' : '.'),
+  )
+  return pack('gcode', fileName, sections, estMinutes, grams, material, notes, prusaModel(printer.printer_model))
+}
+
 // ---------- entry point ----------
 
 export async function parseSliceFile(file: SliceFileLike): Promise<SliceFile> {
   const name = file.name || 'sliced-file'
-  if (/\.bgcode$/i.test(name))
-    throw new Error(
-      "Binary G-code (.bgcode) can't be read. In PrusaSlicer, uncheck “Export as binary G-code” " +
-        '(Printer Settings → General) and export again.',
-    )
+  if (/\.bgcode$/i.test(name)) {
+    if (typeof DecompressionStream === 'undefined')
+      throw new Error("This browser can't unpack binary G-code — export plain .gcode instead.")
+    return parseBgcode(await file.arrayBuffer(), name)
+  }
   if (/\.3mf$/i.test(name)) {
     if (typeof DecompressionStream === 'undefined')
       throw new Error("This browser can't unpack 3MF files — import the .gcode export instead.")
@@ -639,7 +777,7 @@ export async function parseSliceFile(file: SliceFileLike): Promise<SliceFile> {
   }
   if (/\.(gcode|gco|g)$/i.test(name)) return parseGcode(await file.text(), name)
   throw new Error(
-    'Unsupported file. Import a sliced .gcode.3mf or .3mf (Bambu, Orca) or .gcode (Prusa).',
+    'Unsupported file. Import a sliced .gcode.3mf or .3mf (Bambu, Orca), or .gcode or .bgcode (Prusa).',
   )
 }
 
