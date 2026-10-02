@@ -2625,9 +2625,26 @@ export async function updatePart(
 
 /** Remove a part. Its history goes with it — there is nothing left to be
  *  the history of. */
-export async function deletePart(shopId: string, partId: string): Promise<void> {
+export async function deletePart(
+  shopId: string,
+  partId: string,
+  actorId: string | null = null,
+  reason: string | null = null,
+): Promise<void> {
   const d = await db()
+  const [part] = await d.select<{ job_id: string; label: string; qty: number }[]>(
+    'select job_id, label, qty from job_parts where id = ? and shop_id = ?',
+    [partId, shopId],
+  )
+  if (!part) return
   await d.execute('delete from job_parts where id = ? and shop_id = ?', [partId, shopId])
+  // The part's own history goes with it, so the removal is recorded on the
+  // project: what it was, who removed it, and why when a reason was given.
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [
+    part.job_id,
+    actorId,
+    `Removed part "${part.label}" ×${part.qty}.${reason?.trim() ? ` Why: ${reason.trim()}` : ''}`,
+  ])
 }
 
 /**

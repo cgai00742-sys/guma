@@ -1005,3 +1005,42 @@ describe("CG's PrusaSlicer .bgcode, imported and recorded", () => {
     expect(Number(m.on_hand)).toBe(927)
   })
 })
+
+describe('removing a part that is wrong', () => {
+  it('asks first, removes it, and records it in Activity', async () => {
+    const { ctx, jobId, data } = await seedShop('inhouse')
+    await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Maui Top', qty: 1 })
+    await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Wrong piece', qty: 2 })
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.click(await screen.findByRole('button', { name: /^remove wrong piece$/i }))
+    // Nothing gone until it is confirmed.
+    expect(currentDb.sqlite.prepare('select count(*) as n from job_parts').get()).toEqual({ n: 2 })
+    await user.click(screen.getByRole('button', { name: /^remove it$/i }))
+    await waitFor(() => {
+      const parts = currentDb.sqlite.prepare('select label from job_parts').all()
+      expect(parts).toEqual([{ label: 'Maui Top' }])
+    })
+    await screen.findByText(/Removed part "Wrong piece" ×2\./)
+  })
+
+  it('works on a Done project too, with a reason', async () => {
+    const { ctx, jobId, data } = await seedShop('inhouse')
+    await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Maui Top', qty: 1 })
+    await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Duplicate', qty: 1 })
+    for (const to of ['review', 'delivered'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.click(await screen.findByRole('button', { name: /^remove duplicate$/i }))
+    const go = screen.getByRole('button', { name: /^remove it$/i })
+    expect((go as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
+    await user.type(screen.getByLabelText(/why\? \(required/i), 'Imported twice')
+    await user.click(go)
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select count(*) as n from job_parts').get()).toEqual({ n: 1 }),
+    )
+    await screen.findByText(/Removed part "Duplicate" ×1\. Why: Imported twice/)
+  })
+})

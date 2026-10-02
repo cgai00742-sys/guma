@@ -2022,9 +2022,29 @@ export async function updatePart(
   }
 }
 
-export async function deletePart(shopId: string, partId: string): Promise<void> {
+export async function deletePart(
+  shopId: string,
+  partId: string,
+  actorId: string | null = null,
+  reason: string | null = null,
+): Promise<void> {
+  const { data: part, error: readErr } = await supabase
+    .from('job_parts')
+    .select('job_id, label, qty')
+    .eq('id', partId)
+    .eq('shop_id', shopId)
+    .maybeSingle()
+  if (readErr) throw readErr
+  if (!part) return
   const { error } = await supabase.from('job_parts').delete().eq('id', partId).eq('shop_id', shopId)
   if (error) throw error
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: part.job_id,
+    actor_id: actorId,
+    kind: 'edit',
+    body: `Removed part "${part.label}" ×${part.qty}.${reason?.trim() ? ` Why: ${reason.trim()}` : ''}`,
+  })
+  if (evErr) throw evErr
 }
 
 /** See data.local.ts's setQuoteStatus, and the rule its absence cost us. */

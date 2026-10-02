@@ -3223,6 +3223,11 @@ function BuildSheet({
   const [fix, setFix] = useState('')
   const [fixedFile, setFixedFile] = useState<File | null>(null)
   const [editId, setEditId] = useState<string | null>(null)
+  const [removeId, setRemoveId] = useState<string | null>(null)
+  const [removeWhy, setRemoveWhy] = useState('')
+  /** The sliced file a part was imported from, if any. */
+  const fileOf = (partId: string) =>
+    detail.slices.find((sl) => sl.sections.some((sec) => sec.partId === partId))?.fileName ?? null
   const tally = failureTally(detail.parts, detail.runs)
 
   /**
@@ -3487,20 +3492,75 @@ function BuildSheet({
                         >
                           edit
                         </button>
-                        {!locked && (
-                          <button
-                            type="button"
-                            className="linkbtn"
-                            style={{ fontSize: 10 }}
-                            disabled={busy || saving}
-                            onClick={() => void guard(() => deletePart(ctx.shop.id, p.id))}
-                          >
-                            remove
-                          </button>
-                        )}
+                        {/* Remove is offered at every stage: a part that is
+                            wrong is wrong whenever it is noticed. It asks
+                            first, and from Review on it asks why. */}
+                        <button
+                          type="button"
+                          className="linkbtn"
+                          style={{ fontSize: 10 }}
+                          disabled={busy || saving}
+                          aria-label={`Remove ${p.label}`}
+                          onClick={() => {
+                            setRemoveId(removeId === p.id ? null : p.id)
+                            setRemoveWhy('')
+                          }}
+                        >
+                          remove
+                        </button>
                       </div>
                     </td>
                   </tr>
+                  {removeId === p.id && (
+                    <tr>
+                      <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
+                        <div className="attn crit" style={{ margin: 0 }}>
+                          <b>
+                            Remove “{p.label}” ×{p.qty} from the build sheet?
+                          </b>
+                          <div style={{ marginTop: 4, fontSize: 12 }}>
+                            Its status history goes with it; the removal is recorded in Activity.
+                            Prints already recorded stay — their filament and hours were really used.
+                            {fileOf(p.id) &&
+                              ` It came from ${fileOf(p.id)}: importing that file again would add it back.`}
+                          </div>
+                          {locked && (
+                            <div className="fld" style={{ margin: '8px 0 0' }}>
+                              <label className="lbl" htmlFor={`rm-why-${p.id}`}>
+                                Why? (required once the sheet has been checked)
+                              </label>
+                              <input
+                                id={`rm-why-${p.id}`}
+                                value={removeWhy}
+                                autoFocus
+                                placeholder="Added by mistake, duplicate, wrong file…"
+                                onChange={(e) => setRemoveWhy(e.target.value)}
+                              />
+                            </div>
+                          )}
+                          <div className="btnrow" style={{ marginTop: 8 }}>
+                            <button
+                              type="button"
+                              className="btn sm danger"
+                              disabled={busy || saving || (locked && !removeWhy.trim())}
+                              onClick={() =>
+                                void guard(async () => {
+                                  await deletePart(ctx.shop.id, p.id, ctx.profile.id, removeWhy || null)
+                                  setRemoveId(null)
+                                  setRemoveWhy('')
+                                })
+                              }
+                            >
+                              Remove it
+                            </button>
+                            <button type="button" className="btn sm" onClick={() => setRemoveId(null)}>
+                              Keep it
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {editId === p.id && (
                     <tr>
                       <td colSpan={4} style={{ background: 'var(--panel-3)' }}>

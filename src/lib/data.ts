@@ -487,8 +487,13 @@ export async function choosePartVariant(
   return (await backend()).choosePartVariant(shopId, partId, sectionId)
 }
 
-export async function deletePart(shopId: string, partId: string): Promise<void> {
-  return (await backend()).deletePart(shopId, partId)
+export async function deletePart(
+  shopId: string,
+  partId: string,
+  actorId: string | null = null,
+  reason: string | null = null,
+): Promise<void> {
+  return (await backend()).deletePart(shopId, partId, actorId, reason)
 }
 
 export async function setQuoteStatus(
