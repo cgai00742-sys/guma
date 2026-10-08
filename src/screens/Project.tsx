@@ -340,6 +340,39 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
     }
   }
 
+  /**
+   * Client approval, moved past without the yes or the deposit (CG, 7 Oct).
+   * One written reason covers both, goes on each skipped item and in
+   * Activity, and the board keeps showing the money as a decision rather
+   * than dropping it. Anything else still open -- an unsent quote, an
+   * uncommitted date -- still blocks: this is about money, not a bypass.
+   */
+  async function goAheadWithout(why: string) {
+    const reason = why.trim()
+    if (!reason || !detail || shown !== 'approval' || detail.phase !== 'approval') return
+    const money = gate.items.filter((i) => GO_AHEAD_KEYS.includes(i.key) && !i.checked)
+    const rest = gate.items.filter((i) => !GO_AHEAD_KEYS.includes(i.key) && !i.checked)
+    setBusy(true)
+    try {
+      for (const i of money) {
+        await skipGateItem(jobId, ctx.profile.id, 'approval', i.key, i.label, reason)
+      }
+      if (rest.length === 0 && gate.next) {
+        const what = money.map((i) => (i.key === 'accepted' ? 'acceptance' : 'deposit')).join(' or ')
+        await updateJobPhase(
+          ctx.shop.id, jobId, ctx.profile.id, gate.next,
+          `Went ahead without ${what}. Why: ${reason}`,
+        )
+        setViewPhase(null)
+      }
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function advance() {
     if (!liveGate.next || liveGate.blocked) return
     setBusy(true)
@@ -1329,6 +1362,13 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                 </div>
               )
             })()}
+            {shown === 'approval' && detail.phase === 'approval' && facts.kind === 'client' && (
+              <GoAheadWithout
+                items={gate.items}
+                busy={busy}
+                onGo={(why) => void goAheadWithout(why)}
+              />
+            )}
             <div className="ggroup">Required before advancing</div>
             {gate.items.map((item) => (
               <GateRow
@@ -5204,5 +5244,78 @@ function SeriesSection({
         </Link>
       </div>
     </section>
+  )
+}
+
+/** The approval items a shop may move past with a written reason. */
+const GO_AHEAD_KEYS = ['accepted', 'deposit']
+
+/**
+ * "Go ahead without acceptance or deposit". Shown only while one of the two
+ * is outstanding. A reason is required; nothing happens without one.
+ */
+function GoAheadWithout({
+  items,
+  busy,
+  onGo,
+}: {
+  items: ResolvedGateItem[]
+  busy: boolean
+  onGo: (why: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [why, setWhy] = useState('')
+  const money = items.filter((i) => GO_AHEAD_KEYS.includes(i.key) && !i.checked)
+  if (money.length === 0) return null
+  const rest = items.filter((i) => !GO_AHEAD_KEYS.includes(i.key) && !i.checked)
+  const what = money.map((i) => (i.key === 'accepted' ? 'acceptance' : 'deposit')).join(' or ')
+  if (!open) {
+    return (
+      <div className="btnrow" style={{ marginBottom: 8 }}>
+        <button type="button" className="btn sm" disabled={busy} onClick={() => setOpen(true)}>
+          Go ahead without {what}…
+        </button>
+      </div>
+    )
+  }
+  return (
+    <div className="attn warn" style={{ marginBottom: 10 }}>
+      <div className="fld" style={{ margin: 0 }}>
+        <label className="lbl" htmlFor="go-ahead-why">
+          Why go ahead without {what}? (goes on the record and stays on the board)
+        </label>
+        <textarea
+          id="go-ahead-why"
+          rows={2}
+          value={why}
+          autoFocus
+          onChange={(e) => setWhy(e.target.value)}
+          placeholder="e.g. Repeat client, PO promised Friday; deposit on delivery agreed by phone with Kai"
+        />
+      </div>
+      {rest.length > 0 && (
+        <div className="hint" style={{ marginTop: 6 }}>
+          This records the reason, but it will not move yet — still open:{' '}
+          {rest.map((i) => i.label).join('; ')}.
+        </div>
+      )}
+      <div className="btnrow" style={{ marginTop: 8 }}>
+        <button
+          type="button"
+          className="btn sm"
+          disabled={busy || !why.trim()}
+          onClick={() => {
+            onGo(why)
+            setOpen(false)
+            setWhy('')
+          }}
+        >
+          {rest.length > 0 ? 'Record the reason' : 'Go ahead'}
+        </button>
+        <button type="button" className="btn sm ghost" onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+    </div>
   )
 }

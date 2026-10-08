@@ -621,7 +621,8 @@ const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_i
    job_actuals ( material_cost, machine_cost, power_cost, wear_cost, runs,
                  design_hours, finishing_hours, admin_hours, material_units,
                  failed_units, machine_hours, failed_runs ),
-   job_events ( at )`
+   job_events ( at ),
+   job_gates ( phase, item_key, skipped )`
 
 /** The newest version of a job's quote. A revision is another quotes row
  *  for the same job, and PostgREST returns an embed in no promised order --
@@ -662,6 +663,12 @@ function actualCostOf(a: ProjectActuals, designHourly: number, finishingHourly: 
   )
 }
 
+/** The reason an approval item was skipped, from the job_gates embed. */
+function approvalSkip(r: any, key: 'accepted' | 'deposit'): string | null {
+  const g = (r.job_gates ?? []).find((x: any) => x.phase === 'approval' && x.item_key === key)
+  return (g?.skipped as string | null) ?? null
+}
+
 function factsFrom(
   r: any,
   minimumOrder: number,
@@ -686,6 +693,10 @@ function factsFrom(
     windowLocked: r.window_locked === true,
     atRisk: r.at_risk === true,
     overCeiling: (r.over_ceiling as string | null) ?? null,
+    wentAheadWithout: {
+      accepted: approvalSkip(r, 'accepted'),
+      deposit: approvalSkip(r, 'deposit'),
+    },
     deliveryOn: r.delivery_on ?? null,
     deliveryHow: r.delivery_how ?? null,
     brief: r.brief ?? null,

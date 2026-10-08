@@ -803,6 +803,10 @@ const JOB_LIST_SQL = `
          coalesce(m.deposit_owed, 0) as deposit_owed,
          coalesce(m.balance_owed, 0) as balance_owed,
          (select max(at) from job_events e where e.job_id = j.id) as last_activity_at,
+         (select skipped from job_gates g where g.job_id = j.id and g.phase = 'approval'
+            and g.item_key = 'accepted') as skipped_accepted,
+         (select skipped from job_gates g where g.job_id = j.id and g.phase = 'approval'
+            and g.item_key = 'deposit') as skipped_deposit,
          coalesce((select minimum_order from rate_cards
                    where shop_id = j.shop_id
                    ${LATEST_RATE_CARD} limit 1), 0) as minimum_order,
@@ -885,6 +889,8 @@ interface JobListSqlRow {
   deposit_owed: number
   balance_owed: number
   last_activity_at: string | null
+  skipped_accepted: string | null
+  skipped_deposit: string | null
   minimum_order: number
   actual_cost: number
   has_actuals: number
@@ -915,6 +921,7 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     windowLocked: Number(r.window_locked) === 1,
     atRisk: Number(r.at_risk) === 1,
     overCeiling: r.over_ceiling ?? null,
+    wentAheadWithout: { accepted: r.skipped_accepted ?? null, deposit: r.skipped_deposit ?? null },
     deliveryOn: r.delivery_on,
     deliveryHow: r.delivery_how,
     brief: r.brief,

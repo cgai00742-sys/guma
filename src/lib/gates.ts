@@ -530,7 +530,17 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
     }
   }
 
-  if (!mine && !delivered && f.depositDue > 0 && f.depositOwed > 0 && started) {
+  if (!mine && !delivered && f.depositDue > 0 && f.depositOwed > 0 && started && f.wentAheadWithout.deposit) {
+    // Decided, not forgotten. Still on the board -- the money is still
+    // owed -- but as a choice someone made and gave a reason for.
+    out.push({
+      key: 'deposit',
+      tone: 'warn',
+      label: 'No deposit — by decision',
+      cause: `${money(f.depositOwed)} deposit outstanding. Went ahead anyway: ${f.wentAheadWithout.deposit}`,
+      action: 'Collect it when you can, or record it as waived. The reason above is what you agreed to carry.',
+    })
+  } else if (!mine && !delivered && f.depositDue > 0 && f.depositOwed > 0 && started) {
     out.push({
       key: 'deposit',
       tone: 'crit',
@@ -566,6 +576,20 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
   // and started building anyway. It is only a problem once the project is
   // past the stage whose entire job is getting a yes.
   if (
+    !delivered &&
+    at(f.phase) > at('approval') &&
+    f.quoteStatus !== null &&
+    f.quoteStatus !== 'accepted' &&
+    f.wentAheadWithout.accepted
+  ) {
+    out.push({
+      key: 'unagreed',
+      tone: 'warn',
+      label: 'Not accepted — by decision',
+      cause: `Went ahead without acceptance: ${f.wentAheadWithout.accepted}`,
+      action: 'Get the yes in writing when you can and mark the quote accepted. Until then the price and scope rest on the reason above.',
+    })
+  } else if (
     !delivered &&
     at(f.phase) > at('approval') &&
     f.quoteStatus !== null &&

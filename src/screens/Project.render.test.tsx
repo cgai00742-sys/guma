@@ -50,6 +50,7 @@ function freshDb() {
   sqlite.exec(MIGRATION_SQL)
   return {
     path: 'sqlite:guma.db',
+    sqlite: sqlite as any,
     async execute(sql: string, params: unknown[] = []) {
       const info = sqlite.prepare(sql).run(...(params as never[]))
       return { rowsAffected: Number(info.changes), lastInsertId: Number(info.lastInsertRowid) }
@@ -310,6 +311,59 @@ describe('each stage shows only what moves it forward (CG, 7 Oct)', () => {
     const stages = [...document.querySelectorAll('details.sofar-stage > summary h4')].map((e) => e.textContent)
     expect(stages).toEqual(['Intake', 'Client approval', 'Design', 'Scheduled', 'In build', 'Review'])
     expect(document.querySelector('[data-fold="gate"]')).toBeNull()
+  })
+})
+
+describe('client approval: go ahead without acceptance or deposit (CG, 7 Oct)', () => {
+  async function atApproval({ sent }: { sent: boolean }) {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'approval')
+    // Sent with a deposit due and nothing paid: both money items open.
+    if (sent) currentDb.sqlite.prepare("update quotes set status = 'sent', deposit_due = 120").run()
+    currentDb.sqlite.prepare("update jobs set needed_by = '2099-01-15', window_locked = 1").run()
+    await renderProject(jobId, ctx)
+    return { ctx, jobId, data }
+  }
+
+  it('needs a written reason, then moves to Design and keeps the money on the record', async () => {
+    const { ctx, jobId, data } = await atApproval({ sent: true })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /go ahead without acceptance or deposit/i }))
+    const go = screen.getByRole('button', { name: /^go ahead$/i }) as HTMLButtonElement
+    expect(go.disabled).toBe(true) // no reason, no move
+    await user.type(screen.getByLabelText(/why go ahead without/i), 'Repeat client, PO promised Friday')
+    await user.click(go)
+
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select phase from jobs where id = ?').get(jobId)).toEqual({ phase: 'design' }),
+    )
+    // Both items skipped with the reason, and the move logged with it.
+    const skips = currentDb.sqlite
+      .prepare("select item_key, skipped from job_gates where phase = 'approval' and skipped is not null order by item_key")
+      .all()
+    expect(skips).toEqual([
+      { item_key: 'accepted', skipped: 'Repeat client, PO promised Friday' },
+      { item_key: 'deposit', skipped: 'Repeat client, PO promised Friday' },
+    ])
+    await screen.findByText(/Went ahead without acceptance or deposit\. Why: Repeat client/)
+
+    // The board still shows the money -- as a decision, not a red alarm.
+    const d = await (data as any).loadProjectDetail(ctx.shop.id, jobId)
+    const { flagsFor } = await import('../lib/gates')
+    const flags = flagsFor(d.facts)
+    expect(flags.find((f) => f.key === 'unagreed')).toMatchObject({ tone: 'warn', label: /by decision/ })
+    expect(flags.find((f) => f.key === 'deposit')).toMatchObject({ tone: 'warn', label: /by decision/ })
+  })
+
+  it('is not a bypass: an unsent quote still holds it at approval', async () => {
+    const { jobId } = await atApproval({ sent: false })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /go ahead without acceptance/i }))
+    await screen.findByText(/will not move yet — still open: Quote sent to the client/)
+    await user.type(screen.getByLabelText(/why go ahead without/i), 'Verbal yes')
+    await user.click(screen.getByRole('button', { name: /^record the reason$/i }))
+    await screen.findAllByText(/Skipped — Verbal yes/)
+    expect(currentDb.sqlite.prepare('select phase from jobs where id = ?').get(jobId)).toEqual({ phase: 'approval' })
   })
 })
 

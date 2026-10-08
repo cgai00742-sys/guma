@@ -486,6 +486,12 @@ export interface ProjectFacts {
   /** Set when a change order took the price above what the client
    *  accepted; says how. Stays until someone clears it. */
   overCeiling: string | null
+  /**
+   * Client approval items the shop moved past on purpose, with the reason
+   * written at the time. Not a pass: the money flags still show, but as a
+   * decision on the record rather than an oversight (CG, 7 Oct).
+   */
+  wentAheadWithout: { accepted: string | null; deposit: string | null }
   /** ISO date it actually changed hands. */
   deliveryOn: string | null
   deliveryHow: string | null

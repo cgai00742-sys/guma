@@ -54,6 +54,7 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     windowLocked: false,
     atRisk: false,
     overCeiling: null,
+    wentAheadWithout: { accepted: null, deposit: null },
     deliveryOn: null,
     deliveryHow: null,
     brief: null,
