@@ -13,6 +13,7 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
+import { copiesOf, movable, moveCopies, statusOf } from './copies'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
@@ -1158,12 +1159,12 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .order('worked_on', { ascending: false }),
     supabase
       .from('job_parts')
-      .select('id, label, qty, status, note, sort, chosen_section_id')
+      .select('id, label, qty, status, note, sort, chosen_section_id, printed_n, passed_n, reprint_n')
       .eq('job_id', jobId)
       .order('sort'),
     supabase
       .from('part_events')
-      .select('id, part_id, kind, from_status, to_status, note, at, profiles ( full_name )')
+      .select('id, part_id, kind, from_status, to_status, n, note, at, profiles ( full_name )')
       .eq('job_id', jobId)
       .order('at', { ascending: false }),
     listSliceImports(shopId, jobId),
@@ -1284,6 +1285,9 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         label: x.label,
         qty: Number(x.qty),
         status: x.status,
+        printedN: Number(x.printed_n ?? 0),
+        passedN: Number(x.passed_n ?? 0),
+        reprintN: Number(x.reprint_n ?? 0),
         note: x.note ?? null,
         sort: Number(x.sort ?? 0),
         chosenSectionId: x.chosen_section_id ?? null,
@@ -1312,6 +1316,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
             kind: e.kind,
             fromStatus: e.from_status ?? null,
             toStatus: e.to_status ?? null,
+            n: e.n == null ? null : Number(e.n),
             note: e.note ?? null,
             actor: e.profiles?.full_name ?? null,
             at: e.at,
@@ -1999,36 +2004,92 @@ export async function setPartStatus(
   status: PartStatus,
   note: string | null,
 ): Promise<void> {
+  const { data: part, error } = await supabase
+    .from('job_parts')
+    .select('qty, printed_n, passed_n, reprint_n')
+    .eq('id', partId)
+    .eq('shop_id', shopId)
+    .single()
+  if (error) throw error
+  if (!part) throw new Error('That part no longer exists.')
+  if (status === 'reprint' && !(note ?? '').trim()) throw new Error('Say what went wrong before sending a part back.')
+  const n = movable(copiesOf({ qty: Number(part.qty), printedN: Number(part.printed_n), passedN: Number(part.passed_n), reprintN: Number(part.reprint_n) }), status)
+  if (n === 0) return
+  await movePartCopies(shopId, partId, actorId, status, n, note)
+}
+
+/** See data.local.ts's movePartCopies. */
+export async function movePartCopies(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  to: PartStatus,
+  n: number,
+  note: string | null,
+): Promise<void> {
   const { data: part, error: readErr } = await supabase
     .from('job_parts')
-    .select('job_id, status')
+    .select('job_id, qty, status, printed_n, passed_n, reprint_n')
     .eq('id', partId)
     .eq('shop_id', shopId)
     .single()
   if (readErr) throw readErr
   if (!part) throw new Error('That part no longer exists.')
-  if (status === 'reprint' && !(note ?? '').trim()) {
-    throw new Error('Say what went wrong before sending a part back.')
-  }
-  if (part.status === status) return
-
+  if (to === 'reprint' && !(note ?? '').trim()) throw new Error('Say what went wrong before sending a part back.')
+  const after = moveCopies(
+    copiesOf({ qty: Number(part.qty), printedN: Number(part.printed_n), passedN: Number(part.passed_n), reprintN: Number(part.reprint_n) }),
+    to,
+    n,
+  )
   const { error } = await supabase
     .from('job_parts')
-    .update({ status, updated_at: new Date().toISOString() })
+    .update({
+      printed_n: after.printed,
+      passed_n: after.passed,
+      reprint_n: after.reprint,
+      status: statusOf(after),
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', partId)
     .eq('shop_id', shopId)
   if (error) throw error
-
   const { error: evErr } = await supabase.from('part_events').insert({
     part_id: partId,
     job_id: part.job_id,
     kind: 'status',
     from_status: part.status,
-    to_status: status,
+    to_status: to,
+    n: Math.floor(n),
     note: note?.trim() || null,
     actor_id: actorId,
   })
   if (evErr) throw evErr
+}
+
+/** See data.local.ts's markPlatePrinted. */
+export async function markPlatePrinted(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+): Promise<number> {
+  const { data, error } = await supabase
+    .from('slice_sections')
+    .select('part_id, qty, slice_imports!inner ( job_id ), job_parts!inner ( qty, printed_n, passed_n, reprint_n, shop_id )')
+    .eq('import_id', sliceImportId)
+    .eq('slice_imports.job_id', jobId)
+    .eq('job_parts.shop_id', shopId)
+  if (error) throw error
+  let moved = 0
+  for (const r of (data ?? []) as any[]) {
+    const p = r.job_parts
+    const c = copiesOf({ qty: Number(p.qty), printedN: Number(p.printed_n), passedN: Number(p.passed_n), reprintN: Number(p.reprint_n) })
+    const n = Math.min(Math.max(1, Number(r.qty)), movable(c, 'printed'))
+    if (n <= 0) continue
+    await movePartCopies(shopId, r.part_id, actorId, 'printed', n, null)
+    moved++
+  }
+  return moved
 }
 
 /** See data.local.ts's choosePartVariant. */
@@ -2067,14 +2128,21 @@ export async function updatePart(
   const note = input.note?.trim() || null
   const { data: before, error: readErr } = await supabase
     .from('job_parts')
-    .select('job_id, label, qty, note')
+    .select('job_id, label, qty, note, printed_n, passed_n, reprint_n')
     .eq('id', partId)
     .eq('shop_id', shopId)
     .single()
   if (readErr) throw readErr
+  const done = Number(before.printed_n) + Number(before.passed_n) + Number(before.reprint_n)
+  if (qty < done) {
+    throw new Error(`${done} copies of this part are already printed, passed or going back — it cannot be fewer than ${done}.`)
+  }
+  const status = statusOf(
+    copiesOf({ qty, printedN: Number(before.printed_n), passedN: Number(before.passed_n), reprintN: Number(before.reprint_n) }),
+  )
   const { error } = await supabase
     .from('job_parts')
-    .update({ label, qty, note, updated_at: new Date().toISOString() })
+    .update({ label, qty, note, status, updated_at: new Date().toISOString() })
     .eq('id', partId)
     .eq('shop_id', shopId)
   if (error) throw error

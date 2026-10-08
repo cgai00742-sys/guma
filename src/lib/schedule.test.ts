@@ -32,7 +32,7 @@ function part(status: PartRow['status'], minutes: number | null): PartRow {
     sort: 0,
     history: [],
     variants: minutes == null ? [] : [variant(minutes)],
-    chosenSectionId: null,
+    chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0,
   }
 }
 

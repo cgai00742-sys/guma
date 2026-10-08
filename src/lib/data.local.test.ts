@@ -1861,11 +1861,15 @@ describe('data.local.ts against a real SQLite database', () => {
       gateStatus('review', ticked('qc'), d.facts).items.find((i) => i.key === 'qc')!.checked,
     ).toBe(false)
 
+    // Only what came off the machine can pass (0031_part_copies.sql).
+    await local.setPartStatus(shopId, a, ctx.profile.id, 'printed', null)
     await local.setPartStatus(shopId, a, ctx.profile.id, 'passed', null)
     d = await local.loadProjectDetail(shopId, saved.jobId)
     qc = gateStatus('review', {}, d.facts).items.find((i) => i.key === 'qc')!
     expect(qc.checked).toBe(false)
 
+    // Only what came off the machine can pass (0031_part_copies.sql).
+    await local.setPartStatus(shopId, b, ctx.profile.id, 'printed', null)
     await local.setPartStatus(shopId, b, ctx.profile.id, 'passed', null)
     d = await local.loadProjectDetail(shopId, saved.jobId)
     expect(gateStatus('review', {}, d.facts).items.find((i) => i.key === 'qc')!.checked).toBe(true)

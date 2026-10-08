@@ -652,3 +652,23 @@ export async function setStockHolds(
 ): Promise<void> {
   return (await backend()).setStockHolds(shopId, jobId, actorId, holds)
 }
+
+export async function movePartCopies(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  to: PartStatus,
+  n: number,
+  note: string | null,
+): Promise<void> {
+  return (await backend()).movePartCopies(shopId, partId, actorId, to, n, note)
+}
+
+export async function markPlatePrinted(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+): Promise<number> {
+  return (await backend()).markPlatePrinted(shopId, jobId, actorId, sliceImportId)
+}

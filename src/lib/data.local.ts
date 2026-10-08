@@ -26,6 +26,7 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import Database from '@tauri-apps/plugin-sql'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
+import { copiesOf, movable, moveCopies, statusOf } from './copies'
 import {
   NeedsSetup,
   asClientKind,
@@ -1470,9 +1471,12 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       note: string | null
       sort: number
       chosen_section_id: string | null
+      printed_n: number
+      passed_n: number
+      reprint_n: number
     }[]
   >(
-    `select id, label, qty, status, note, sort, chosen_section_id
+    `select id, label, qty, status, note, sort, chosen_section_id, printed_n, passed_n, reprint_n
        from job_parts where job_id = ? order by sort, created_at`,
     [jobId],
   )
@@ -1515,12 +1519,13 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       kind: 'status' | 'note'
       from_status: PartStatus | null
       to_status: PartStatus | null
+      n: number | null
       note: string | null
       actor: string | null
       at: string
     }[]
   >(
-    `select e.id, e.part_id, e.kind, e.from_status, e.to_status, e.note, e.at,
+    `select e.id, e.part_id, e.kind, e.from_status, e.to_status, e.n, e.note, e.at,
             p.full_name as actor
        from part_events e
        left join profiles p on p.id = e.actor_id
@@ -1641,6 +1646,9 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         label: x.label,
         qty: Number(x.qty),
         status: x.status,
+        printedN: Number(x.printed_n ?? 0),
+        passedN: Number(x.passed_n ?? 0),
+        reprintN: Number(x.reprint_n ?? 0),
         note: x.note,
         sort: Number(x.sort),
         chosenSectionId: x.chosen_section_id,
@@ -1668,6 +1676,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
             kind: e.kind,
             fromStatus: e.from_status,
             toStatus: e.to_status,
+            n: e.n == null ? null : Number(e.n),
             note: e.note,
             actor: e.actor,
             at: e.at,
@@ -2587,28 +2596,97 @@ export async function setPartStatus(
   status: PartStatus,
   note: string | null,
 ): Promise<void> {
+  // Every copy that can go there, goes. Kept for the callers that mean the
+  // whole part ("pass them all"); counting callers use movePartCopies.
   const d = await db()
-  const rows = await d.select<{ job_id: string; status: PartStatus }[]>(
-    'select job_id, status from job_parts where id = ? and shop_id = ?',
+  const [part] = await d.select<{ qty: number; printed_n: number; passed_n: number; reprint_n: number }[]>(
+    'select qty, printed_n, passed_n, reprint_n from job_parts where id = ? and shop_id = ?',
     [partId, shopId],
   )
-  const part = rows[0]
   if (!part) throw new Error('That part no longer exists.')
   if (status === 'reprint' && !(note ?? '').trim()) {
     throw new Error('Say what went wrong before sending a part back.')
   }
-  if (part.status === status) return
+  const n = movable(copiesOf({ qty: Number(part.qty), printedN: Number(part.printed_n), passedN: Number(part.passed_n), reprintN: Number(part.reprint_n) }), status)
+  if (n === 0) return
+  await movePartCopies(shopId, partId, actorId, status, n, note)
+}
 
+/**
+ * Move some of a part's copies (CG, 8 Oct: one test copy of five). The
+ * rules -- which copies can move where -- are lib/copies.ts, shared with
+ * the hosted backend and the screen. Sending copies back needs a reason.
+ */
+export async function movePartCopies(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  to: PartStatus,
+  n: number,
+  note: string | null,
+): Promise<void> {
+  const d = await db()
+  const [part] = await d.select<
+    { job_id: string; qty: number; status: PartStatus; printed_n: number; passed_n: number; reprint_n: number }[]
+  >('select job_id, qty, status, printed_n, passed_n, reprint_n from job_parts where id = ? and shop_id = ?', [
+    partId,
+    shopId,
+  ])
+  if (!part) throw new Error('That part no longer exists.')
+  if (to === 'reprint' && !(note ?? '').trim()) throw new Error('Say what went wrong before sending a part back.')
+  const before = copiesOf({
+    qty: Number(part.qty),
+    printedN: Number(part.printed_n),
+    passedN: Number(part.passed_n),
+    reprintN: Number(part.reprint_n),
+  })
+  const after = moveCopies(before, to, n)
+  const status = statusOf(after)
   await d.execute(
-    `update job_parts set status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-     where id = ? and shop_id = ?`,
-    [status, partId, shopId],
+    `update job_parts set printed_n = ?, passed_n = ?, reprint_n = ?, status = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      where id = ? and shop_id = ?`,
+    [after.printed, after.passed, after.reprint, status, partId, shopId],
   )
   await d.execute(
-    `insert into part_events (part_id, job_id, kind, from_status, to_status, note, actor_id)
-     values (?, ?, 'status', ?, ?, ?, ?)`,
-    [partId, part.job_id, part.status, status, note?.trim() || null, actorId],
+    `insert into part_events (part_id, job_id, kind, from_status, to_status, n, note, actor_id)
+     values (?, ?, 'status', ?, ?, ?, ?, ?)`,
+    [partId, part.job_id, part.status, to, Math.floor(n), note?.trim() || null, actorId],
   )
+}
+
+/**
+ * One plate came off the machine: every part on it gains the copies that
+ * plate holds -- not all of its copies. A part needing five, on a plate
+ * that carries one, is one of five printed (CG, 8 Oct). Returns how many
+ * parts moved.
+ */
+export async function markPlatePrinted(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+): Promise<number> {
+  const d = await db()
+  const rows = await d.select<
+    { part_id: string; per_plate: number; qty: number; printed_n: number; passed_n: number; reprint_n: number }[]
+  >(
+    `select s.part_id, s.qty as per_plate, p.qty, p.printed_n, p.passed_n, p.reprint_n
+       from slice_sections s
+       join slice_imports i on i.id = s.import_id
+       join job_parts p on p.id = s.part_id
+      where s.import_id = ? and i.job_id = ? and p.shop_id = ?`,
+    [sliceImportId, jobId, shopId],
+  )
+  let moved = 0
+  for (const r of rows) {
+    const c = copiesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n) })
+    const n = Math.min(Math.max(1, Number(r.per_plate)), movable(c, 'printed'))
+    if (n <= 0) continue
+    await movePartCopies(shopId, r.part_id, actorId, 'printed', n, null)
+    moved++
+  }
+  return moved
 }
 
 /**
@@ -2654,16 +2732,25 @@ export async function updatePart(
   if (!Number.isFinite(qty) || qty < 1) throw new Error('A part needs at least one copy.')
   const note = input.note?.trim() || null
   const d = await db()
-  const [before] = await d.select<{ job_id: string; label: string; qty: number; note: string | null }[]>(
-    'select job_id, label, qty, note from job_parts where id = ? and shop_id = ?',
+  const [before] = await d.select<
+    { job_id: string; label: string; qty: number; note: string | null; printed_n: number; passed_n: number; reprint_n: number }[]
+  >(
+    'select job_id, label, qty, note, printed_n, passed_n, reprint_n from job_parts where id = ? and shop_id = ?',
     [partId, shopId],
   )
   if (!before) throw new Error('That part is not in this shop.')
+  const done = Number(before.printed_n) + Number(before.passed_n) + Number(before.reprint_n)
+  if (qty < done) {
+    throw new Error(`${done} copies of this part are already printed, passed or going back — it cannot be fewer than ${done}.`)
+  }
+  const status = statusOf(
+    copiesOf({ qty, printedN: Number(before.printed_n), passedN: Number(before.passed_n), reprintN: Number(before.reprint_n) }),
+  )
   await d.execute(
-    `update job_parts set label = ?, qty = ?, note = ?,
+    `update job_parts set label = ?, qty = ?, note = ?, status = ?,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
      where id = ? and shop_id = ?`,
-    [label, qty, note, partId, shopId],
+    [label, qty, note, status, partId, shopId],
   )
   const said = describePartEdit(before, { label, qty, note })
   if (said.length > 0) {

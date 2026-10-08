@@ -1026,7 +1026,13 @@ export interface PartRow {
   id: string
   label: string
   qty: number
+  /** Summary of where the copies are (see lib/copies.ts). */
   status: PartStatus
+  /** Copies off the machine, not checked; passed QC; going back. The rest
+   *  are not printed yet (0031_part_copies.sql). */
+  printedN: number
+  passedN: number
+  reprintN: number
   note: string | null
   sort: number
   /** Newest first. Empty until something has happened to this part. */
@@ -1093,6 +1099,8 @@ export interface PartEvent {
   kind: 'status' | 'note'
   fromStatus: PartStatus | null
   toStatus: PartStatus | null
+  /** Copies this moved; null on events that moved all of them. */
+  n: number | null
   note: string | null
   actor: string | null
   at: string

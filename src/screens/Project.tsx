@@ -59,7 +59,8 @@ import {
   deletePart,
   updatePart,
   choosePartVariant,
-  setPartStatus,
+  movePartCopies,
+  markPlatePrinted,
   deletePrintRun,
   deleteWorkEntry,
   loadProjectDetail,
@@ -114,7 +115,6 @@ import { mb, packFile, tooBigNote, unpackFile, type KeptFile } from '../lib/slic
 import {
   allowedStatuses,
   awaitingPrint,
-  nextStatuses,
   buildingPhase,
   chosenVariant,
   isOnSharedPlate,
@@ -155,6 +155,7 @@ import { sheetVsQuote } from '../lib/sheetVsQuote'
 import type { StockHoldRow } from '../lib/data.types'
 import { materialCheck } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
+import { copiesOf, describeCopies, movable, type Copies } from '../lib/copies'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
 const DELIVERY_METHODS = [
@@ -2017,19 +2018,9 @@ function SliceImport({
           startedAt: printedOn || todayISO(),
           sliceImportId: res.importId,
         })
-        // The plate came off, so every object on it came off.
-        const fresh = await loadProjectDetail(ctx.shop.id, detail.jobId)
-        let marked = 0
-        {
-          const slice = fresh.slices.find((x) => x.id === res.importId)
-          const ids = new Set(slice?.sections.map((sec) => sec.partId).filter(Boolean))
-          for (const part of fresh.parts) {
-            if (ids.has(part.id) && awaitingPrint(part.status)) {
-              await setPartStatus(ctx.shop.id, part.id, ctx.profile.id, 'printed', null)
-              marked++
-            }
-          }
-        }
+        // The plate came off: each part on it gains the copies the plate
+        // holds -- one plate of a part that needs five is one of five.
+        const marked = await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId)
         const machine = ctx.printerRows.find((p) => p.id === printerId)?.name ?? 'the machine'
         recorded =
           `Recorded as printed on ${machine}: ${hrs(read.totals.estMinutes) ?? '0h'}` +
@@ -2473,9 +2464,7 @@ function SliceRuns({
       // The plate came off, so every object on it came off. Only on a
       // successful run: a failed plate produced nothing to check.
       if (markParts && form.outcome === 'success' && form.sliceImportId) {
-        for (const partId of pendingPartsOf(form.sliceImportId)) {
-          await setPartStatus(ctx.shop.id, partId, ctx.profile.id, 'printed', null)
-        }
+        await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, form.sliceImportId)
       }
       setOpenId(null)
       setForm(null)
@@ -3440,7 +3429,10 @@ function BuildSheet({
     // another thing on screen that means nothing.
     window.setTimeout(() => setLanded(0), 2200)
   }
-  const [reprintFor, setReprintFor] = useState<string | null>(null)
+  /** The part and the move being made on it -- one at a time. */
+  const [act, setAct] = useState<{ partId: string; to: PartStatus } | null>(null)
+  /** How many copies the open move moves. */
+  const [n, setN] = useState(1)
   // A part's history drawer changes the height of the build sheet above
   // whatever you click next. See rowAnchor.ts.
   const holdRow = useRowAnchor(openId)
@@ -3490,8 +3482,8 @@ function BuildSheet({
       })
       fileName = parsed.fileName
     }
-    await setPartStatus(ctx.shop.id, part.id, ctx.profile.id, 'reprint', reprintNote(why, fix, fileName))
-    setReprintFor(null)
+    await movePartCopies(ctx.shop.id, part.id, ctx.profile.id, 'reprint', n, reprintNote(why, fix, fileName))
+    setAct(null)
     setFixedFile(null)
   }
 
@@ -3508,15 +3500,27 @@ function BuildSheet({
     }
   }
 
-  async function move(part: PartRow, status: PartStatus) {
-    if (status === 'reprint') {
-      setReprintFor(part.id)
+  /**
+   * Start a move on a part. One copy left to move needs no question, so it
+   * just happens; more than one asks how many, starting from the likeliest
+   * answer -- the copies one plate holds when printing, all of them when
+   * passing, one when failing. Failing always asks why.
+   */
+  function open(part: PartRow, to: PartStatus) {
+    const c = copiesOf(part)
+    const max = movable(c, to)
+    if (to !== 'reprint' && max === 1) {
+      void guard(() => movePartCopies(ctx.shop.id, part.id, ctx.profile.id, to, 1, null))
+      return
+    }
+    const perPlate = chosenVariant(part).variant?.sectionQty ?? 1
+    setN(to === 'printed' ? Math.min(max, perPlate) : to === 'passed' ? max : 1)
+    setAct({ partId: part.id, to })
+    if (to === 'reprint') {
       setWhy('')
       setFix('')
       setFixedFile(null)
-      return
     }
-    await guard(() => setPartStatus(ctx.shop.id, part.id, ctx.profile.id, status, null))
   }
 
   return (
@@ -3617,9 +3621,9 @@ function BuildSheet({
           <table>
             <thead>
               <tr>
-                <th style={{ width: '46%' }}>Part</th>
-                <th className="r">Copies</th>
-                <th style={{ width: 190 }}>Status</th>
+                <th style={{ width: '40%' }}>Part</th>
+                <th style={{ width: 170 }}>Copies</th>
+                <th />
                 <th />
               </tr>
             </thead>
@@ -3628,20 +3632,7 @@ function BuildSheet({
                 <Fragment key={p.id}>
                   <tr className={landed > 0 && i >= detail.parts.length - landed ? 'landed' : ''}>
                     <td>
-                      <span className="pn">{p.label}</span>
-                      {p.history.length > 1 && (
-                        <button
-                          type="button"
-                          className="linkbtn"
-                          style={{ marginLeft: 8, fontSize: 10 }}
-                          onClick={(e) => {
-                            holdRow(e.currentTarget.closest('tr'))
-                            setOpenId(openId === p.id ? null : p.id)
-                          }}
-                        >
-                          history ({p.history.length})
-                        </button>
-                      )}
+                      <div className="pn">{p.label}</div>
                       {p.note && <div className="pmeta">{p.note}</div>}
                       {/* The reason a part is going back belongs HERE, not
                           one click away in its history drawer: whoever
@@ -3662,66 +3653,90 @@ function BuildSheet({
                         setError={setError}
                       />
                     </td>
-                    <td className="r mono">×{p.qty}</td>
                     <td>
-                      {/* Same fixed two-slot grammar as the board card and
-                          the design package: square = printed, disc = QC. */}
-                      <span className="pstat" aria-hidden="true">
-                        <i
-                          className={`s-print ${p.status === 'pending' ? '' : 'on'}`.trim()}
-                        />
-                        <i
-                          className={`s-qc ${
-                            p.status === 'passed' ? 'on' : p.status === 'reprint' ? 'on fail' : ''
-                          }`.trim()}
-                        />
-                      </span>
-                      <span
-                        style={{
-                          fontSize: 11,
-                          color:
-                            p.status === 'reprint'
-                              ? 'var(--red)'
-                              : p.status === 'passed'
-                                ? 'var(--ok)'
-                                : p.status === 'printed'
-                                  ? 'var(--warn)'
-                                  : 'var(--txt-3)',
-                        }}
-                      >
-                        {PART_STATUS_LABEL[p.status]}
-                      </span>
+                      {(() => {
+                        const c = copiesOf(p)
+                        return (
+                          <>
+                            <CopyBar copies={c} />
+                            <div
+                              className="pmeta"
+                              data-testid={`copies-${p.id}`}
+                              style={{
+                                color:
+                                  c.reprint > 0
+                                    ? 'var(--red)'
+                                    : p.status === 'passed'
+                                      ? 'var(--ok)'
+                                      : c.printed + c.passed > 0
+                                        ? 'var(--warn)'
+                                        : undefined,
+                              }}
+                            >
+                              {describeCopies(c)}
+                            </div>
+                          </>
+                        )
+                      })()}
                     </td>
                     <td>
-                      <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-                        {/* Offered from where the PART is, at any stage:
-                            a plate can be printed and checked before the
-                            project's stages catch up. */}
-                        {nextStatuses(p.status)
-                          .filter((st) => allowedStatuses(detail.phase, detail.facts.kind).includes(st))
-                          .map((st) => (
+                      {act?.partId === p.id && act.to !== 'reprint' ? (
+                        <CountPicker
+                          label={act.to === 'printed' ? 'How many came off?' : 'How many passed?'}
+                          id={`n-${p.id}`}
+                          value={n}
+                          max={movable(copiesOf(p), act.to)}
+                          onChange={setN}
+                          busy={busy || saving}
+                          onSave={() =>
+                            void guard(async () => {
+                              await movePartCopies(ctx.shop.id, p.id, ctx.profile.id, act.to, n, null)
+                              setAct(null)
+                            })
+                          }
+                          onCancel={() => setAct(null)}
+                        />
+                      ) : (
+                        <div className="partacts">
+                          {allowedStatuses(detail.phase, detail.facts.kind)
+                            .filter((st) => movable(copiesOf(p), st) > 0)
+                            .map((st) => {
+                              const c = copiesOf(p)
+                              const name =
+                                st === 'printed' ? (c.reprint > 0 && c.pending === 0 ? 'Reprinted' : 'Printed') : st === 'passed' ? 'Pass' : 'Fail'
+                              return (
+                                <button
+                                  key={st}
+                                  type="button"
+                                  className={`btn sm ${st === 'reprint' ? 'danger' : st === 'passed' ? 'primary' : ''}`.trim()}
+                                  disabled={busy || saving}
+                                  aria-label={`${name} ${p.label}`}
+                                  onClick={() => open(p, st)}
+                                >
+                                  {name}
+                                </button>
+                              )
+                            })}
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <div className="partlinks">
+                        {p.history.length > 1 && (
                           <button
-                            key={st}
                             type="button"
-                            className={`btn sm ${st === 'reprint' ? 'danger' : 'ghost'}`}
-                            disabled={busy || saving}
-                            style={{ fontSize: 10 }}
-                            aria-label={`${st === 'printed' ? (p.status === 'reprint' ? 'Reprinted' : 'Printed') : st === 'passed' ? 'Pass' : 'Fail'} ${p.label}`}
-                            onClick={() => void move(p, st)}
+                            className="linkbtn"
+                            onClick={(e) => {
+                              holdRow(e.currentTarget.closest('tr'))
+                              setOpenId(openId === p.id ? null : p.id)
+                            }}
                           >
-                            {st === 'printed'
-                              ? p.status === 'reprint'
-                                ? 'Reprinted'
-                                : 'Printed'
-                              : st === 'passed'
-                                ? 'Pass'
-                                : 'Fail'}
+                            history ({p.history.length})
                           </button>
-                        ))}
+                        )}
                         <button
                           type="button"
                           className="linkbtn"
-                          style={{ fontSize: 10 }}
                           disabled={busy || saving}
                           aria-label={`Edit ${p.label}`}
                           onClick={() => setEditId(editId === p.id ? null : p.id)}
@@ -3734,7 +3749,6 @@ function BuildSheet({
                         <button
                           type="button"
                           className="linkbtn"
-                          style={{ fontSize: 10 }}
                           disabled={busy || saving}
                           aria-label={`Remove ${p.label}`}
                           onClick={() => {
@@ -3814,9 +3828,24 @@ function BuildSheet({
                       </td>
                     </tr>
                   )}
-                  {reprintFor === p.id && (
+                  {act?.partId === p.id && act.to === 'reprint' && (
                     <tr>
                       <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
+                        {movable(copiesOf(p), 'reprint') > 1 && (
+                          <div className="fld" style={{ margin: '0 0 6px', maxWidth: 220 }}>
+                            <label className="lbl" htmlFor={`fail-n-${p.id}`}>
+                              How many failed? (of {movable(copiesOf(p), 'reprint')})
+                            </label>
+                            <input
+                              id={`fail-n-${p.id}`}
+                              type="number"
+                              min={1}
+                              max={movable(copiesOf(p), 'reprint')}
+                              value={n}
+                              onChange={(e) => setN(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+                            />
+                          </div>
+                        )}
                         <div className="fld" style={{ margin: 0 }}>
                           <label className="lbl" htmlFor={`why-${p.id}`}>
                             What went wrong
@@ -3858,19 +3887,17 @@ function BuildSheet({
                             disabled={!why.trim() || saving}
                             onClick={() => void guard(() => sendBack(p))}
                           >
-                            Mark it failed
+                            {n > 1 ? `Mark ${n} failed` : 'Mark it failed'}
                           </button>
                           <button
                             type="button"
                             className="btn sm ghost"
-                            onClick={() => setReprintFor(null)}
+                            onClick={() => setAct(null)}
                           >
                             Cancel
                           </button>
                           <span className="hint" style={{ marginTop: 0 }}>
-                            A reason is required here and nowhere else. &ldquo;Passed&rdquo; explains
-                            itself; a reprint never does, and the same reason twice is a design
-                            problem rather than bad luck.
+                            Failed copies go back to be printed again, with this reason on the row.
                           </span>
                         </div>
                       </td>
@@ -3885,9 +3912,11 @@ function BuildSheet({
                               {h.at.slice(0, 10)}
                             </span>
                             <span style={{ color: 'var(--txt-2)' }}>
-                              {h.fromStatus
-                                ? `${PART_STATUS_LABEL[h.fromStatus]} → ${PART_STATUS_LABEL[h.toStatus ?? 'pending']}`
-                                : PART_STATUS_LABEL[h.toStatus ?? 'pending']}
+                              {h.n != null && h.kind === 'status'
+                                ? `${h.n} cop${h.n === 1 ? 'y' : 'ies'} → ${COPY_MOVE_LABEL[h.toStatus ?? 'pending']}`
+                                : h.fromStatus
+                                  ? `${PART_STATUS_LABEL[h.fromStatus]} → ${PART_STATUS_LABEL[h.toStatus ?? 'pending']}`
+                                  : PART_STATUS_LABEL[h.toStatus ?? 'pending']}
                             </span>
                             {h.actor && (
                               <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>{h.actor}</span>
@@ -3907,7 +3936,7 @@ function BuildSheet({
 
       {detail.parts.length > 0 && (
         <div className="sheetsum">
-          <span>Square = printed · disc = passed QC · red = going back</span>
+          <span>One box per copy: amber = printed · green = passed · red = going back</span>
           <span style={{ marginLeft: 'auto' }}>
             {detail.facts.parts} part{detail.facts.parts === 1 ? '' : 's'} ·{' '}
             {detail.parts.reduce((n, p) => n + p.qty, 0)} copies
@@ -5071,16 +5100,7 @@ function FromTheFiles({
       startedAt: g.first.importedAt.slice(0, 10),
       sliceImportId: g.first.id,
     })
-    {
-      const partIds = new Set(
-        detail.slices.filter((s) => g.ids.includes(s.id)).flatMap((s) => s.sections.map((x) => x.partId)),
-      )
-      for (const p of detail.parts) {
-        if (partIds.has(p.id) && awaitingPrint(p.status)) {
-          await setPartStatus(ctx.shop.id, p.id, ctx.profile.id, 'printed', null)
-        }
-      }
-    }
+    await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, g.first.id)
   }
 
   async function run(list: FileGroup[]) {
@@ -5815,5 +5835,87 @@ function MachineAndMaterial({
         </div>
       </div>
     </>
+  )
+}
+
+/** Where a history line says copies went. */
+const COPY_MOVE_LABEL: Record<PartStatus, string> = {
+  pending: 'not printed',
+  printed: 'printed',
+  passed: 'passed QC',
+  reprint: 'failed, going back',
+}
+
+/**
+ * One box per copy, so "1 of 5" is seen rather than read. Past a dozen
+ * copies the boxes stop helping and the line below carries it alone.
+ */
+function CopyBar({ copies: c }: { copies: Copies }) {
+  const total = c.pending + c.printed + c.passed + c.reprint
+  if (total > 12) return null
+  const cells = [
+    ...Array(c.passed).fill('ok'),
+    ...Array(c.printed).fill('on'),
+    ...Array(c.reprint).fill('fail'),
+    ...Array(c.pending).fill(''),
+  ] as string[]
+  return (
+    <span className="copybar" aria-hidden="true">
+      {cells.map((k, i) => (
+        <i key={i} className={k} />
+      ))}
+    </span>
+  )
+}
+
+/** "How many?" in place of the row's buttons -- a number, an "all", Save. */
+function CountPicker({
+  label,
+  id,
+  value,
+  max,
+  onChange,
+  onSave,
+  onCancel,
+  busy,
+}: {
+  label: string
+  id: string
+  value: number
+  max: number
+  onChange: (n: number) => void
+  onSave: () => void
+  onCancel: () => void
+  busy: boolean
+}) {
+  return (
+    <div className="partacts">
+      <label className="lbl" htmlFor={id} style={{ margin: 0 }}>
+        {label}
+      </label>
+      <input
+        id={id}
+        type="number"
+        min={1}
+        max={max}
+        value={value}
+        style={{ width: 56 }}
+        onChange={(e) => onChange(Math.min(max, Math.max(1, Math.floor(Number(e.target.value) || 1))))}
+      />
+      <span className="pmeta" style={{ margin: 0 }}>
+        of {max}
+      </span>
+      {value !== max && (
+        <button type="button" className="linkbtn" onClick={() => onChange(max)}>
+          all
+        </button>
+      )}
+      <button type="button" className="btn sm primary" disabled={busy || value < 1 || value > max} onClick={onSave}>
+        Save
+      </button>
+      <button type="button" className="btn sm ghost" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
   )
 }

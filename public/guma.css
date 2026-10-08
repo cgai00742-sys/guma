@@ -650,6 +650,16 @@ dialog.proj-dlg .stepper{margin:10px 0 0}
 .pstat i.s-print{--c:var(--ember)}
 .pstat i.s-qc{--c:var(--ok)}
 .pstat i.fail{--c:var(--red)}
+/* one box per copy of a part (lib/copies.ts) */
+.copybar{display:inline-flex;gap:2px;flex-wrap:wrap;max-width:150px;vertical-align:middle}
+.copybar i{width:9px;height:9px;border-radius:2px;background:color-mix(in srgb, var(--line) 70%, transparent)}
+.copybar i.on{background:var(--ember)}
+.copybar i.ok{background:var(--ok)}
+.copybar i.fail{background:var(--red)}
+.sheetwrap .pn + .pmeta, .sheetwrap .pmeta{margin-top:2px}
+.partacts{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.partlinks{display:flex;gap:10px;justify-content:flex-end;white-space:nowrap}
+.partlinks .linkbtn{font-size:10px;width:auto}
 .sheetsum{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--txt-3);margin-top:8px}
 
 /* footer: one primary, with its precondition in words */

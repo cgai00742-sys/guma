@@ -490,6 +490,69 @@ describe('setting material aside (CG, 8 Oct: the more accurate stock accounting)
   })
 })
 
+describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
+  async function inBuild() {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'building')
+    const d = data as any
+    // A plate that carries ONE Hull; the job needs five.
+    const res = await d.importSlice(ctx.shop.id, jobId, ctx.profile.id, {
+      fileName: 'hull.gcode', kind: 'gcode', printerModel: null, printerId: ctx.printers[0].id,
+      materialText: 'PLA', materialId: ctx.materials[0].id, estMinutes: 60, estGrams: 20, notes: [],
+      sections: [{ label: 'Hull', qty: 1, estMinutes: 60, estGrams: 20, material: 'PLA' }],
+    })
+    const partId = (currentDb.sqlite.prepare("select id from job_parts where label = 'Hull'").get() as { id: string }).id
+    await d.updatePart(ctx.shop.id, partId, { label: 'Hull', qty: 5 }, ctx.profile.id)
+    return { ctx, jobId, d, partId, importId: res.importId as string }
+  }
+  const counts = () =>
+    currentDb.sqlite.prepare("select printed_n, passed_n, reprint_n, status from job_parts where label = 'Hull'").get()
+
+  it('one plate of a part that needs five is one of five, not all five', async () => {
+    const { ctx, jobId, d, importId } = await inBuild()
+    await d.markPlatePrinted(ctx.shop.id, jobId, ctx.profile.id, importId)
+    expect(counts()).toEqual({ printed_n: 1, passed_n: 0, reprint_n: 0, status: 'pending' })
+  })
+
+  it('print one, fail it, reprint it, then the rest -- all from the row', async () => {
+    const { ctx, jobId, partId } = await inBuild()
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    const line = () => screen.getByTestId(`copies-${partId}`).textContent
+
+    // The test plate: asks how many, starting at what one plate holds.
+    await user.click(screen.getByRole('button', { name: /^printed hull$/i }))
+    const n = screen.getByLabelText(/how many came off/i) as HTMLInputElement
+    expect(n.value).toBe('1')
+    await user.click(screen.getByRole('button', { name: /^save$/i }))
+    await waitFor(() => expect(line()).toBe('1 of 5 printed'))
+
+    // It failed: one copy goes back, with a reason.
+    await user.click(screen.getByRole('button', { name: /^fail hull$/i }))
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Warped corner')
+    await user.click(screen.getByRole('button', { name: /^mark it failed$/i }))
+    await waitFor(() => expect(line()).toBe('0 of 5 printed · 1 going back'))
+    expect(counts()).toMatchObject({ reprint_n: 1, status: 'reprint' })
+    await screen.findByText(/↩ Warped corner/)
+
+    // The reprint and the other four come off: "all".
+    await user.click(screen.getByRole('button', { name: /^printed hull$/i }))
+    await user.click(screen.getByRole('button', { name: /^all$/i }))
+    expect((screen.getByLabelText(/how many came off/i) as HTMLInputElement).value).toBe('5')
+    await user.click(screen.getByRole('button', { name: /^save$/i }))
+    await waitFor(() => expect(line()).toBe('5 of 5 printed'))
+    expect(counts()).toEqual({ printed_n: 5, passed_n: 0, reprint_n: 0, status: 'printed' })
+    expect(document.querySelectorAll('.copybar i.on')).toHaveLength(5)
+  })
+
+  it('a part cannot be cut below the copies already made', async () => {
+    const { ctx, jobId, d, partId, importId } = await inBuild()
+    await d.markPlatePrinted(ctx.shop.id, jobId, ctx.profile.id, importId)
+    await d.movePartCopies(ctx.shop.id, partId, ctx.profile.id, 'printed', 2, null)
+    await expect(d.updatePart(ctx.shop.id, partId, { label: 'Hull', qty: 2 }, ctx.profile.id)).rejects.toThrow(/cannot be fewer than 3/)
+  })
+})
+
 describe('the build sheet at each stage', () => {
   /** Two Voltage rules, checked on the rendered row rather than in the
    *  helper: the options narrow to the stage, and a reprint's reason is on
