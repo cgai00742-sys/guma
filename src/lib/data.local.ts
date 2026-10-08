@@ -35,6 +35,9 @@ import {
   validateRevision,
   CHANGE_CAUSE_LABEL,
   sameSliceFile,
+  describeHolds,
+  type StockHoldRow,
+  type StockHoldInput,
 } from './data.types'
 import type { SeriesRow, SeriesInput } from './data.types'
 import { osCurrency, osLocale } from './locale'
@@ -3593,5 +3596,69 @@ export async function setJobSeries(
     jobId,
     actorId,
     to ? (from ? `Moved from the ${from} series to ${to}.` : `Filed in the ${to} series.`) : `Taken out of the ${from} series.`,
+  ])
+}
+
+/** Every live hold in the shop, from the stock_held view. */
+export async function listStockHolds(shopId: string): Promise<StockHoldRow[]> {
+  const d = await db()
+  const rows = await d.select<
+    { job_id: string; ref: string; title: string; phase: JobPhase; material_id: string; held: number; used: number; remaining: number }[]
+  >(
+    `select job_id, ref, title, phase, material_id, held, used, remaining
+       from stock_held where shop_id = ? order by ref`,
+    [shopId],
+  )
+  return rows.map((r) => ({
+    jobId: r.job_id,
+    ref: r.ref,
+    title: r.title,
+    phase: r.phase,
+    materialId: r.material_id,
+    held: Number(r.held),
+    used: Number(r.used),
+    remaining: Number(r.remaining),
+  }))
+}
+
+/**
+ * Replace what this project has set aside. An empty list releases it.
+ * Replacing rather than adding is deliberate: the build sheet changes, and
+ * a hold that only ever grew would hoard stock nobody is going to print.
+ */
+export async function setStockHolds(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  holds: StockHoldInput[],
+): Promise<void> {
+  const d = await db()
+  const [job] = await d.select<{ id: string }[]>('select id from jobs where id = ? and shop_id = ?', [jobId, shopId])
+  if (!job) throw new Error('That project is not in this shop.')
+  const clean = holds.filter((h) => Number.isFinite(h.units) && h.units > 0)
+  const mats = await d.select<{ id: string; name: string; unit: string }[]>(
+    'select id, name, unit from materials where shop_id = ?',
+    [shopId],
+  )
+  for (const h of clean) {
+    if (!mats.some((m) => m.id === h.materialId)) throw new Error('That material is not in this shop.')
+  }
+  await d.execute('delete from stock_holds where job_id = ?', [jobId])
+  for (const h of clean) {
+    await d.execute(
+      'insert into stock_holds (job_id, material_id, units, actor_id) values (?, ?, ?, ?)',
+      [jobId, h.materialId, Math.ceil(h.units), actorId],
+    )
+  }
+  const body = describeHolds(
+    clean.map((h) => {
+      const m = mats.find((x) => x.id === h.materialId)!
+      return { name: m.name, unit: m.unit, units: Math.ceil(h.units) }
+    }),
+  )
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [
+    jobId,
+    actorId,
+    body,
   ])
 }

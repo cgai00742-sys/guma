@@ -36,3 +36,23 @@ describe('material on hand for Scheduled (CG, 8 Oct)', () => {
     expect([c.unassigned, c.lines.length]).toEqual([100, 1])
   })
 })
+
+describe('what other projects set aside comes off the shelf first (CG, 8 Oct)', () => {
+  const holds = [
+    { jobId: 'other', materialId: 'pla', remaining: 600 },
+    { jobId: 'me', materialId: 'pla', remaining: 300 },
+  ]
+  it('covered against what is available, not what is on hand', () => {
+    // 1000 on hand, 600 held by another project: 400 is all this one gets.
+    const c = materialCheck([line('pla', 1, 450)], null, [pla], null, holds, 'me')
+    expect([c.lines[0].heldElsewhere, c.lines[0].available, c.lines[0].ok]).toEqual([600, 400, false])
+  })
+  it('its own hold is not counted against it, and set aside means held enough', () => {
+    const c = materialCheck([line('pla', 1, 300)], null, [pla], null, holds, 'me')
+    expect([c.lines[0].ok, c.lines[0].heldHere, c.lines[0].setAside, c.allSetAside]).toEqual([true, 300, true, true])
+  })
+  it('covered but not held is not set aside', () => {
+    const c = materialCheck([line('pla', 1, 300)], null, [pla], null, [], 'me')
+    expect([c.ok, c.allSetAside]).toEqual([true, false])
+  })
+})

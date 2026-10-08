@@ -382,7 +382,7 @@ describe('Scheduled: pick the machine, check the spool (CG, 8 Oct)', () => {
     await screen.findByText(/Booked on Prusa XL\./)
   })
 
-  it('the material item reads the shelf: short blocks, covered ticks', async () => {
+  it('the material item reads the shelf: short blocks, covered is not yet a tick', async () => {
     const { ctx, jobId, data } = await seed({ takeIn: true })
     await moveTo(data, ctx, jobId, 'scheduled')
     // 12 brackets x 62 g = 744 g. Nothing on the shelf yet.
@@ -396,8 +396,82 @@ describe('Scheduled: pick the machine, check the spool (CG, 8 Oct)', () => {
 
     currentDb.sqlite.prepare('update materials set on_hand = 2000').run()
     await renderProject(jobId, ctx)
-    expect((await screen.findByTestId('material-check')).textContent).toMatch(/covered/)
-    expect((document.getElementById('g-material') as HTMLInputElement).checked).toBe(true)
+    expect((await screen.findByTestId('material-check')).textContent).toMatch(/covered, not set aside/)
+    // Covered is a reading, not a claim -- the tick waits for the hold.
+    expect((document.getElementById('g-material') as HTMLInputElement).checked).toBe(false)
+  })
+})
+
+describe('setting material aside (CG, 8 Oct: the more accurate stock accounting)', () => {
+  /** A second project on the same shelf, for the first to compete with. */
+  async function second(data: any, ctx: any) {
+    const ref = await data.nextJobRef(ctx.shop.id)
+    const saved = await data.saveQuote({
+      shopId: ctx.shop.id,
+      ref,
+      client: { name: 'Werft Nord', contact: '', email: '', phone: '', source: '' },
+      job: { title: 'Cleats', brief: '', neededBy: null, assetOrigin: 'model' },
+      quote: {
+        design_billing: 'none', design_qty: 0, revisions_incl: 0, quantity: 10,
+        material_id: ctx.materials[0].id, printer_id: ctx.printers[0].id, units_per_part: 50,
+        print_hrs_part: 1, finishing_hrs: 0, rush: false, flat_each: 0, discount_pct: 0,
+      },
+    })
+    await data.takeProjectIn(ctx.shop.id, saved.jobId, ctx.profile.id)
+    return saved.jobId as string
+  }
+
+  it('set aside here is taken from what every other project sees, and only then ticks', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'scheduled')
+    currentDb.sqlite.prepare('update materials set on_hand = 1000').run()
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    // 744 g needed, 1000 on hand: covered, but nothing is held yet.
+    expect((await screen.findByTestId('material-check')).textContent).toMatch(/covered, not set aside/)
+    expect((document.getElementById('g-material') as HTMLInputElement).checked).toBe(false)
+    await user.click(screen.getByRole('button', { name: /set aside for this project/i }))
+    await waitFor(() => expect((document.getElementById('g-material') as HTMLInputElement).checked).toBe(true))
+    expect(screen.getByTestId('material-check').textContent).toMatch(/set aside/)
+    await screen.findByText(/Set aside 744g PLA\./)
+    cleanup()
+
+    // The second project sees 256 g, not 1000.
+    const other = await second(data, ctx)
+    await moveTo(data, ctx, other, 'scheduled')
+    const { default: Project } = await import('./Project')
+    render(
+      <MemoryRouter initialEntries={[`/project/${other}`]}>
+        <Routes>
+          <Route path="/project/:jobId" element={<Project ctx={ctx} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    const check = await screen.findByTestId('material-check')
+    await waitFor(() => expect(check.textContent).toMatch(/744g/))
+    expect(check.textContent).toMatch(/256g/) // available
+    expect(check.textContent).toMatch(/short 244g/) // 500 needed
+  })
+
+  it('prints draw the hold down, and delivery releases it', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'scheduled')
+    currentDb.sqlite.prepare('update materials set on_hand = 1000').run()
+    const d = data as any
+    await d.setStockHolds(ctx.shop.id, jobId, ctx.profile.id, [{ materialId: ctx.materials[0].id, units: 744 }])
+    const held = async () => (await d.listStockHolds(ctx.shop.id)).map((h: any) => [h.held, h.used, h.remaining])
+    expect(await held()).toEqual([[744, 0, 744]])
+    await d.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, 'building')
+    await d.recordPrintRun(ctx.shop.id, jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id, materialId: ctx.materials[0].id, unitsUsed: 300, hours: 5,
+      outcome: 'success', failureReason: null, note: null, startedAt: null,
+    })
+    // 300 g came off the shelf AND off the hold -- never counted twice.
+    expect(await held()).toEqual([[744, 300, 444]])
+    expect(currentDb.sqlite.prepare('select on_hand from materials').get()).toEqual({ on_hand: 700 })
+    await d.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, 'review')
+    await d.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, 'delivered')
+    expect(await held()).toEqual([])
   })
 })
 

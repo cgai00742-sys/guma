@@ -182,6 +182,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0029_job_printer.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 30,
+      description: "material set aside for a project",
+      sql: include_str!("../migrations/0030_stock_holds.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

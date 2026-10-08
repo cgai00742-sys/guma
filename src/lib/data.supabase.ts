@@ -15,7 +15,8 @@ import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
-import type { SeriesRow, SeriesInput } from './data.types'
+import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
+import { describeHolds } from './data.types'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
@@ -2899,5 +2900,56 @@ export async function setJobSeries(
         : `Filed in the ${to} series.`
       : `Taken out of the ${from} series.`,
   })
+  if (evErr) throw evErr
+}
+
+/** See data.local.ts's listStockHolds. */
+export async function listStockHolds(shopId: string): Promise<StockHoldRow[]> {
+  const { data, error } = await supabase
+    .from('stock_held')
+    .select('job_id, ref, title, phase, material_id, held, used, remaining')
+    .eq('shop_id', shopId)
+    .order('ref')
+  if (error) throw error
+  return ((data ?? []) as any[]).map((r) => ({
+    jobId: r.job_id,
+    ref: r.ref,
+    title: r.title,
+    phase: r.phase,
+    materialId: r.material_id,
+    held: Number(r.held),
+    used: Number(r.used),
+    remaining: Number(r.remaining),
+  }))
+}
+
+/** See data.local.ts's setStockHolds. */
+export async function setStockHolds(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  holds: StockHoldInput[],
+): Promise<void> {
+  const clean = holds.filter((h) => Number.isFinite(h.units) && h.units > 0)
+  const { data: mats, error: mErr } = await supabase.from('materials').select('id, name, unit').eq('shop_id', shopId)
+  if (mErr) throw mErr
+  for (const h of clean) {
+    if (!(mats ?? []).some((m: any) => m.id === h.materialId)) throw new Error('That material is not in this shop.')
+  }
+  const { error: dErr } = await supabase.from('stock_holds').delete().eq('job_id', jobId)
+  if (dErr) throw dErr
+  if (clean.length) {
+    const { error } = await supabase.from('stock_holds').insert(
+      clean.map((h) => ({ job_id: jobId, material_id: h.materialId, units: Math.ceil(h.units), actor_id: actorId })),
+    )
+    if (error) throw error
+  }
+  const body = describeHolds(
+    clean.map((h) => {
+      const m = (mats as any[]).find((x) => x.id === h.materialId)
+      return { name: m.name, unit: m.unit, units: Math.ceil(h.units) }
+    }),
+  )
+  const { error: evErr } = await supabase.from('job_events').insert({ job_id: jobId, actor_id: actorId, kind: 'edit', body })
   if (evErr) throw evErr
 }

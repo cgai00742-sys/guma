@@ -64,6 +64,8 @@ import {
   deleteWorkEntry,
   loadProjectDetail,
   listMaterials,
+  listStockHolds,
+  setStockHolds,
   logWork,
   recordPrintRun,
   setQuoteStatus,
@@ -150,6 +152,7 @@ import {
 import { buildComparison, compareToQuote, priceProjectQuote, type Comparison } from '../lib/actuals'
 import type { PricedQuote, RateSet } from '../lib/pricing'
 import { sheetVsQuote } from '../lib/sheetVsQuote'
+import type { StockHoldRow } from '../lib/data.types'
 import { materialCheck } from '../lib/scheduleCheck'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
@@ -213,16 +216,19 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   const [allSeries, setAllSeries] = useState<SeriesRow[]>([])
   /** Stock on hand, for Scheduled's material check. */
   const [stock, setStock] = useState<MaterialRow[]>([])
+  const [holds, setHolds] = useState<StockHoldRow[]>([])
 
   const reload = useCallback(async () => {
     try {
-      const [d, rows, series, mats] = await Promise.all([
+      const [d, rows, series, mats, held] = await Promise.all([
         loadProjectDetail(ctx.shop.id, jobId),
         listJobs(ctx.shop.id),
         listSeries(ctx.shop.id),
         listMaterials(ctx.shop.id),
+        listStockHolds(ctx.shop.id),
       ])
       setStock(mats)
+      setHolds(held)
       setDetail(d)
       setAllRows(rows)
       setAllSeries(series)
@@ -281,8 +287,11 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   // The Scheduled checks need the build sheet, stock and the start-by
   // date, which only this page loads -- so they are made here and handed
   // to the gate as facts (see ProjectFacts.schedule).
-  const plan = schedulePlan(detail, stock, rates.failurePct)
-  const facts = { ...detail.facts, schedule: { materialOk: plan.material.ok, slotOk: plan.slotOk } }
+  const plan = schedulePlan(detail, stock, rates.failurePct, holds)
+  // Enough material means covered AND set aside: covered alone is a
+  // reading the next project can take the same grams from.
+  const materialOk = plan.material.ok === null ? null : plan.material.ok && plan.material.allSetAside
+  const facts = { ...detail.facts, schedule: { materialOk, slotOk: plan.slotOk } }
   const mySeriesId = allRows?.find((r) => r.jobId === detail.jobId)?.facts.seriesId ?? null
   const unrecordedFiles = groupSliceFiles(detail.slices, detail.runs).filter((g) => !g.recorded).length
   // Only client work can be a draft. A draft is a price nobody has agreed
@@ -901,7 +910,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
               ? 'no machine picked'
               : plan.material.ok === false
                 ? 'short on material'
-                : `on ${ctx.printers.find((p) => p.id === facts.printerId)?.name ?? 'a machine'}`}
+                : plan.material.ok && !plan.material.allSetAside
+                  ? 'material not set aside'
+                  : `on ${ctx.printers.find((p) => p.id === facts.printerId)?.name ?? 'a machine'}`}
           </span>
         </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
@@ -912,6 +923,20 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             rows={allRows ?? []}
             busy={busy || inRecord}
             onPick={(id) => void patch({ printerId: id })}
+            holds={holds}
+            onHold={(h) =>
+              void (async () => {
+                setBusy(true)
+                try {
+                  await setStockHolds(ctx.shop.id, jobId, ctx.profile.id, h)
+                  await reload()
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e))
+                } finally {
+                  setBusy(false)
+                }
+              })()
+            }
           />
         </div>
       </details>
@@ -5541,7 +5566,12 @@ const NO_ACTUALS: ProjectActuals = {
 
 /** Scheduled's two checks, made once per render: the spool against the
  *  build sheet, and the start-by date against today. */
-function schedulePlan(detail: ProjectDetail, stock: MaterialRow[], failurePct: number | null) {
+function schedulePlan(
+  detail: ProjectDetail,
+  stock: MaterialRow[],
+  failurePct: number | null,
+  holds: StockHoldRow[] = [],
+) {
   const q = detail.quoteInputs
   const sheet = q ? sheetVsQuote(q.builds ?? [], q.quantity, detail.parts) : null
   const material = materialCheck(
@@ -5549,6 +5579,8 @@ function schedulePlan(detail: ProjectDetail, stock: MaterialRow[], failurePct: n
     q && !(q.builds ?? []).length ? { materialId: q.materialId, quantity: sheet?.quantity ?? q.quantity, unitsPerPart: q.unitsPerPart } : null,
     stock.filter((m) => !m.archived).map((m) => ({ id: m.id, name: m.name, unit: m.unit, onHand: m.onHand })),
     failurePct,
+    holds,
+    detail.jobId,
   )
   const start = startBy({
     neededBy: detail.facts.neededBy,
@@ -5578,6 +5610,8 @@ function MachineAndMaterial({
   rows,
   busy,
   onPick,
+  holds,
+  onHold,
 }: {
   ctx: ShopContext
   detail: ProjectDetail
@@ -5585,6 +5619,8 @@ function MachineAndMaterial({
   rows: JobListRow[]
   busy: boolean
   onPick: (printerId: string | null) => void
+  holds: StockHoldRow[]
+  onHold: (h: { materialId: string; units: number }[]) => void
 }) {
   const picked = detail.facts.printerId
   const name = (id: string | null) => ctx.printers.find((p) => p.id === id)?.name ?? null
@@ -5597,6 +5633,12 @@ function MachineAndMaterial({
       )
     : []
   const m = plan.material
+  const heldAny = holds.some((h) => h.jobId === detail.jobId)
+  const othersOn = (materialId: string) =>
+    holds
+      .filter((h) => h.materialId === materialId && h.jobId !== detail.jobId && h.remaining > 0)
+      .map((h) => `${h.ref} ${h.title}: ${Math.round(h.remaining)}`)
+      .join('\n')
   return (
     <>
       <div className="fld" style={{ maxWidth: 360 }}>
@@ -5650,6 +5692,9 @@ function MachineAndMaterial({
                 <th className="r">Needed</th>
                 <th className="r">{m.failurePct ? `With ${m.failurePct}% failures` : 'With failures'}</th>
                 <th className="r">On hand</th>
+                <th className="r">Set aside for others</th>
+                <th className="r">Available</th>
+                <th className="r">Set aside here</th>
                 <th />
               </tr>
             </thead>
@@ -5669,20 +5714,57 @@ function MachineAndMaterial({
                     {Math.round(l.onHand).toLocaleString()}
                     {l.unit}
                   </td>
-                  <td style={{ color: l.ok ? 'var(--ok)' : 'var(--red)' }}>
-                    {l.ok ? 'covered' : `short ${(l.needWithFailures - Math.round(l.onHand)).toLocaleString()}${l.unit}`}
+                  <td className="r mono" title={othersOn(l.materialId)}>
+                    {l.heldElsewhere ? `${l.heldElsewhere.toLocaleString()}${l.unit}` : '—'}
+                  </td>
+                  <td className="r mono">
+                    {l.available.toLocaleString()}
+                    {l.unit}
+                  </td>
+                  <td className="r mono">{l.heldHere ? `${l.heldHere.toLocaleString()}${l.unit}` : '—'}</td>
+                  <td style={{ color: !l.ok ? 'var(--red)' : l.setAside ? 'var(--ok)' : 'var(--warn)' }}>
+                    {!l.ok
+                      ? `short ${(l.needWithFailures - l.available).toLocaleString()}${l.unit}`
+                      : l.setAside
+                        ? 'set aside'
+                        : 'covered, not set aside'}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
+        {m.lines.length > 0 && !busy && (
+          <div className="btnrow" style={{ marginTop: 8, alignItems: 'center' }}>
+            {m.ok && !m.allSetAside && (
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => onHold(m.lines.map((l) => ({ materialId: l.materialId, units: l.needWithFailures })))}
+              >
+                {heldAny ? 'Update what is set aside' : 'Set aside for this project'}
+              </button>
+            )}
+            {heldAny && (
+              <button type="button" className="linkbtn" style={{ width: 'auto' }} onClick={() => onHold([])}>
+                release it
+              </button>
+            )}
+            <span className="hint" style={{ margin: 0 }}>
+              {m.ok === false
+                ? 'Not enough is free to set aside. Buy or receive more, or skip the material item with a reason.'
+                : m.allSetAside
+                  ? 'Held for this project: other projects see it as taken. It is drawn down as prints are recorded and released when the project is delivered.'
+                  : 'Setting it aside takes it out of what every other project sees as available.'}
+            </span>
+          </div>
+        )}
         <div className="hint" style={{ marginTop: 6 }}>
           From the build sheet&apos;s copies.{' '}
           {m.failurePct
             ? `Failures at the shop's own ${m.failurePct}% rate.`
             : 'No failure rate is set in Shop settings, so there is no allowance for failed prints in this.'}{' '}
-          Other projects using the same spool are not subtracted. On hand is kept in{' '}
+          Available is on hand less what other live projects have set aside. On hand is kept in{' '}
           <Link to="/settings">Settings → Materials</Link>.
           {m.unassigned > 0 && ` ${m.unassigned.toLocaleString()}g on lines with no spool set is not counted.`}
         </div>

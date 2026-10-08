@@ -91,7 +91,7 @@ import type {
   QuoteChange,
 } from './data.types'
 
-import type { SeriesRow, SeriesInput } from './data.types'
+import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
 export {
   NeedsSetup,
   toRateSet,
@@ -638,4 +638,17 @@ export async function skipGateItem(
   reason: string | null,
 ): Promise<void> {
   return (await backend()).skipGateItem(jobId, actorId, phase, itemKey, itemLabel, reason)
+}
+
+export async function listStockHolds(shopId: string): Promise<StockHoldRow[]> {
+  return (await backend()).listStockHolds(shopId)
+}
+
+export async function setStockHolds(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  holds: StockHoldInput[],
+): Promise<void> {
+  return (await backend()).setStockHolds(shopId, jobId, actorId, holds)
 }

@@ -1337,3 +1337,32 @@ export interface SeriesInput {
   parentId?: string | null
   archived?: boolean
 }
+
+/**
+ * Material set aside for a project (0030_stock_holds.sql). `remaining` is
+ * what is still held once the project's own print runs have drawn on it;
+ * only projects in Scheduled, In build or Review appear at all.
+ */
+export interface StockHoldRow {
+  jobId: string
+  ref: string
+  title: string
+  phase: JobPhase
+  materialId: string
+  held: number
+  used: number
+  remaining: number
+}
+
+export interface StockHoldInput {
+  materialId: string
+  units: number
+}
+
+/** "Set aside 699g PLA Black, 132g PETG." -- one wording, both backends. */
+export function describeHolds(
+  holds: { name: string; unit: string; units: number }[],
+): string {
+  if (holds.length === 0) return 'Released the material set aside for this project.'
+  return `Set aside ${holds.map((h) => `${Math.round(h.units).toLocaleString()}${h.unit} ${h.name}`).join(', ')}.`
+}

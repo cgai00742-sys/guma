@@ -29,6 +29,7 @@ import {
   setPrinterRetired,
   deletePrinter,
   listMaterials,
+  listStockHolds,
   saveMaterial,
   recordMaterialPurchase,
   listMaterialPurchases,
@@ -62,6 +63,7 @@ import { Flash, SaveButton, useFlash, useSaver } from '../components/Saving'
 import SearchField from '../components/SearchField'
 import { asSearchItem } from '../lib/searchItems'
 import { filterBy } from '../lib/search'
+import type { StockHoldRow } from '../lib/data.types'
 import { useRowAnchor } from '../lib/rowAnchor'
 import FieldGuide, { benchmarkGroup, makeBenchmarkFormatter } from '../components/FieldGuide'
 import { benchmarksFor, hasLocalRates, ratedCurrencies } from '../lib/benchmarks'
@@ -1509,9 +1511,14 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
   const [savingId, setSavingId] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
 
+  /** Set aside by live projects, so "on hand" is not read as "free". */
+  const [holds, setHolds] = useState<StockHoldRow[]>([])
   const reload = () =>
-    listMaterials(ctx.shop.id)
-      .then(setRows)
+    Promise.all([listMaterials(ctx.shop.id), listStockHolds(ctx.shop.id)])
+      .then(([m, h]) => {
+        setRows(m)
+        setHolds(h)
+      })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
 
   useEffect(() => {
@@ -1594,7 +1601,8 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
           On hand goes up with every purchase and down with every print recorded against a project —
           failed prints too, because they burned the filament. When you weigh a spool, record the
           count under Stock: the difference from what Guma expected is kept, not overwritten, so a
-          print that never got logged shows up instead of vanishing.
+          print that never got logged shows up instead of vanishing. Material a project has set aside
+          at Scheduled still counts as on hand, but not as free.
         </div>
       </div>
 
@@ -1684,6 +1692,20 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
                     title="Moves by purchase, print and count. Weigh it under Stock to correct it."
                   >
                     {fmtQty(m.onHand, m.unit)}
+                    {(() => {
+                      const mine = holds.filter((h) => h.materialId === m.id && h.remaining > 0)
+                      const held = mine.reduce((a, h) => a + h.remaining, 0)
+                      if (!held) return null
+                      return (
+                        <div
+                          className="pmeta"
+                          data-testid={`held-${m.id}`}
+                          title={mine.map((h) => `${h.ref} ${h.title}: ${Math.round(h.remaining)}${m.unit}`).join('\n')}
+                        >
+                          {fmtQty(held, m.unit)} set aside · {fmtQty(Math.max(0, m.onHand - held), m.unit)} free
+                        </div>
+                      )
+                    })()}
                   </td>
                   <td className="r">
                     <input

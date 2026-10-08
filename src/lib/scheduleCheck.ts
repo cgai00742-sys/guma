@@ -7,11 +7,13 @@
  * "enough material on hand" -- with nothing on the page to pick or check.
  *
  * Material is read off the build sheet (the same lines the Estimated build
- * prices), grouped by spool, then compared with on_hand. Failures are
+ * prices), grouped by spool, then compared with what is AVAILABLE: on
+ * hand less what other live projects have set aside (stock_holds, CG
+ * 8 Oct -- "the more accurate stock accounting"). Failures are
  * allowed for at the shop's own failure rate when it has one; when it does
  * not, the screen says the figure has no allowance in it rather than
- * inventing one. Other projects drawing on the same spool are NOT netted
- * off -- Guma does not reserve stock -- and the screen says that too.
+ * inventing one. Covered is not the same as set aside: until this project
+ * holds its share, the next project to look sees the same grams.
  *
  * Pure: the project page, the gate and the tests read it the same way.
  */
@@ -26,7 +28,16 @@ export interface MaterialNeed {
   /** need plus the failure allowance. */
   needWithFailures: number
   onHand: number
+  /** Still held by OTHER live projects. */
+  heldElsewhere: number
+  /** onHand less heldElsewhere -- what this project can actually have. */
+  available: number
+  /** What this project has set aside (less what its runs already used). */
+  heldHere: number
+  /** available covers needWithFailures. */
   ok: boolean
+  /** heldHere covers needWithFailures. */
+  setAside: boolean
 }
 
 export interface MaterialCheck {
@@ -38,6 +49,8 @@ export interface MaterialCheck {
   /** true: every spool covers it. false: something is short. null: there
    *  is nothing to check (no build lines with grams). */
   ok: boolean | null
+  /** Every spool covered AND set aside for this project. */
+  allSetAside: boolean
 }
 
 export function materialCheck(
@@ -45,6 +58,8 @@ export function materialCheck(
   single: { materialId: string | null; quantity: number; unitsPerPart: number } | null,
   stock: { id: string; name: string; unit: 'g' | 'ml'; onHand: number }[],
   failurePct: number | null,
+  holds: { jobId: string; materialId: string; remaining: number }[] = [],
+  jobId: string | null = null,
 ): MaterialCheck {
   const need = new Map<string, number>()
   let unassigned = 0
@@ -64,6 +79,10 @@ export function materialCheck(
     const m = stock.find((s) => s.id === id)
     const withF = pct ? n * (1 + pct / 100) : n
     const onHand = m?.onHand ?? 0
+    const mine = holds.filter((h) => h.materialId === id)
+    const heldElsewhere = Math.round(mine.filter((h) => h.jobId !== jobId).reduce((a, h) => a + h.remaining, 0))
+    const heldHere = Math.round(mine.filter((h) => h.jobId === jobId).reduce((a, h) => a + h.remaining, 0))
+    const available = Math.max(0, Math.round(onHand) - heldElsewhere)
     return {
       materialId: id,
       name: m?.name ?? 'A material no longer on file',
@@ -71,7 +90,11 @@ export function materialCheck(
       need: Math.round(n),
       needWithFailures: Math.ceil(withF),
       onHand,
-      ok: onHand >= Math.ceil(withF),
+      heldElsewhere,
+      available,
+      heldHere,
+      ok: available >= Math.ceil(withF),
+      setAside: heldHere >= Math.ceil(withF),
     }
   })
   return {
@@ -79,5 +102,6 @@ export function materialCheck(
     failurePct: pct,
     unassigned: Math.round(unassigned),
     ok: lines.length === 0 ? null : lines.every((l) => l.ok),
+    allSetAside: lines.length > 0 && lines.every((l) => l.setAside),
   }
 }
