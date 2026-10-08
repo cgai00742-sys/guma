@@ -609,7 +609,7 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
 }
 
 const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_in_at, phase, priority,
-   asset_origin, poc, needed_by, window_from, window_locked, at_risk, over_ceiling, archived_at, related_to, series_id,
+   asset_origin, poc, needed_by, window_from, window_locked, at_risk, over_ceiling, printer_id, archived_at, related_to, series_id,
    delivery_on, delivery_how,
    clients!inner ( id, name, kind, contact, email, phone ),
    quotes ( id, version, status, total, design_billing, design_qty, revisions_incl, quantity,
@@ -693,6 +693,7 @@ function factsFrom(
     windowLocked: r.window_locked === true,
     atRisk: r.at_risk === true,
     overCeiling: (r.over_ceiling as string | null) ?? null,
+    printerId: (r.printer_id as string | null) ?? null,
     wentAheadWithout: {
       accepted: approvalSkip(r, 'accepted'),
       deposit: approvalSkip(r, 'deposit'),
@@ -1443,6 +1444,7 @@ export async function updateProjectFields(
     deliveryHow: 'delivery_how',
     priority: 'priority',
     overCeiling: 'over_ceiling',
+    printerId: 'printer_id',
   }
   const row: Record<string, unknown> = {}
   for (const [key, column] of Object.entries(map)) {
@@ -1452,14 +1454,19 @@ export async function updateProjectFields(
   row.updated_at = new Date().toISOString()
   const { data: before, error: readErr } = await supabase
     .from('jobs')
-    .select('title, brief, poc, needed_by, window_from, window_locked, at_risk, delivery_on, delivery_how, priority, over_ceiling')
+    .select('title, brief, poc, needed_by, window_from, window_locked, at_risk, delivery_on, delivery_how, priority, over_ceiling, printer_id')
     .eq('id', jobId)
     .eq('shop_id', shopId)
     .single()
   if (readErr) throw readErr
   const { error } = await supabase.from('jobs').update(row).eq('id', jobId).eq('shop_id', shopId)
   if (error) throw error
-  const said = describeProjectEdits(before as ProjectBefore, fields)
+  let printerName: string | null = null
+  if (fields.printerId) {
+    const { data: pr } = await supabase.from('printers').select('name').eq('id', fields.printerId).maybeSingle()
+    printerName = (pr as { name?: string } | null)?.name ?? null
+  }
+  const said = describeProjectEdits(before as ProjectBefore, fields, printerName)
   if (said.length > 0) {
     const { error: evErr } = await supabase
       .from('job_events')

@@ -63,6 +63,7 @@ import {
   deletePrintRun,
   deleteWorkEntry,
   loadProjectDetail,
+  listMaterials,
   logWork,
   recordPrintRun,
   setQuoteStatus,
@@ -86,6 +87,7 @@ import {
   type PrintRunInput,
   type ProjectDetail,
   type ProjectActuals,
+  type MaterialRow,
   type ProjectFieldsInput,
   type QuoteStatus,
   type RunOutcome,
@@ -148,6 +150,7 @@ import {
 import { buildComparison, compareToQuote, priceProjectQuote, type Comparison } from '../lib/actuals'
 import type { PricedQuote, RateSet } from '../lib/pricing'
 import { sheetVsQuote } from '../lib/sheetVsQuote'
+import { materialCheck } from '../lib/scheduleCheck'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
 const DELIVERY_METHODS = [
@@ -208,14 +211,18 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
    *  everything under it. See lib/programs.ts. */
   const [allRows, setAllRows] = useState<JobListRow[] | null>(null)
   const [allSeries, setAllSeries] = useState<SeriesRow[]>([])
+  /** Stock on hand, for Scheduled's material check. */
+  const [stock, setStock] = useState<MaterialRow[]>([])
 
   const reload = useCallback(async () => {
     try {
-      const [d, rows, series] = await Promise.all([
+      const [d, rows, series, mats] = await Promise.all([
         loadProjectDetail(ctx.shop.id, jobId),
         listJobs(ctx.shop.id),
         listSeries(ctx.shop.id),
+        listMaterials(ctx.shop.id),
       ])
+      setStock(mats)
       setDetail(d)
       setAllRows(rows)
       setAllSeries(series)
@@ -271,7 +278,11 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   })
 
   const shown = viewPhase ?? detail.phase
-  const facts = detail.facts
+  // The Scheduled checks need the build sheet, stock and the start-by
+  // date, which only this page loads -- so they are made here and handed
+  // to the gate as facts (see ProjectFacts.schedule).
+  const plan = schedulePlan(detail, stock, rates.failurePct)
+  const facts = { ...detail.facts, schedule: { materialOk: plan.material.ok, slotOk: plan.slotOk } }
   const mySeriesId = allRows?.find((r) => r.jobId === detail.jobId)?.facts.seriesId ?? null
   const unrecordedFiles = groupSliceFiles(detail.slices, detail.runs).filter((g) => !g.recorded).length
   // Only client work can be a draft. A draft is a price nobody has agreed
@@ -871,6 +882,39 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       </details>
 
       </>
+    ),
+    machine: (inRecord) => (
+      <details
+        className="sec fold"
+        data-fold="machine"
+        open={inRecord || fold.isOpen('machine')}
+        onToggle={(e) => fold.set('machine', e.currentTarget.open)}
+      >
+        <summary className="sechead">
+          <h4>Machine and material</h4>
+          <span
+            className={`secstat ${
+              !facts.printerId || plan.material.ok === false ? 'warn' : plan.material.ok ? 'ok' : ''
+            }`}
+          >
+            {!facts.printerId
+              ? 'no machine picked'
+              : plan.material.ok === false
+                ? 'short on material'
+                : `on ${ctx.printers.find((p) => p.id === facts.printerId)?.name ?? 'a machine'}`}
+          </span>
+        </summary>
+        <div className="pane" style={{ marginBottom: 0 }}>
+          <MachineAndMaterial
+            ctx={ctx}
+            detail={detail}
+            plan={plan}
+            rows={allRows ?? []}
+            busy={busy || inRecord}
+            onPick={(id) => void patch({ printerId: id })}
+          />
+        </div>
+      </details>
     ),
     estimate: (inRecord) => (
       <details
@@ -5493,4 +5537,156 @@ function estimateOf(p: PricedQuote, rates: RateSet) {
 const NO_ACTUALS: ProjectActuals = {
   materialUnits: 0, failedUnits: 0, materialCost: 0, machineHours: 0, machineCost: 0, wearCost: 0,
   powerCost: 0, runs: 0, failedRuns: 0, designHours: 0, finishingHours: 0, adminHours: 0,
+}
+
+/** Scheduled's two checks, made once per render: the spool against the
+ *  build sheet, and the start-by date against today. */
+function schedulePlan(detail: ProjectDetail, stock: MaterialRow[], failurePct: number | null) {
+  const q = detail.quoteInputs
+  const sheet = q ? sheetVsQuote(q.builds ?? [], q.quantity, detail.parts) : null
+  const material = materialCheck(
+    sheet?.builds ?? [],
+    q && !(q.builds ?? []).length ? { materialId: q.materialId, quantity: sheet?.quantity ?? q.quantity, unitsPerPart: q.unitsPerPart } : null,
+    stock.filter((m) => !m.archived).map((m) => ({ id: m.id, name: m.name, unit: m.unit, onHand: m.onHand })),
+    failurePct,
+  )
+  const start = startBy({
+    neededBy: detail.facts.neededBy,
+    deliveryHow: detail.facts.deliveryHow,
+    parts: detail.parts,
+    quote: detail.quoteInputs,
+  })
+  const slotOk =
+    start.status === 'late' ? false : start.status === 'ok' || start.status === 'soon' || start.status === 'done' ? true : null
+  // The machine the files were sliced for, most copies first.
+  const sliced = new Map<string, number>()
+  for (const b of sheet?.builds ?? []) if (b.printerId) sliced.set(b.printerId, (sliced.get(b.printerId) ?? 0) + b.qty)
+  const slicedFor = [...sliced.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? q?.printerId ?? null
+  return { material, slotOk, start, slicedFor }
+}
+
+/**
+ * Scheduled (CG, 8 Oct): pick the machine, and see whether the spool on
+ * the shelf covers the build sheet. Both answer gate items directly --
+ * "a machine picked" ticks when one is, "enough material" ticks when every
+ * spool covers it -- so the checklist below stops being an honour system.
+ */
+function MachineAndMaterial({
+  ctx,
+  detail,
+  plan,
+  rows,
+  busy,
+  onPick,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  plan: ReturnType<typeof schedulePlan>
+  rows: JobListRow[]
+  busy: boolean
+  onPick: (printerId: string | null) => void
+}) {
+  const picked = detail.facts.printerId
+  const name = (id: string | null) => ctx.printers.find((p) => p.id === id)?.name ?? null
+  const alsoOn = picked
+    ? rows.filter(
+        (r) =>
+          r.jobId !== detail.jobId &&
+          r.facts.printerId === picked &&
+          (r.facts.phase === 'scheduled' || r.facts.phase === 'building'),
+      )
+    : []
+  const m = plan.material
+  return (
+    <>
+      <div className="fld" style={{ maxWidth: 360 }}>
+        <label className="lbl" htmlFor="sched-printer">
+          Machine it will run on
+        </label>
+        <select
+          id="sched-printer"
+          value={picked ?? ''}
+          disabled={busy}
+          onChange={(e) => onPick(e.target.value || null)}
+        >
+          <option value="">Not picked yet</option>
+          {ctx.printers.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+              {p.model ? ` — ${p.model}` : ''}
+              {p.id === plan.slicedFor ? ' (sliced for this)' : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+      {picked && (
+        <div className="hint" style={{ marginTop: 4 }} data-testid="machine-load">
+          {alsoOn.length === 0
+            ? `Nothing else is booked on ${name(picked)}.`
+            : `Also booked on ${name(picked)}: ${alsoOn
+                .map((r) => `${r.ref} ${r.title} (${r.facts.phase === 'building' ? 'In build' : 'Scheduled'})`)
+                .join('; ')}. Check the two fit before the start-by date.`}
+          {plan.slicedFor && picked !== plan.slicedFor && (
+            <span style={{ color: 'var(--warn)' }}>
+              {' '}
+              The files were sliced for {name(plan.slicedFor) ?? 'another machine'}; times on another machine can be
+              out by a fifth. Re-slice for {name(picked)} if it matters.
+            </span>
+          )}
+        </div>
+      )}
+
+      <div style={{ overflowX: 'auto', marginTop: 12 }} data-testid="material-check">
+        {m.lines.length === 0 ? (
+          <div className="hint">
+            The build sheet has no grams to check against the shelf — tick the material item by hand once you
+            have looked.
+          </div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Spool</th>
+                <th className="r">Needed</th>
+                <th className="r">{m.failurePct ? `With ${m.failurePct}% failures` : 'With failures'}</th>
+                <th className="r">On hand</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {m.lines.map((l) => (
+                <tr key={l.materialId}>
+                  <td>{l.name}</td>
+                  <td className="r mono">
+                    {l.need.toLocaleString()}
+                    {l.unit}
+                  </td>
+                  <td className="r mono">
+                    {l.needWithFailures.toLocaleString()}
+                    {l.unit}
+                  </td>
+                  <td className="r mono">
+                    {Math.round(l.onHand).toLocaleString()}
+                    {l.unit}
+                  </td>
+                  <td style={{ color: l.ok ? 'var(--ok)' : 'var(--red)' }}>
+                    {l.ok ? 'covered' : `short ${(l.needWithFailures - Math.round(l.onHand)).toLocaleString()}${l.unit}`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <div className="hint" style={{ marginTop: 6 }}>
+          From the build sheet&apos;s copies.{' '}
+          {m.failurePct
+            ? `Failures at the shop's own ${m.failurePct}% rate.`
+            : 'No failure rate is set in Shop settings, so there is no allowance for failed prints in this.'}{' '}
+          Other projects using the same spool are not subtracted. On hand is kept in{' '}
+          <Link to="/settings">Settings → Materials</Link>.
+          {m.unassigned > 0 && ` ${m.unassigned.toLocaleString()}g on lines with no spool set is not counted.`}
+        </div>
+      </div>
+    </>
+  )
 }

@@ -794,7 +794,7 @@ const JOB_LIST_SQL = `
          j.archived_at, j.related_to, j.series_id,
          j.taken_in_at,
          j.phase, j.kind, j.priority, j.asset_origin, j.poc,
-         j.needed_by, j.window_from, j.window_locked, j.at_risk, j.over_ceiling,
+         j.needed_by, j.window_from, j.window_locked, j.at_risk, j.over_ceiling, j.printer_id,
          j.delivery_on, j.delivery_how,
          c.id as client_id, c.name as client_name, c.kind as client_kind,
          c.contact as client_contact, c.email as client_email, c.phone as client_phone,
@@ -874,6 +874,7 @@ interface JobListSqlRow {
   window_locked: number
   at_risk: number
   over_ceiling: string | null
+  printer_id: string | null
   delivery_on: string | null
   delivery_how: string | null
   client_id: string
@@ -921,6 +922,7 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     windowLocked: Number(r.window_locked) === 1,
     atRisk: Number(r.at_risk) === 1,
     overCeiling: r.over_ceiling ?? null,
+    printerId: r.printer_id ?? null,
     wentAheadWithout: { accepted: r.skipped_accepted ?? null, deposit: r.skipped_deposit ?? null },
     deliveryOn: r.delivery_on,
     deliveryHow: r.delivery_how,
@@ -1799,6 +1801,7 @@ export async function updateProjectFields(
     deliveryHow: 'delivery_how',
     priority: 'priority',
     overCeiling: 'over_ceiling',
+    printerId: 'printer_id',
   }
   const sets: string[] = []
   const args: unknown[] = []
@@ -1813,7 +1816,7 @@ export async function updateProjectFields(
   const d = await db()
   const [before] = await d.select<ProjectBefore[]>(
     `select title, brief, poc, needed_by, window_from, window_locked, at_risk,
-            delivery_on, delivery_how, priority, over_ceiling
+            delivery_on, delivery_how, priority, over_ceiling, printer_id
        from jobs where id = ? and shop_id = ?`,
     [jobId, shopId],
   )
@@ -1824,7 +1827,10 @@ export async function updateProjectFields(
     shopId,
   ])
   // Every edit after creation is on the record: who changed what, from what.
-  const said = describeProjectEdits(before, fields)
+  const printerName = fields.printerId
+    ? ((await d.select<{ name: string }[]>('select name from printers where id = ?', [fields.printerId]))[0]?.name ?? null)
+    : null
+  const said = describeProjectEdits(before, fields, printerName)
   if (said.length > 0) {
     await d.execute(
       `insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`,

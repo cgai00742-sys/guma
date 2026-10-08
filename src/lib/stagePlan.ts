@@ -19,6 +19,7 @@ export type Section =
   | 'brief' // title, what they asked for, contact, needed-by
   | 'money' // the quote and its payments
   | 'window' // the delivery date, committed with the client
+  | 'machine' // Scheduled: which machine, and whether the spool covers it
   | 'build' // the build sheet and its sliced files
   | 'estimate' // estimated build: what the build sheet will cost, before anything is printed
   | 'took' // what it actually took: hours, and print runs where printing is allowed
@@ -36,7 +37,7 @@ const CLIENT_WORK: Record<JobPhase, Section[]> = {
   // In build (CG, 8 Oct): before then the cost is an estimate, and the
   // page says so rather than showing an empty "actual" column.
   design: ['build', 'estimate'],
-  scheduled: ['build', 'estimate'],
+  scheduled: ['machine', 'build', 'estimate'],
   building: ['build', 'took'],
   review: ['build', 'took', 'handover', 'money'],
   delivered: ['closeout', 'money'],
@@ -55,6 +56,7 @@ const CLIENT_HOME: Record<Section, JobPhase> = {
   window: 'approval',
   build: 'design',
   estimate: 'design',
+  machine: 'scheduled',
   took: 'building',
   handover: 'review',
   made: 'review',

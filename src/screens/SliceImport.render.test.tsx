@@ -225,7 +225,7 @@ describe('importing a sliced file from the project screen', () => {
     // "XL" in the file, "Prusa XL" in the shop -- and the label says which
     // word came from the file, so a wrong match is visible rather than
     // silent. That is the Voltage "Pursa XL" lesson.
-    const printer = (await screen.findByLabelText(/machine/i)) as HTMLSelectElement
+    const printer = (await screen.findByLabelText(/^machine( —|$)/i)) as HTMLSelectElement
     expect(printer.selectedOptions[0].textContent).toMatch(/Sakman/)
     const material = screen.getByLabelText(/material/i) as HTMLSelectElement
     expect(material.selectedOptions[0].textContent).toMatch(/PETG black/)
@@ -340,7 +340,7 @@ describe('a shop that has not set up its machines', () => {
       new File([other], 'k1.gcode', { type: 'text/plain' }),
     )
 
-    const printer = (await screen.findByLabelText(/machine/i)) as HTMLSelectElement
+    const printer = (await screen.findByLabelText(/^machine( —|$)/i)) as HTMLSelectElement
     expect(printer.value).toBe('')
     expect(within(printer).getByText(/not matched/i)).toBeDefined()
 

@@ -492,6 +492,14 @@ export interface ProjectFacts {
    * decision on the record rather than an oversight (CG, 7 Oct).
    */
   wentAheadWithout: { accepted: string | null; deposit: string | null }
+  /** The machine it is booked on; null until Scheduled picks one. */
+  printerId: string | null
+  /**
+   * Checks only the project page can make -- they need the build sheet,
+   * stock on hand and the start-by date, which the board does not load.
+   * Absent on the board, where those gate items read as plain ticks.
+   */
+  schedule?: { materialOk: boolean | null; slotOk: boolean | null }
   /** ISO date it actually changed hands. */
   deliveryOn: string | null
   deliveryHow: string | null
@@ -672,6 +680,8 @@ export interface ProjectFieldsInput {
   priority?: JobPriority
   /** Only ever cleared from the screen (null); saveQuote sets it. */
   overCeiling?: string | null
+  /** The machine it is booked on (Scheduled). */
+  printerId?: string | null
 }
 
 /** One row on the Clients screen -- a client, plus what they are worth. */

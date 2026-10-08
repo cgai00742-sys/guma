@@ -19,6 +19,7 @@ export interface ProjectBefore {
   delivery_how: string | null
   priority: string | null
   over_ceiling?: string | null
+  printer_id?: string | null
 }
 
 const clip = (s: string, n = 60) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
@@ -26,7 +27,11 @@ const norm = (v: unknown) =>
   v === undefined || v === null || v === '' ? null : typeof v === 'number' ? !!v : v
 const shown = (v: unknown) => (v === null ? 'nothing' : String(v))
 
-export function describeProjectEdits(before: ProjectBefore, fields: ProjectFieldsInput): string[] {
+export function describeProjectEdits(
+  before: ProjectBefore,
+  fields: ProjectFieldsInput,
+  printerName: string | null = null,
+): string[] {
   const out: string[] = []
   const changed = (key: keyof ProjectFieldsInput, col: keyof ProjectBefore) =>
     key in fields && norm((fields as Record<string, unknown>)[key]) !== norm(before[col])
@@ -50,6 +55,10 @@ export function describeProjectEdits(before: ProjectBefore, fields: ProjectField
     out.push(`Priority: ${shown(before.priority)} → ${shown(fields.priority ?? null)}.`)
   if (changed('overCeiling', 'over_ceiling'))
     out.push(fields.overCeiling ? `Over-the-agreed-price flag set.` : 'Over-the-agreed-price flag cleared.')
+  // The screen says which machine; the log line only needs that it moved,
+  // and printerName (when the caller has it) says to what.
+  if (changed('printerId', 'printer_id'))
+    out.push(fields.printerId ? `Booked on ${printerName ?? 'a machine'}.` : 'Machine booking cleared.')
   return out
 }
 

@@ -55,6 +55,7 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     atRisk: false,
     overCeiling: null,
     wentAheadWithout: { accepted: null, deposit: null },
+    printerId: null,
     deliveryOn: null,
     deliveryHow: null,
     brief: null,
@@ -429,5 +430,19 @@ describe('skipping a gate item on purpose (Voltage, CG 7 Oct)', () => {
   it('a skip on an item that is now done is just done', () => {
     const g = gateStatus('intake', { brief: { checked: false, note: null, skipped: 'later' } }, facts({ brief: 'x'.repeat(30) }))
     expect(g.items.find((i) => i.key === 'brief')!.skipped).toBeNull()
+  })
+})
+
+describe('Scheduled reads the page, not the existence of a date (CG, 8 Oct)', () => {
+  const slot = (f: Partial<ProjectFacts>) => gateStatus('scheduled', {}, facts(f)).items.find((i) => i.key === 'slot')!
+  it('a date alone no longer ticks "the slot clears the date"', () => {
+    expect(slot({ neededBy: '2099-01-01' }).automatic).toBe(false)
+  })
+  it('a start-by date already passed holds it; one still ahead clears it', () => {
+    expect(slot({ neededBy: '2099-01-01', schedule: { materialOk: null, slotOk: false } }).checked).toBe(false)
+    expect(slot({ neededBy: '2099-01-01', schedule: { materialOk: null, slotOk: true } }).checked).toBe(true)
+  })
+  it('no date at all is still a no', () => {
+    expect(slot({ neededBy: null }).checked).toBe(false)
   })
 })

@@ -148,19 +148,29 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       key: 'printer',
       label: 'A machine picked, and free when this needs it',
       why: 'A booked slot that collides with another job is how a due date is missed a week early.',
+      auto: (f) => f.printerId !== null,
+      autoFrom: 'from Machine and material',
+      fix: 'Pick the machine under Machine and material, above.',
     },
     {
       key: 'material',
       label: 'Enough material on hand for the whole run, plus failures',
       why: 'Running out at 80% costs you the 80% as well as the shipping wait.',
+      // Read off the build sheet against stock on hand, on the project
+      // page. Null (a plain tick) where that check cannot be made.
+      auto: (f) => f.schedule?.materialOk ?? null,
+      autoFrom: 'from Machine and material',
+      fix: 'Buy or receive the spool that is short (Materials), or skip with a reason if it is on its way.',
     },
     {
       key: 'slot',
       label: 'The slot clears the date you promised',
       why: 'Print time plus finishing plus a failure buffer — checked against the window, not guessed.',
-      auto: (f) => f.neededBy !== null,
-      autoFrom: 'needs a date to check against',
-      fix: 'Set a needed-by date — there is nothing to check the slot against.',
+      // Ticked only when the start-by date is actually still ahead -- a
+      // date merely existing used to tick it (CG's screenshot, 8 Oct).
+      auto: (f) => (f.neededBy === null ? false : (f.schedule?.slotOk ?? null)),
+      autoFrom: 'from the start-by date',
+      fix: 'The start-by date has passed or there is no date: move the delivery date with the client, or skip with a reason.',
     },
   ],
   building: [

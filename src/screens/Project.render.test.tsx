@@ -367,6 +367,40 @@ describe('client approval: go ahead without acceptance or deposit (CG, 7 Oct)', 
   })
 })
 
+describe('Scheduled: pick the machine, check the spool (CG, 8 Oct)', () => {
+  it('picking a machine ticks "a machine picked" and goes on the record', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'scheduled')
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    const box = () => document.getElementById('g-printer') as HTMLInputElement
+    expect(box().checked).toBe(false)
+    await user.selectOptions(screen.getByLabelText(/machine it will run on/i), ctx.printers[0].id)
+    await waitFor(() => expect(box().checked).toBe(true))
+    expect(box().disabled).toBe(true) // answered by the pick, not a tick
+    await screen.findByText(/Nothing else is booked on Prusa XL/)
+    await screen.findByText(/Booked on Prusa XL\./)
+  })
+
+  it('the material item reads the shelf: short blocks, covered ticks', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'scheduled')
+    // 12 brackets x 62 g = 744 g. Nothing on the shelf yet.
+    currentDb.sqlite.prepare('update materials set on_hand = 100').run()
+    await renderProject(jobId, ctx)
+    const check = await screen.findByTestId('material-check')
+    expect(check.textContent).toMatch(/744g/)
+    expect(check.textContent).toMatch(/short/)
+    expect((document.getElementById('g-material') as HTMLInputElement).checked).toBe(false)
+    cleanup()
+
+    currentDb.sqlite.prepare('update materials set on_hand = 2000').run()
+    await renderProject(jobId, ctx)
+    expect((await screen.findByTestId('material-check')).textContent).toMatch(/covered/)
+    expect((document.getElementById('g-material') as HTMLInputElement).checked).toBe(true)
+  })
+})
+
 describe('the build sheet at each stage', () => {
   /** Two Voltage rules, checked on the rendered row rather than in the
    *  helper: the options narrow to the stage, and a reprint's reason is on

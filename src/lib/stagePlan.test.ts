@@ -4,7 +4,7 @@ import { canImport, canPrint, recordFor, stagesBehind, workFor } from './stagePl
 describe('nothing printed, nothing logged, before In build (CG, 8 Oct)', () => {
   it('Design and Scheduled show an estimate, not what it took', () => {
     expect(workFor('design', 'client')).toEqual(['build', 'estimate'])
-    expect(workFor('scheduled', 'client')).toEqual(['build', 'estimate'])
+    expect(workFor('scheduled', 'client')).toEqual(['machine', 'build', 'estimate'])
     expect(workFor('building', 'client')).toContain('took')
   })
 })

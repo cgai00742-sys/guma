@@ -2002,7 +2002,11 @@ describe('data.local.ts against a real SQLite database', () => {
 
 
     // --- SCHEDULED ----------------------------------------------------
-    for (const item of GATES.scheduled.filter((i) => !i.auto)) {
+    // The machine is picked, not ticked (CG, 8 Oct).
+    await local.updateProjectFields(shopId, saved.jobId, { printerId: ctx.printers[0].id }, ctx.profile.id)
+    for (const item of GATES.scheduled) {
+      const resolved = gateStatus('scheduled', {}, (await detail()).facts).items.find((i) => i.key === item.key)!
+      if (resolved.automatic) continue
       await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'scheduled', item.key, true, null)
     }
     ;({ g } = await gateNow())
