@@ -1053,6 +1053,11 @@ export interface PartVariant {
   /** How many objects were on the plate this came off. More than one and
    *  the print is indivisible: you cannot print half a plate. */
   plateParts: number
+  /** Copies of this object the FILE had on its plate. estGrams and
+   *  estMinutes cover all of them, so one copy is est / sectionQty. */
+  sectionQty: number
+  /** The spool the file was imported against, when matched. */
+  materialId: string | null
 }
 
 /**

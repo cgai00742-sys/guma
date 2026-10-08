@@ -144,7 +144,8 @@ import {
   pathLabel,
   programTotals,
 } from '../lib/programs'
-import { buildComparison, type Comparison } from '../lib/actuals'
+import { buildComparison, priceProjectQuote, type Comparison } from '../lib/actuals'
+import { sheetVsQuote } from '../lib/sheetVsQuote'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
 const DELIVERY_METHODS = [
@@ -865,6 +866,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           onChanged={reload}
           setError={setError}
         />
+        {facts.kind === 'client' && (
+          <SheetPrice ctx={ctx} detail={detail} money={money} jobId={jobId} inRecord={inRecord} />
+        )}
       </details>
 
       </>
@@ -5316,6 +5320,84 @@ function GoAheadWithout({
           Cancel
         </button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * What the build sheet costs now, against what was quoted (CG, 8 Oct).
+ *
+ * Recomputed on every change to a part's copies, at the quote's own rates,
+ * so the figure moves the moment the sheet does. What it does NOT do is
+ * change the quote itself: a sent or accepted price is what the client
+ * agreed to, and changing it behind them is how an invoice gets disputed.
+ * The difference goes into a revision -- one click, copies already filled
+ * in, "they added parts or copies" already chosen.
+ */
+function SheetPrice({
+  ctx,
+  detail,
+  money,
+  jobId,
+  inRecord,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  money: (n: number) => string
+  jobId: string
+  inRecord: boolean
+}) {
+  const q = detail.quoteInputs
+  if (!q || detail.parts.length === 0) return null
+  const sheet = sheetVsQuote(q.builds ?? [], q.quantity, detail.parts)
+  const pctx = { rateCard: ctx.rateCard, shop: ctx.shop, materials: ctx.materials, printers: ctx.printers }
+  const asQuoted = priceProjectQuote(detail, pctx)
+  const asBuilt = sheet.changed ? priceProjectQuote(detail, pctx, { builds: sheet.builds, quantity: sheet.quantity }) : asQuoted
+  if (!asQuoted || !asBuilt) return null
+  const diff = asBuilt.priced.total - asQuoted.priced.total
+  const status = detail.facts.quoteStatus
+  const loose = [...sheet.unpriced.map((l) => `${l} (no sliced numbers)`), ...sheet.quotedOnly.map((l) => `${l} (on the quote, not the sheet)`)]
+
+  if (!sheet.changed && loose.length === 0) {
+    return (
+      <div className="hint" data-testid="sheet-price" style={{ marginTop: 8 }}>
+        The build sheet matches the quote: {sheet.sheetCopies} cop{sheet.sheetCopies === 1 ? 'y' : 'ies'},{' '}
+        {money(asQuoted.priced.total)}.
+      </div>
+    )
+  }
+  return (
+    <div className={`attn ${Math.abs(diff) >= 0.005 ? 'warn' : ''}`} data-testid="sheet-price" style={{ marginTop: 10 }}>
+      <div>
+        <strong>The build sheet now prices at {money(asBuilt.priced.total)}</strong>{' '}
+        — {sheet.sheetCopies} cop{sheet.sheetCopies === 1 ? 'y' : 'ies'} against {sheet.quotedCopies} quoted at{' '}
+        {money(asQuoted.priced.total)}
+        {Math.abs(diff) >= 0.005 && (
+          <>
+            {' '}
+            ({diff > 0 ? '+' : '−'}
+            {money(Math.abs(diff))})
+          </>
+        )}
+        .
+      </div>
+      <div className="hint" style={{ marginTop: 4 }}>
+        Same rates, design and finishing as the quote; only the copies changed.
+        {sheet.added.length > 0 && ` New from their own files: ${sheet.added.join(', ')}.`}
+        {loose.length > 0 && ` Not repriced: ${loose.join('; ')}.`}
+      </div>
+      {!inRecord && sheet.changed && (
+        <div className="btnrow" style={{ marginTop: 8, alignItems: 'center' }}>
+          <Link to={`/intake?revise=${jobId}&from=sheet`} className="btn sm" style={{ textDecoration: 'none' }}>
+            Revise the quote to match
+          </Link>
+          <span className="hint" style={{ margin: 0 }}>
+            {status === 'accepted'
+              ? 'The client accepted the old price. The new one is a revision they see and agree to.'
+              : 'The quote stays as sent until you revise it.'}
+          </span>
+        </div>
+      )}
     </div>
   )
 }

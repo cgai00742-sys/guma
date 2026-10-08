@@ -24,6 +24,7 @@
  *
  * No arithmetic lives in this file. Every figure comes from priceQuote().
  */
+import { sheetVsQuote } from '../lib/sheetVsQuote'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -137,6 +138,8 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   const [acceptedTotal, setAcceptedTotal] = useState<number | null>(null)
   const [cause, setCause] = useState<ChangeCause>('added_work')
   const [why, setWhy] = useState('')
+  /** Set when a revision took its copies from the build sheet. */
+  const [fromSheet, setFromSheet] = useState<{ quoted: number; sheet: number; notes: string[] } | null>(null)
 
   useEffect(() => {
     if (reviseJobId) return
@@ -192,6 +195,23 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
         setAcceptedTotal(d.quote?.status === 'accepted' ? d.quote.total : null)
         const q = d.quoteInputs
         if (q) {
+          // The build sheet is what is actually being made. If its copies
+          // moved since the quote (CG, 8 Oct), the revision starts from
+          // the sheet -- that is almost always why someone is revising.
+          const sheet = sheetVsQuote(q.builds ?? [], q.quantity, d.parts)
+          const lines = sheet.changed ? sheet.builds : (q.builds ?? [])
+          if (sheet.changed) {
+            setFromSheet({
+              quoted: sheet.quotedCopies,
+              sheet: sheet.sheetCopies,
+              notes: [
+                ...sheet.added.map((l) => `${l} added from its sliced file`),
+                ...sheet.unpriced.map((l) => `${l} has no sliced numbers -- add it by hand`),
+                ...sheet.quotedOnly.map((l) => `${l} is on the quote but not the build sheet`),
+              ],
+            })
+            setWhy((w) => w || `Build sheet is now ${sheet.sheetCopies} copies (quoted ${sheet.quotedCopies}).`)
+          }
           setInput({
             assetOrigin: d.assetOrigin,
             // 'none' is not an input here: it is what the form SAYS when
@@ -201,15 +221,15 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             designBilling: q.designBilling === 'none' ? 'hourly' : q.designBilling,
             designQty: q.designQty,
             revisions: q.revisionsIncl,
-            quantity: q.quantity,
+            quantity: sheet.changed ? sheet.quantity : q.quantity,
             unitsPerPart: q.unitsPerPart,
             printHrsPerPart: q.printHrsPart,
             finishingHrs: q.finishingHrs,
             rush: q.rush,
             flatEach: q.flatEach,
             discountPct: q.discountPct,
-            builds: (q.builds ?? []).map((b, i) => ({
-              key: b.id ?? String(i),
+            builds: lines.map((b, i) => ({
+              key: (b as { id?: string }).id ?? `sheet:${i}`,
               label: b.label,
               printerId: b.printerId,
               materialId: b.materialId,
@@ -621,6 +641,12 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           don't block -- CG's decision, and the right one, because a shop
           that cannot record what actually happened keeps a second set of
           numbers somewhere Guma will never see. */}
+      {fromSheet && (
+        <div className="attn" data-testid="from-sheet" style={{ marginBottom: 10 }}>
+          Copies taken from the build sheet: {fromSheet.sheet}, where the quote had {fromSheet.quoted}.
+          {fromSheet.notes.length > 0 && <> {fromSheet.notes.join('; ')}.</>}
+        </div>
+      )}
       {reviseJobId && acceptedTotal != null && (
         <RevisionCeiling
           acceptedTotal={acceptedTotal}

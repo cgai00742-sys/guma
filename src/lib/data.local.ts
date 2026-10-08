@@ -1488,9 +1488,11 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       material: string | null
       imported_at: string
       plate_parts: number
+      section_qty: number
+      material_id: string | null
     }[]
   >(
-    `select s.id as section_id, s.part_id, i.id as import_id, i.file_name,
+    `select s.qty as section_qty, i.material_id, s.id as section_id, s.part_id, i.id as import_id, i.file_name,
             i.printer_model, i.printer_id, p.name as printer_name,
             s.est_minutes, s.est_grams, s.material, i.imported_at,
             (select count(*) from slice_sections x where x.import_id = i.id) as plate_parts
@@ -1651,6 +1653,8 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
             material: v.material,
             importedAt: v.imported_at,
             plateParts: Number(v.plate_parts),
+            sectionQty: Math.max(1, Number(v.section_qty ?? 1)),
+            materialId: v.material_id ?? null,
           })),
         history: partHistory
           .filter((e) => e.part_id === x.id)

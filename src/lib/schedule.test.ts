@@ -17,6 +17,8 @@ function variant(estMinutes: number | null): PartVariant {
     material: 'PETG',
     importedAt: '2026-09-01',
     plateParts: 1,
+    sectionQty: 1,
+    materialId: null,
   }
 }
 

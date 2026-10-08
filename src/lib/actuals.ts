@@ -24,7 +24,7 @@ import {
   type RatesSnapshot,
   type RateSet,
 } from './pricing'
-import { toRateSet, type ProjectActuals, type ProjectDetail, type RateCardRow, type Shop } from './data.types'
+import { toRateSet, type QuoteBuildInput, type ProjectActuals, type ProjectDetail, type RateCardRow, type Shop } from './data.types'
 
 export interface VarianceLine {
   key: 'material' | 'machine' | 'wear' | 'labour'
@@ -209,11 +209,28 @@ export interface PricingContext {
  * than the normal path.
  */
 export function buildComparison(detail: ProjectDetail, ctx: PricingContext): Comparison | null {
+  const p = priceProjectQuote(detail, ctx)
+  if (!p) return null
+  try {
+    return compareToQuote(p.priced, detail.actuals, p.rates, p.unit)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The project's quote, priced -- at its frozen rates when it has them, at
+ * today's when it is a draft. `override` swaps the build lines and copies
+ * for another set (the build sheet as it stands now) while every other
+ * term of the quote -- design, finishing, rush, discount -- stays as agreed.
+ */
+export function priceProjectQuote(
+  detail: ProjectDetail,
+  ctx: PricingContext,
+  override?: { builds: QuoteBuildInput[]; quantity: number },
+): { priced: PricedQuote; rates: RateSet; unit: 'g' | 'ml' } | null {
   const q = detail.quoteInputs
   if (!q) return null
-
-  let priced: PricedQuote
-  let rates
   try {
     const snap = q.ratesSnapshot as RatesSnapshot | null
     const basis = snap
@@ -224,22 +241,32 @@ export function buildComparison(detail: ProjectDetail, ctx: PricingContext): Com
           printer: ctx.printers.find((p) => p.id === q.printerId) ?? null,
           fleet: null,
         }
-    rates = basis.rates
-    priced = priceQuote(
+    const builds = override ? override.builds : (q.builds ?? [])
+    // Build lines price at the machines and spools frozen with the quote; a
+    // line added since (a new part, sliced for another machine) prices at
+    // today's figures for that machine, because there is no frozen one.
+    const frozen = basis.fleet
+    const fleet = frozen
+      ? {
+          materials: [...frozen.materials, ...ctx.materials.filter((m) => !frozen.materials.some((f) => f.id === m.id))],
+          printers: [...frozen.printers, ...ctx.printers.filter((p) => !frozen.printers.some((f) => f.id === p.id))],
+        }
+      : { materials: ctx.materials, printers: ctx.printers }
+    const priced = priceQuote(
       {
         assetOrigin: detail.assetOrigin,
         designBilling: q.designBilling === 'none' ? 'hourly' : q.designBilling,
         designQty: q.designQty,
         revisions: q.revisionsIncl,
-        quantity: q.quantity,
+        quantity: override ? override.quantity : q.quantity,
         unitsPerPart: q.unitsPerPart,
         printHrsPerPart: q.printHrsPart,
         finishingHrs: q.finishingHrs,
         rush: q.rush,
         flatEach: q.flatEach,
         discountPct: q.discountPct,
-        builds: (q.builds ?? []).map((b, i) => ({
-          key: b.id ?? String(i),
+        builds: builds.map((b, i) => ({
+          key: (b as { id?: string }).id ?? String(i),
           label: b.label,
           printerId: b.printerId,
           materialId: b.materialId,
@@ -248,17 +275,15 @@ export function buildComparison(detail: ProjectDetail, ctx: PricingContext): Com
           printHrsPerPart: b.printHrsPerPart,
         })),
       },
-      rates,
+      basis.rates,
       basis.material,
       basis.printer,
-      // Build lines price at the machines and spools frozen with the quote;
-      // a draft (no snapshot) prices at today's.
-      basis.fleet ?? { materials: ctx.materials, printers: ctx.printers },
+      fleet,
     )
-    return compareToQuote(priced, detail.actuals, rates, basis.material?.unit ?? 'g')
+    return { priced, rates: basis.rates, unit: basis.material?.unit ?? 'g' }
   } catch {
     // A snapshot from an older schema, or a quote whose material was
-    // deleted. Better to show no comparison than a wrong one.
+    // deleted. Better to show no figure than a wrong one.
     return null
   }
 }

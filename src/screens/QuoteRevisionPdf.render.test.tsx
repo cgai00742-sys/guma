@@ -205,3 +205,62 @@ describe('saving a revision as a PDF (CG, 8 Oct: blank white screen)', () => {
     await screen.findByText(/has not been priced for sending/i)
   })
 })
+
+describe('changing copies on the build sheet reprices the project (CG, 8 Oct)', () => {
+  it('shows the new price at once, and the revision starts from the sheet', async () => {
+    const { ctx, data } = await freshShop()
+    const user = userEvent.setup()
+    await renderIntake(ctx)
+    await user.click(await screen.findByRole('button', { name: /someone is paying/i }))
+    await user.type(screen.getByLabelText(/^client/i), 'Anson Canoe Club')
+    await user.type(screen.getByLabelText(/project title/i), 'Five 16in Anson models')
+    await user.upload(screen.getByLabelText(/price from a sliced file/i), MAUI())
+    await screen.findByText(/Priced on Hatsa/)
+    await user.click(screen.getByRole('button', { name: /^save as pdf$/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) as n from job_parts').get()).not.toEqual({ n: 0 }))
+    cleanup()
+    const c = ctx as { shop: { id: string }; profile: { id: string } }
+    const jobId = (currentDb.sqlite.prepare('select id from jobs').get() as { id: string }).id
+    currentDb.sqlite.prepare("update quotes set status = 'accepted'").run()
+    await data.updateJobPhase(c.shop.id, jobId, c.profile.id, 'approval' as never)
+    await data.updateJobPhase(c.shop.id, jobId, c.profile.id, 'design' as never)
+    const v1 = currentDb.sqlite.prepare('select total from quotes').get() as { total: number }
+    const before = currentDb.sqlite.prepare('select label, qty from job_parts order by sort').all() as { label: string; qty: number }[]
+
+    const { default: Intake } = await import('./Intake')
+    const { default: Project } = await import('./Project')
+    render(
+      <MemoryRouter initialEntries={[`/project/${jobId}`]}>
+        <Routes>
+          <Route path="/project/:jobId" element={<Project ctx={ctx as never} />} />
+          <Route path="/intake" element={<Intake ctx={ctx as never} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect((await screen.findByTestId('sheet-price')).textContent).toMatch(/matches the quote/)
+
+    // Five of the first part, through the real editor.
+    await user.click(screen.getByRole('button', { name: `Edit ${before[0].label}` }))
+    const copies = document.querySelector('input[id^="pe-qty-"]') as HTMLInputElement
+    await user.clear(copies)
+    await user.type(copies, String(before[0].qty + 4))
+    await user.click(screen.getByRole('button', { name: /^save part$/i }))
+    await waitFor(() => expect(screen.getByTestId('sheet-price').textContent).toMatch(/now prices at/))
+    const shown = screen.getByTestId('sheet-price').textContent ?? ''
+    expect(shown).toMatch(/\+\$/)
+    // The accepted price itself has not moved.
+    expect(currentDb.sqlite.prepare('select count(*) as n from quotes').get()).toEqual({ n: 1 })
+
+    await user.click(screen.getByRole('link', { name: /revise the quote to match/i }))
+    await screen.findByTestId('from-sheet')
+    const sheetCopies = before.reduce((a, p) => a + p.qty, 0) + 4
+    expect(screen.getByTestId('from-sheet').textContent).toMatch(new RegExp(`build sheet: ${sheetCopies}`))
+    await user.click(screen.getByRole('button', { name: /^save revision as pdf$/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) as n from quotes').get()).toEqual({ n: 2 }))
+    const v2 = currentDb.sqlite.prepare('select total from quotes where version = 2').get() as { total: number }
+    expect(v2.total).toBeGreaterThan(v1.total)
+    // The revised price is the one the project page showed.
+    const money = shown.match(/now prices at (\$[\d,.]+)/)![1]
+    expect(money).toBe(`$${v2.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+  })
+})

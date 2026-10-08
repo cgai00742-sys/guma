@@ -1173,8 +1173,8 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
     supabase
       .from('slice_sections')
       .select(
-        `id, part_id, est_minutes, est_grams, material,
-         slice_imports!inner ( id, job_id, file_name, printer_model, printer_id, imported_at,
+        `id, part_id, qty, est_minutes, est_grams, material,
+         slice_imports!inner ( id, job_id, file_name, printer_model, printer_id, material_id, imported_at,
                                printers ( name ) )`,
       )
       .eq('slice_imports.job_id', jobId)
@@ -1299,6 +1299,8 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
             material: v.material ?? null,
             importedAt: v.slice_imports?.imported_at ?? '',
             plateParts: plateOf.get(v.slice_imports?.id) ?? 1,
+            sectionQty: Math.max(1, Number(v.qty ?? 1)),
+            materialId: v.slice_imports?.material_id ?? null,
           }))
           .sort((a, b) => (a.importedAt < b.importedAt ? 1 : -1)),
         history: ((partHistory.data ?? []) as any[])

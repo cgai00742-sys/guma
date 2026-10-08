@@ -111,6 +111,8 @@ function variant(over: Partial<PartVariant> = {}): PartVariant {
     material: 'PETG',
     importedAt: '2026-09-27',
     plateParts: 1,
+    sectionQty: 1,
+    materialId: null,
     ...over,
   }
 }
