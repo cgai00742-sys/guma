@@ -423,8 +423,8 @@ const round1 = (n: number) => Math.round(n * 10) / 10
 
 const PHASE_ORDER = [
   ['intake', 'Intake'],
-  ['design', 'Design'],
   ['approval', 'Approval'],
+  ['design', 'Design'],
   ['scheduled', 'Scheduled'],
   ['building', 'Building'],
   ['review', 'Review'],

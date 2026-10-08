@@ -828,12 +828,11 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(flagsFor(d.facts, now)).toEqual([])
 
     const g = gateStatus('intake', d.gates.intake ?? {}, d.facts)
-    // brief, poc, needed_by and quote all clear from real data already;
-    // "who owns the model" is the one a person still has to answer.
-    expect(g.done).toBe(4)
-    expect(g.total).toBe(5)
-    expect(g.blocked).toBe(true)
-    expect(g.items.find((i) => i.key === 'origin')!.checked).toBe(false)
+    // brief, needed_by and quote clear from real data already; the point
+    // of contact is the one still to fill in. "Who owns the model" is no
+    // longer asked twice -- New project already answered it.
+    expect(g.total).toBe(4)
+    expect(g.items.some((i) => i.key === 'origin')).toBe(false)
   })
 
   it('records a gate tick, its note, and who ticked it — and upserts on a second write', async () => {
@@ -841,21 +840,21 @@ describe('data.local.ts against a real SQLite database', () => {
     const shopId = await local.setupShop(SETUP_PAYLOAD)
     const { ctx, saved } = await seedProject(local, shopId)
 
-    await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'intake', 'origin', true, null)
+    await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'design', 'model', true, null)
     let d = await local.loadProjectDetail(shopId, saved.jobId)
-    expect(d.gates.intake.origin).toEqual({ checked: true, note: null })
-    expect(gateStatus('intake', d.gates.intake, d.facts).blocked).toBe(false)
+    expect(d.gates.design.model).toMatchObject({ checked: true, note: null })
+    expect(gateStatus('intake', d.gates.design, d.facts).blocked).toBe(false)
 
     // Same key again: an update, never a second row.
-    await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'intake', 'origin', true, 'Client sent a STEP file')
+    await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'design', 'model', true, 'Client sent a STEP file')
     d = await local.loadProjectDetail(shopId, saved.jobId)
-    expect(d.gates.intake.origin.note).toBe('Client sent a STEP file')
-    expect(Object.keys(d.gates.intake)).toHaveLength(1)
+    expect(d.gates.design.model.note).toBe('Client sent a STEP file')
+    expect(Object.keys(d.gates.design)).toHaveLength(1)
 
     // Unticking is a real write too, not a delete.
-    await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'intake', 'origin', false, null)
+    await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'design', 'model', false, null)
     d = await local.loadProjectDetail(shopId, saved.jobId)
-    expect(d.gates.intake.origin.checked).toBe(false)
+    expect(d.gates.design.model.checked).toBe(false)
   })
 
   it('notes and phase changes land in one ordered activity log', async () => {
@@ -1961,21 +1960,9 @@ describe('data.local.ts against a real SQLite database', () => {
       poc: 'Dana Reyes',
       neededBy: '2026-11-30',
     })
-    await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'intake', 'origin', true, null)
 
     ;({ g } = await gateNow())
     expect(g.done).toBe(g.total)
-    expect(g.blocked).toBe(false)
-    await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'design')
-
-    // --- DESIGN -------------------------------------------------------
-    for (const item of GATES.design) {
-      await local.setGateItem(
-        shopId, saved.jobId, ctx.profile.id, 'design', item.key, true,
-        item.needsNote ? 'Logged against the quote.' : null,
-      )
-    }
-    ;({ g } = await gateNow())
     expect(g.blocked).toBe(false)
     await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'approval')
 
@@ -1994,9 +1981,25 @@ describe('data.local.ts against a real SQLite database', () => {
 
     await local.setQuoteStatus(shopId, saved.quoteId, ctx.profile.id, 'accepted')
     ;({ g } = await gateNow())
+    // The delivery date is the last thing Approval asks for.
+    expect(g.items.find((i) => i.key === 'window')!.checked).toBe(false)
+    await local.updateProjectFields(shopId, saved.jobId, { windowLocked: true })
+    ;({ g } = await gateNow())
     expect(g.done).toBe(g.total)
     expect(g.blocked).toBe(false)
+    await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'design')
+
+    // --- DESIGN -------------------------------------------------------
+    for (const item of GATES.design) {
+      await local.setGateItem(
+        shopId, saved.jobId, ctx.profile.id, 'design', item.key, true,
+        item.needsNote ? 'Logged against the quote.' : null,
+      )
+    }
+    ;({ g } = await gateNow())
+    expect(g.blocked).toBe(false)
     await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'scheduled')
+
 
     // --- SCHEDULED ----------------------------------------------------
     for (const item of GATES.scheduled.filter((i) => !i.auto)) {
@@ -2030,6 +2033,7 @@ describe('data.local.ts against a real SQLite database', () => {
     await local.updateJobPhase(shopId, saved.jobId, ctx.profile.id, 'review')
 
     // --- REVIEW -------------------------------------------------------
+    await local.updateProjectFields(shopId, saved.jobId, { deliveryOn: '2026-11-28', deliveryHow: 'Hand-off' })
     for (const item of GATES.review) {
       const resolved = gateStatus('review', {}, (await detail()).facts).items.find(
         (i) => i.key === item.key,
@@ -2052,6 +2056,23 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(d.events.filter((e) => e.kind === 'phase_change')).toHaveLength(6)
     expect(d.events.some((e) => e.kind === 'quote')).toBe(true)
     expect(d.events.some((e) => e.kind === 'run')).toBe(true)
+  })
+
+  it('skips a gate item with a reason, logs it, and lets the stage advance', async () => {
+    const local = await import('./data.local')
+    const shopId = await local.setupShop(SETUP_PAYLOAD)
+    const { ctx, saved } = await seedProject(local, shopId)
+    await local.skipGateItem(saved.jobId, ctx.profile.id, 'design', 'signoff', 'The client signed off the design', 'Walk-in, pays at pickup')
+    let d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(d.gates.design.signoff.skipped).toBe('Walk-in, pays at pickup')
+    const item = gateStatus('design', d.gates.design, d.facts).items.find((i) => i.key === 'signoff')!
+    expect(item.checked).toBe(true)
+    expect(item.skipped).toBe('Walk-in, pays at pickup')
+    expect(d.events.some((e) => /Skipped “The client signed off the design”\. Why: Walk-in/.test(e.body ?? ''))).toBe(true)
+    // Taken back: open again.
+    await local.skipGateItem(saved.jobId, ctx.profile.id, 'design', 'signoff', 'The client signed off the design', null)
+    d = await local.loadProjectDetail(shopId, saved.jobId)
+    expect(gateStatus('design', d.gates.design, d.facts).items.find((i) => i.key === 'signoff')!.checked).toBe(false)
   })
 
   it('every automatic gate item says how to satisfy it', async () => {

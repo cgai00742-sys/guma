@@ -1,0 +1,11 @@
+-- Guma: a gate item can be skipped, with the reason on the record.
+--
+-- Voltage's rule (CG, 7 Oct 2026): a gate is satisfied OR overridden with
+-- a written reason. Guma blocked outright, which is how real work ended up
+-- done in the wrong stage -- plates printed while the project sat at
+-- Intake because a box could not be ticked yet. A skip is not a tick: it
+-- clears the item for advancing and keeps why, so the record says the
+-- stage was left with that item open on purpose.
+--
+-- Null: not skipped. Text: the reason given.
+alter table job_gates add column skipped text;

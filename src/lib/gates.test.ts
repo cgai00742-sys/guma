@@ -145,8 +145,9 @@ describe('gateStatus', () => {
     expect(g.blocked).toBe(true)
     expect(g.done).toBe(0)
     expect(g.total).toBe(GATES.design.length)
-    expect(g.next).toBe('approval')
-    expect(g.reason).toContain('Client approval')
+    // Approval comes before Design now (CG, 7 Oct): design leads to Scheduled.
+    expect(g.next).toBe('scheduled')
+    expect(g.reason).toContain('Scheduled')
   })
 
   it('clears once every item is answered', () => {
@@ -176,7 +177,9 @@ describe('gateStatus', () => {
   })
 
   it('nextPhase walks the seven stages and stops', () => {
-    expect(nextPhase('intake')).toBe('design')
+    expect(nextPhase('intake')).toBe('approval')
+    expect(nextPhase('approval')).toBe('design')
+    expect(nextPhase('design')).toBe('scheduled')
     expect(nextPhase('review')).toBe('delivered')
     expect(nextPhase('delivered')).toBeNull()
   })
@@ -253,7 +256,10 @@ describe('flagsFor', () => {
   })
 
   it('a quote under the shop minimum is worth knowing, not panicking about', () => {
-    const [f] = flagsFor(facts({ quoteTotal: 40, minimumOrder: 150, quoteStatus: 'sent' }), NOW)
+    const [f] = flagsFor(
+      facts({ phase: 'approval', quoteTotal: 40, minimumOrder: 150, quoteStatus: 'sent' }),
+      NOW,
+    )
     expect(f.key).toBe('under-minimum')
     expect(f.tone).toBe('info')
     expect(f.cause).toContain('150')
@@ -309,7 +315,7 @@ describe('the shop’s own work climbs a ladder of its own', () => {
     expect(nextPhase('review', 'inhouse')).toBe('delivered')
     expect(nextPhase('delivered', 'inhouse')).toBeNull()
     // Client work is untouched.
-    expect(nextPhase('design', 'client')).toBe('approval')
+    expect(nextPhase('design', 'client')).toBe('scheduled')
   })
 
   it('asks two questions, both about money that otherwise disappears', () => {
@@ -398,5 +404,29 @@ describe('the over-the-agreed-price flag', () => {
     expect(
       flagsFor(facts({ overCeiling: note, kind: 'inhouse' })).some((x) => x.key === 'over-ceiling'),
     ).toBe(false)
+  })
+})
+
+describe('skipping a gate item on purpose (Voltage, CG 7 Oct)', () => {
+  it('clears the item for advancing, keeps the reason, and is not a tick', () => {
+    const g = gateStatus(
+      'design',
+      {
+        model: { checked: true, note: null },
+        signoff: { checked: false, note: null, skipped: 'Client is on holiday, signed off by phone' },
+        hours: { checked: true, note: '6 of 6' },
+      },
+      facts(),
+    )
+    expect(g.blocked).toBe(false)
+    const s = g.items.find((i) => i.key === 'signoff')!
+    expect(s.checked).toBe(true)
+    expect(s.skipped).toMatch(/holiday/)
+    expect(g.items.find((i) => i.key === 'model')!.skipped).toBeNull()
+  })
+
+  it('a skip on an item that is now done is just done', () => {
+    const g = gateStatus('intake', { brief: { checked: false, note: null, skipped: 'later' } }, facts({ brief: 'x'.repeat(30) }))
+    expect(g.items.find((i) => i.key === 'brief')!.skipped).toBeNull()
   })
 })

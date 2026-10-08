@@ -380,8 +380,8 @@ export interface SavedQuote {
  *  Ordered: this is also the Pipeline board's column order. */
 export const JOB_PHASES = [
   'intake',
-  'design',
   'approval',
+  'design',
   'scheduled',
   'building',
   'review',
@@ -443,6 +443,9 @@ export function asClientKind(v: string | null | undefined): ClientKind {
 export interface GateAnswer {
   checked: boolean
   note: string | null
+  /** Skipped on purpose, with this reason (0027_gate_skips.sql). Clears the
+   *  item for advancing without pretending it was done. */
+  skipped?: string | null
 }
 
 /**

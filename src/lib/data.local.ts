@@ -970,15 +970,15 @@ async function loadGateAnswers(
   if (jobIds.length === 0) return out
   const marks = jobIds.map(() => '?').join(',')
   const rows = await d.select<
-    { job_id: string; phase: string; item_key: string; checked: number; note: string | null }[]
+    { job_id: string; phase: string; item_key: string; checked: number; note: string | null; skipped: string | null }[]
   >(
-    `select job_id, phase, item_key, checked, note from job_gates where job_id in (${marks})`,
+    `select job_id, phase, item_key, checked, note, skipped from job_gates where job_id in (${marks})`,
     jobIds,
   )
   for (const r of rows) {
     const byPhase = (out[r.job_id] ??= {})
     const byKey = (byPhase[r.phase] ??= {})
-    byKey[r.item_key] = { checked: Number(r.checked) === 1, note: r.note }
+    byKey[r.item_key] = { checked: Number(r.checked) === 1, note: r.note, skipped: r.skipped ?? null }
   }
   return out
 }
@@ -1714,6 +1714,34 @@ export async function setGateItem(
        at = excluded.at`,
     [jobId, phase, itemKey, checked ? 1 : 0, note, actorId],
   )
+}
+
+/**
+ * Skip a gate item on purpose, with the reason -- or take the skip back
+ * (reason null). Logged to Activity. See 0027_gate_skips.sql.
+ */
+export async function skipGateItem(
+  jobId: string,
+  actorId: string,
+  phase: JobPhase,
+  itemKey: string,
+  itemLabel: string,
+  reason: string | null,
+): Promise<void> {
+  const why = reason?.trim() || null
+  const d = await db()
+  await d.execute(
+    `insert into job_gates (job_id, phase, item_key, checked, skipped, actor_id, at)
+     values (?, ?, ?, 0, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+     on conflict (job_id, phase, item_key) do update set
+       skipped = excluded.skipped, actor_id = excluded.actor_id, at = excluded.at`,
+    [jobId, phase, itemKey, why, actorId],
+  )
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [
+    jobId,
+    actorId,
+    why ? `Skipped “${itemLabel}”. Why: ${why}` : `Took back the skip on “${itemLabel}”.`,
+  ])
 }
 
 /** A human update on the project. Same table as phase changes, so the

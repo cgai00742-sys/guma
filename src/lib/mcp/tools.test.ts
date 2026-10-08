@@ -396,8 +396,8 @@ describe('guma_advance_stage', () => {
       })
     }
     const moved = await k.call('guma_advance_stage', { job_id: made.job_id })
-    expect(moved.phase).toBe('design')
-    expect(moved.stage).toBe('Design')
+    expect(moved.phase).toBe('approval')
+    expect(moved.stage).toBe('Client approval')
   })
 })
 

@@ -253,7 +253,7 @@ describe('the build sheet at each stage', () => {
       label: 'Bearing ring',
       qty: 2,
     })
-    for (const to of ['design', 'approval', 'scheduled', 'building', 'review'] as const) {
+    for (const to of ['approval', 'design', 'scheduled', 'building', 'review'] as const) {
       if (phase === 'scheduled' && to === 'building') break
       if (phase === 'building' && to === 'review') break
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
@@ -351,7 +351,7 @@ describe('a long screen folds, and remembers', () => {
   it('folds the working sections once it is delivered, and leaves the money out', async () => {
     localStorage.clear()
     const { ctx, jobId, data } = await seed({ takeIn: true })
-    for (const to of ['design', 'approval', 'scheduled', 'building', 'review', 'delivered'] as const) {
+    for (const to of ['approval', 'design', 'scheduled', 'building', 'review', 'delivered'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
@@ -364,7 +364,7 @@ describe('a long screen folds, and remembers', () => {
     localStorage.clear()
     localStorage.setItem('guma.folds', JSON.stringify({ done: { build: true }, live: { gate: false } }))
     const { ctx, jobId, data } = await seed({ takeIn: true })
-    for (const to of ['design', 'approval', 'scheduled', 'building', 'review', 'delivered'] as const) {
+    for (const to of ['approval', 'design', 'scheduled', 'building', 'review', 'delivered'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)

@@ -22,7 +22,7 @@ function ev(toStatus: PartRow['status'], note: string | null, id = 1): PartRow['
 
 describe('what a stage lets you do', () => {
   it('offers nothing before building: a part is still a plan', () => {
-    for (const p of ['intake', 'design', 'approval', 'scheduled'] as const) {
+    for (const p of ['intake', 'approval', 'design', 'scheduled'] as const) {
       expect(allowedStatuses(p)).toEqual([])
     }
   })

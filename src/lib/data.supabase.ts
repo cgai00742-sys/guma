@@ -743,13 +743,13 @@ async function loadGateAnswers(
   if (jobIds.length === 0) return out
   const { data, error } = await supabase
     .from('job_gates')
-    .select('job_id, phase, item_key, checked, note')
+    .select('job_id, phase, item_key, checked, note, skipped')
     .in('job_id', jobIds)
   if (error) throw error
   for (const r of (data ?? []) as any[]) {
     const byPhase = (out[r.job_id] ??= {})
     const byKey = (byPhase[r.phase] ??= {})
-    byKey[r.item_key] = { checked: r.checked === true, note: r.note ?? null }
+    byKey[r.item_key] = { checked: r.checked === true, note: r.note ?? null, skipped: r.skipped ?? null }
   }
   return out
 }
@@ -1345,6 +1345,47 @@ export async function setGateItem(
     { onConflict: 'job_id,phase,item_key' },
   )
   if (error) throw error
+}
+
+/** See data.local.ts's skipGateItem. */
+export async function skipGateItem(
+  jobId: string,
+  actorId: string,
+  phase: JobPhase,
+  itemKey: string,
+  itemLabel: string,
+  reason: string | null,
+): Promise<void> {
+  const why = reason?.trim() || null
+  const { data: existing, error: readErr } = await supabase
+    .from('job_gates')
+    .select('checked, note')
+    .eq('job_id', jobId)
+    .eq('phase', phase)
+    .eq('item_key', itemKey)
+    .maybeSingle()
+  if (readErr) throw readErr
+  const { error } = await supabase.from('job_gates').upsert(
+    {
+      job_id: jobId,
+      phase,
+      item_key: itemKey,
+      checked: existing?.checked ?? false,
+      note: existing?.note ?? null,
+      skipped: why,
+      actor_id: actorId,
+      at: new Date().toISOString(),
+    },
+    { onConflict: 'job_id,phase,item_key' },
+  )
+  if (error) throw error
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: jobId,
+    actor_id: actorId,
+    kind: 'edit',
+    body: why ? `Skipped “${itemLabel}”. Why: ${why}` : `Took back the skip on “${itemLabel}”.`,
+  })
+  if (evErr) throw evErr
 }
 
 /** See data.local.ts's addProjectNote. */

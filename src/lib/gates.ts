@@ -76,7 +76,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'Quotes stall on "waiting to hear back" from an inbox nobody owns.',
       auto: (f) => (f.poc ?? '').trim().length > 0,
       autoFrom: 'from the point of contact',
-      fix: 'Add a point of contact under Who and when, below.',
+      fix: 'Add a point of contact in What they want, above.',
     },
     {
       key: 'needed_by',
@@ -84,12 +84,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'Without one you cannot tell a rush from a routine job, and you will price it as routine.',
       auto: (f) => f.neededBy !== null,
       autoFrom: 'from the delivery window',
-      fix: 'Set a needed-by date under Who and when, below.',
-    },
-    {
-      key: 'origin',
-      label: 'Who owns the model, and what state it is in',
-      why: 'Print-ready, needs fixing, or built from nothing — this is most of the design hours.',
+      fix: 'Set a needed-by date in What they want, above.',
     },
     {
       key: 'quote',
@@ -100,24 +95,6 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       fix: 'Price it from New project — this one has no quote at all.',
     },
   ],
-  design: [
-    {
-      key: 'model',
-      label: 'Model built, or the supplied file checked for printability',
-      why: 'Finding a non-manifold mesh at the printer costs a slot as well as the fix.',
-    },
-    {
-      key: 'hours',
-      label: 'Design hours on the quote match the hours actually spent',
-      why: 'The single most common place a small shop quietly loses its margin. Log your hours below and the project page shows you the gap rather than asking you to remember it.',
-      needsNote: true,
-    },
-    {
-      key: 'revisions',
-      label: 'Revision allowance agreed in writing',
-      why: 'Unbounded revisions are the other place the margin goes.',
-    },
-  ],
   approval: [
     {
       key: 'sent',
@@ -125,7 +102,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'A quote sitting in draft is not a quote.',
       auto: (f) => f.quoteStatus === 'sent' || f.quoteStatus === 'accepted',
       autoFrom: 'from the quote status',
-      fix: 'Mark the quote sent under Money, once it has gone to the client.',
+      fix: 'Mark the quote sent under Quote and deposit, above.',
     },
     {
       key: 'accepted',
@@ -134,7 +111,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       needsNote: true,
       auto: (f) => f.quoteStatus === 'accepted',
       autoFrom: 'from the quote status',
-      fix: 'Mark the quote accepted under Money, once they have said yes in writing.',
+      fix: 'Mark the quote accepted under Quote and deposit, above, once they have said yes in writing.',
     },
     {
       key: 'deposit',
@@ -142,7 +119,34 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'The deposit is what makes a cancellation survivable. Waiving it is a decision, not an oversight.',
       auto: (f) => f.depositDue <= 0 || f.depositOwed <= 0,
       autoFrom: 'from payments received',
-      fix: 'Record the deposit under Money, or set the deposit to zero in Shop settings if you are waiving it.',
+      fix: 'Record the deposit above, or set the deposit to zero in Shop settings if you are waiving it.',
+    },
+    {
+      key: 'window',
+      label: 'Delivery date committed with the client',
+      why: 'Every later stage is measured against this. Until it is committed it is a wish, not a promise.',
+      auto: (f) => f.windowLocked,
+      autoFrom: 'from the delivery window',
+      fix: 'Commit the date under Delivery window, above.',
+    },
+  ],
+  design: [
+    {
+      key: 'model',
+      label: 'Model built, or the supplied file checked for printability',
+      why: 'Finding a non-manifold mesh at the printer costs a slot as well as the fix.',
+    },
+    {
+      key: 'signoff',
+      label: 'The client signed off the design',
+      why: 'Printing a design nobody approved is printing it twice. Say where the yes lives.',
+      needsNote: true,
+    },
+    {
+      key: 'hours',
+      label: 'Design hours on the quote match the hours actually spent',
+      why: 'The single most common place a small shop quietly loses its margin. Log your hours above and this page shows you the gap.',
+      needsNote: true,
     },
   ],
   scheduled: [
@@ -162,7 +166,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'Print time plus finishing plus a failure buffer — checked against the window, not guessed.',
       auto: (f) => f.neededBy !== null,
       autoFrom: 'needs a date to check against',
-      fix: 'Set a needed-by date under Who and when — there is nothing to check the slot against.',
+      fix: 'Set a needed-by date — there is nothing to check the slot against.',
     },
   ],
   building: [
@@ -209,6 +213,14 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       key: 'photos',
       label: 'Photographed for the record',
       why: 'The cheapest possible defense against "it arrived broken".',
+    },
+    {
+      key: 'handover',
+      label: 'When and how it is being handed over',
+      why: 'The date every later argument is measured from — a warranty claim, a late payment, a repeat order.',
+      auto: (f) => !!f.deliveryOn && !!f.deliveryHow,
+      autoFrom: 'from Handover',
+      fix: 'Set the date and how under Handover, above.',
     },
   ],
   delivered: [],
@@ -264,6 +276,9 @@ export interface ResolvedGateItem extends GateItem {
   automatic: boolean
   /** Checked, starred, and still missing its note. */
   noteMissing: boolean
+  /** Not done, but skipped on purpose with this reason. Counts as cleared
+   *  for advancing; the record keeps the difference. */
+  skipped: string | null
 }
 
 export interface GateStatus {
@@ -301,10 +316,16 @@ export interface GateStatus {
  * migration, and a phase always means the same position in whichever
  * ladder its job is climbing.
  */
+/**
+ * Approval comes BEFORE design (CG, 7 Oct 2026): the quote is accepted and
+ * the deposit is in before any design hours are spent. The old order put
+ * Design first, straight after a gate item that warned "design work before
+ * a price is agreed is work you may never bill".
+ */
 const CLIENT_LADDER: JobPhase[] = [
   'intake',
-  'design',
   'approval',
+  'design',
   'scheduled',
   'building',
   'review',
@@ -386,14 +407,17 @@ export function gateStatus(
     // no way to know, so the human answer stands.
     const derived = typeof item.auto === 'function' ? item.auto(facts) : null
     const automatic = derived !== null
-    const checked = automatic ? derived : (answer?.checked ?? false)
+    const done = automatic ? derived : (answer?.checked ?? false)
     const note = answer?.note ?? null
+    const skipped = !done && answer?.skipped ? answer.skipped : null
     return {
       ...item,
-      checked,
+      checked: done || skipped !== null,
       note,
       automatic,
-      noteMissing: !automatic && checked && item.needsNote === true && (note ?? '').trim().length === 0,
+      skipped,
+      noteMissing:
+        !automatic && done && item.needsNote === true && (note ?? '').trim().length === 0,
     }
   })
 
@@ -427,7 +451,7 @@ export function gateStatus(
         `${auto.length} that clear${auto.length > 1 ? '' : 's'} on their own once the work is done`,
       )
     }
-    reason = `${parts.join(', and ')}. Nothing advances to ${PHASE_LABEL[next]} until they do.`
+    reason = `${parts.join(', and ')}. Nothing advances to ${PHASE_LABEL[next]} until they are done or skipped with a reason.`
   } else {
     reason = `All ${total} cleared. Ready for ${PHASE_LABEL[next]}.`
   }

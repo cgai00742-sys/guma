@@ -429,7 +429,7 @@ describe('turning the file into what actually happened', () => {
     const { ctx, jobId, data } = await seedShop()
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
-    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
@@ -549,7 +549,7 @@ describe('the file itself, kept', () => {
     const { ctx, jobId, data } = await seedShop()
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
-    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
@@ -589,7 +589,7 @@ describe('a plate is one print, and the whole plate comes off it', () => {
     const { ctx, jobId, data } = await seedShop()
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
-    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
@@ -617,7 +617,7 @@ describe('a plate is one print, and the whole plate comes off it', () => {
     const { ctx, jobId, data } = await seedShop()
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
-    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
@@ -646,7 +646,7 @@ describe('a finished project reads like a record, not a control panel', () => {
     const { ctx, jobId, data } = await seedShop()
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
-    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
@@ -773,7 +773,7 @@ describe('a failed part, Voltage-style', () => {
     const { ctx, jobId, data } = await seedShop()
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
-    for (const to of ['design', 'approval', 'scheduled', 'building'] as const) {
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)

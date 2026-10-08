@@ -628,3 +628,14 @@ export async function setJobSeries(
 ): Promise<void> {
   return (await backend()).setJobSeries(shopId, jobId, seriesId, actorId)
 }
+
+export async function skipGateItem(
+  jobId: string,
+  actorId: string,
+  phase: JobPhase,
+  itemKey: string,
+  itemLabel: string,
+  reason: string | null,
+): Promise<void> {
+  return (await backend()).skipGateItem(jobId, actorId, phase, itemKey, itemLabel, reason)
+}
