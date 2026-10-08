@@ -142,7 +142,23 @@ export function QuoteDocument({ row }: { row: any }) {
     }
   }, [row])
 
-  if (!priced) return null
+  // Never a blank page. A draft has no frozen rates, so there is nothing to
+  // print yet -- say so, with the way back. (guma.css is suspended on this
+  // route, so this is styled inline.)
+  if (!priced) {
+    return (
+      <div style={{ padding: 32, fontFamily: 'system-ui,-apple-system,sans-serif', color: '#16222E', maxWidth: 560 }}>
+        <h2 style={{ fontSize: 18, margin: '0 0 8px' }}>This version has not been priced for sending</h2>
+        <p style={{ fontSize: 13, lineHeight: 1.5, color: '#5A6B7C' }}>
+          It is saved as a draft, so its rates were never frozen onto it and there is nothing to print
+          yet. Open the project and use “Revise the quote” → “Save revision as PDF”.
+        </p>
+        <Link to={row?.jobs?.id ? `/project/${row.jobs.id}` : '/projects'} style={{ fontSize: 13 }}>
+          ← Back to the project
+        </Link>
+      </div>
+    )
+  }
 
   const { q, rates } = priced
   // A reprinted quote formats in the currency it was PRICED in, not today's.

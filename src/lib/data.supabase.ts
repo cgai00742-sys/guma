@@ -612,7 +612,7 @@ const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_i
    asset_origin, poc, needed_by, window_from, window_locked, at_risk, over_ceiling, archived_at, related_to, series_id,
    delivery_on, delivery_how,
    clients!inner ( id, name, kind, contact, email, phone ),
-   quotes ( id, status, total, design_billing, design_qty, revisions_incl, quantity,
+   quotes ( id, version, status, total, design_billing, design_qty, revisions_incl, quantity,
             material_id, printer_id, units_per_part, print_hrs_part, finishing_hrs,
             rush, flat_each, discount_pct, rates_snapshot ),
    job_money ( deposit_due, deposit_owed, balance_owed ),
@@ -622,6 +622,14 @@ const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_i
                  design_hours, finishing_hours, admin_hours, material_units,
                  failed_units, machine_hours, failed_runs ),
    job_events ( at )`
+
+/** The newest version of a job's quote. A revision is another quotes row
+ *  for the same job, and PostgREST returns an embed in no promised order --
+ *  see data.local.ts's JOB_LIST_SQL for what taking the first one cost. */
+function latestQuote(qs: any[] | null | undefined): any | null {
+  if (!qs?.length) return null
+  return [...qs].sort((a, b) => Number(b.version ?? 0) - Number(a.version ?? 0))[0]
+}
 
 /** The job_actuals embed, folded to the shared shape. */
 function actualsFrom(r: any): ProjectActuals {
@@ -660,7 +668,7 @@ function factsFrom(
   labour: { designHourly: number; finishingHourly: number } = { designHourly: 0, finishingHourly: 0 },
 ): ProjectFacts {
   const acts = actualsFrom(r)
-  const quote = r.quotes?.[0] ?? null
+  const quote = latestQuote(r.quotes)
   // See data.local.ts's factsFrom for why poc falls back to the client's
   // named contact.
   const money = r.job_money?.[0] ?? null
@@ -717,7 +725,7 @@ function toJobListRow(
   minimumOrder = 0,
   labour: { designHourly: number; finishingHourly: number } = { designHourly: 0, finishingHourly: 0 },
 ): Omit<JobListRow, 'gateAnswers'> {
-  const quote = r.quotes?.[0] ?? null
+  const quote = latestQuote(r.quotes)
   return {
     jobId: r.id,
     ref: r.ref,
@@ -1202,7 +1210,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
     if (id) plateOf.set(id, (plateOf.get(id) ?? 0) + 1)
   }
 
-  const quote = r.quotes?.[0] ?? null
+  const quote = latestQuote(r.quotes)
   return {
     jobId: r.id,
     ref: r.ref,
@@ -1460,7 +1468,7 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
     .from('clients')
     .select(
       `id, name, kind, contact, email, phone,
-       jobs ( id, phase, quotes ( status, total ), job_money ( balance_owed ), job_events ( at ) )`,
+       jobs ( id, phase, quotes ( version, status, total ), job_money ( balance_owed ), job_events ( at ) )`,
     )
     .eq('shop_id', shopId)
     // The in-house row is a storage detail, not a client. See 0017_in_house.sql.
@@ -1473,7 +1481,7 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
     let owed = 0
     let last: string | null = null
     for (const j of jobs) {
-      const q = j.quotes?.[0]
+      const q = latestQuote(j.quotes)
       if (q && (q.status === 'sent' || q.status === 'accepted')) value += Number(q.total ?? 0)
       owed += Number(j.job_money?.[0]?.balance_owed ?? 0)
       for (const e of j.job_events ?? []) if (!last || e.at > last) last = e.at

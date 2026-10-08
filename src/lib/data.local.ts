@@ -840,7 +840,12 @@ const JOB_LIST_SQL = `
                                        where shop_id = j.shop_id
                                        ${LATEST_RATE_CARD} limit 1)
   join clients c on c.id = j.client_id
-  left join quotes q on q.job_id = j.id
+  -- The NEWEST version only. A revision is a second quotes row for the same
+  -- job; a plain join returned one row per version, so the project page took
+  -- whichever came first -- an old draft with no frozen rates -- and "Save
+  -- revision as PDF" opened a blank page for it (CG, 8 Oct).
+  left join quotes q on q.id = (select q2.id from quotes q2 where q2.job_id = j.id
+                                 order by q2.version desc limit 1)
   left join job_money m on m.job_id = j.id
   where j.shop_id = ?`
 
@@ -1851,7 +1856,8 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
              where j2.client_id = c.id) as last_activity
      from clients c
      left join jobs j on j.client_id = c.id
-     left join quotes q on q.job_id = j.id
+     left join quotes q on q.id = (select q2.id from quotes q2 where q2.job_id = j.id
+                                    order by q2.version desc limit 1)
      left join job_money m on m.job_id = j.id
      -- The in-house row is a storage detail, not a client. It never appears
      -- in the list, the counts or the money. See 0012_in_house.sql.

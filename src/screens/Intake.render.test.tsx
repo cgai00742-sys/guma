@@ -135,7 +135,8 @@ describe('what each button actually does', () => {
     expect(sent.rates_snapshot).toBeTruthy()
     expect(sent.valid_until).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     expect(takeProjectIn).toHaveBeenCalledTimes(1)
-    expect(navigate).toHaveBeenCalledWith('/project/job-7?quote=1')
+    // Straight to the version just saved, never "the project's quote".
+    expect(navigate).toHaveBeenCalledWith('/quote/q-7/print')
   })
 
   it('locks all three buttons while a save is in flight', async () => {

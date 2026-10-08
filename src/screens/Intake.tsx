@@ -247,8 +247,10 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   // Arriving from a program's page with ?within= means it is the shop's own
   // work already -- asking "who is this for" again would be a question with
   // one answer.
+  // A revision is always client work -- asking again would only be a
+  // question with one right answer standing between the person and the form.
   const [whoFor, setWhoFor] = useState<'client' | 'inhouse' | null>(() =>
-    params.get('within') ? 'inhouse' : null,
+    params.get('revise') ? 'client' : params.get('within') ? 'inhouse' : null,
   )
   const inHouse = whoFor === 'inhouse'
 
@@ -432,7 +434,10 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
       if (mode !== 'draft') {
         await takeProjectIn(ctx.shop.id, saved.jobId, ctx.profile.id)
       }
-      navigate(`/project/${saved.jobId}${mode === 'send' ? '?quote=1' : ''}`)
+      // Straight to the printable of THE VERSION JUST SAVED. Going via the
+      // project page and asking it for "the quote" opened an older version
+      // after a revision -- a draft with no frozen rates, which printed blank.
+      navigate(mode === 'send' ? `/quote/${saved.quoteId}/print` : `/project/${saved.jobId}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
