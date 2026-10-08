@@ -683,3 +683,13 @@ export async function setCopyStates(
 ): Promise<void> {
   return (await backend()).setCopyStates(shopId, partId, actorId, copies, to, note)
 }
+
+export async function skipCopy(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  copy: number,
+  note: string | null,
+): Promise<void> {
+  return (await backend()).skipCopy(shopId, partId, actorId, copy, note)
+}

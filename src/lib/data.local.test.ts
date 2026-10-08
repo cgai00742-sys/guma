@@ -1610,7 +1610,7 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(row.facts.hasActuals).toBe(false)
     expect(flagsFor(row.facts, now).map((f) => f.key)).not.toContain('over-budget')
 
-    // 20 design hours at $85 alone is $1,700 against a $1,063 quote.
+    // 20 design hours at $85 alone is $1,700 against $1,012.60 earned before tax.
     await local.logWork(shopId, saved.jobId, ctx.profile.id, {
       kind: 'design', hours: 20, workedOn: '2026-01-20', note: null,
     })
@@ -1620,7 +1620,7 @@ describe('data.local.ts against a real SQLite database', () => {
     const flag = flagsFor(row.facts, now).find((f) => f.key === 'over-budget')!
     expect(flag.tone).toBe('crit')
     expect(flag.label).toBe('Underwater')
-    expect(flag.cause).toContain('160%')
+    expect(flag.cause).toContain('168%')
   })
 
   it('the in-build gate item about material spend now clears from real runs', async () => {

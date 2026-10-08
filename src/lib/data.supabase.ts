@@ -17,7 +17,7 @@ import { copyList, countsOf, movable, moveStates, resizeStates, setStates, state
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
-import { describeHolds } from './data.types'
+import { describeHolds, quoteBases } from './data.types'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
@@ -634,6 +634,18 @@ function latestQuote(qs: any[] | null | undefined): any | null {
   return [...qs].sort((a, b) => Number(b.version ?? 0) - Number(a.version ?? 0))[0]
 }
 
+/** The version that COUNTS, for the facts, flags, history and client value:
+ *  newest accepted, else newest sent (job_money's pick), else the newest of
+ *  any status. Same as data.local.ts's COUNTED_QUOTE_SQL. The printable is
+ *  still latestQuote. */
+function countedQuote(qs: any[] | null | undefined): any | null {
+  if (!qs?.length) return null
+  const rank = (s: unknown) => (s === 'accepted' ? 2 : s === 'sent' ? 1 : 0)
+  return [...qs].sort(
+    (a, b) => rank(b.status) - rank(a.status) || Number(b.version ?? 0) - Number(a.version ?? 0),
+  )[0]
+}
+
 /** The job_actuals embed, folded to the shared shape. */
 function actualsFrom(r: any): ProjectActuals {
   const a = r.job_actuals?.[0] ?? {}
@@ -654,7 +666,10 @@ function actualsFrom(r: any): ProjectActuals {
 }
 
 /** Same arithmetic as data.local.ts's actual_cost column, in TypeScript
- *  because PostgREST cannot express it in an embed. */
+ *  because PostgREST cannot express it in an embed. power_cost is the
+ *  per-run mix (0037_actuals_per_run_power.sql): electricity for metered
+ *  runs, the machine rate for the rest, and 0 when no run is metered -- so
+ *  this one-or-the-other is correct on a mixed fleet too. */
 function actualCostOf(a: ProjectActuals, designHourly: number, finishingHourly: number): number {
   return (
     a.materialCost +
@@ -677,7 +692,7 @@ function factsFrom(
   labour: { designHourly: number; finishingHourly: number } = { designHourly: 0, finishingHourly: 0 },
 ): ProjectFacts {
   const acts = actualsFrom(r)
-  const quote = latestQuote(r.quotes)
+  const quote = countedQuote(r.quotes)
   // See data.local.ts's factsFrom for why poc falls back to the client's
   // named contact.
   const money = r.job_money?.[0] ?? null
@@ -706,6 +721,8 @@ function factsFrom(
     poc: r.poc ?? r.clients?.contact ?? null,
     quoteStatus: (quote?.status as QuoteStatus | undefined) ?? null,
     quoteTotal: quote?.total == null ? null : Number(quote.total),
+    quotePreTax: quoteBases(quote?.total ?? null, quote?.rates_snapshot, quote?.discount_pct).preTax,
+    quoteListPrice: quoteBases(quote?.total ?? null, quote?.rates_snapshot, quote?.discount_pct).listPrice,
     depositDue: Number(money?.deposit_due ?? 0),
     depositOwed: Number(money?.deposit_owed ?? 0),
     balanceOwed: Number(money?.balance_owed ?? 0),
@@ -1515,7 +1532,7 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
     let owed = 0
     let last: string | null = null
     for (const j of jobs) {
-      const q = latestQuote(j.quotes)
+      const q = countedQuote(j.quotes)
       if (q && (q.status === 'sent' || q.status === 'accepted')) value += Number(q.total ?? 0)
       owed += Number(j.job_money?.[0]?.balance_owed ?? 0)
       for (const e of j.job_events ?? []) if (!last || e.at > last) last = e.at
@@ -2121,20 +2138,33 @@ export async function markPlatePrinted(
 ): Promise<number> {
   const { data, error } = await supabase
     .from('slice_sections')
-    .select('part_id, qty, slice_imports!inner ( job_id ), job_parts!inner ( qty, printed_n, passed_n, reprint_n, copy_states, shop_id )')
+    // job_parts and slice_sections are linked twice (slice_sections.part_id
+    // and job_parts.chosen_section_id), so the embed must name its link or
+    // PostgREST refuses it as ambiguous (PGRST201).
+    .select(
+      'part_id, qty, slice_imports!inner ( job_id ), job_parts!part_id!inner ( qty, printed_n, passed_n, reprint_n, copy_states, shop_id )',
+    )
     .eq('import_id', sliceImportId)
     .eq('slice_imports.job_id', jobId)
     .eq('job_parts.shop_id', shopId)
   if (error) throw error
-  let moved = 0
+  // One entry per PART: see data.local.ts's markPlatePrinted for why two
+  // sections of one plate are summed rather than moved one by one.
+  const byPart = new Map<string, { perPlate: number; p: any }>()
   for (const r of (data ?? []) as any[]) {
-    const p = r.job_parts
+    const prev = byPart.get(r.part_id)
+    const add = Math.max(1, Number(r.qty ?? 1))
+    if (prev) prev.perPlate += add
+    else byPart.set(r.part_id, { perPlate: add, p: r.job_parts })
+  }
+  let moved = 0
+  for (const [partId, { perPlate, p }] of byPart) {
     const c = countsOf(
       statesOf({ qty: Number(p.qty), printedN: Number(p.printed_n), passedN: Number(p.passed_n), reprintN: Number(p.reprint_n), copyStates: p.copy_states }),
     )
-    const n = Math.min(Math.max(1, Number(r.qty)), movable(c, 'printed'))
+    const n = Math.min(perPlate, movable(c, 'printed'))
     if (n <= 0) continue
-    await movePartCopies(shopId, r.part_id, actorId, 'printed', n, null)
+    await movePartCopies(shopId, partId, actorId, 'printed', n, null)
     moved++
   }
   return moved
@@ -3082,4 +3112,40 @@ export async function setStockHolds(
   )
   const { error: evErr } = await supabase.from('job_events').insert({ job_id: jobId, actor_id: actorId, kind: 'edit', body })
   if (evErr) throw evErr
+}
+
+/** See data.local.ts's skipCopy. */
+export async function skipCopy(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  copy: number,
+  note: string | null,
+): Promise<void> {
+  const before = await readCopies(shopId, partId)
+  if (before.states.length <= 1) throw new Error('This is the only copy — remove the part instead of skipping it.')
+  if (!Number.isInteger(copy) || copy < 0 || copy >= before.states.length) throw new Error(`There is no copy ${copy + 1}.`)
+  const states = before.states.filter((_, i) => i !== copy)
+  const c = countsOf(states)
+  const { error } = await supabase
+    .from('job_parts')
+    .update({
+      qty: states.length,
+      copy_states: JSON.stringify(states),
+      printed_n: c.printed,
+      passed_n: c.passed,
+      reprint_n: c.reprint,
+      status: statusOf(c),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', partId)
+    .eq('shop_id', shopId)
+  if (error) throw error
+  const body = `Copy ${copy + 1} skipped — not printed again; ${states.length} cop${states.length === 1 ? 'y' : 'ies'} now.${note?.trim() ? ` Why: ${note.trim()}` : ''}`
+  const { error: pErr } = await supabase
+    .from('part_events')
+    .insert({ part_id: partId, job_id: before.jobId, kind: 'note', copies: String(copy + 1), note: body, actor_id: actorId })
+  if (pErr) throw pErr
+  const { error: jErr } = await supabase.from('job_events').insert({ job_id: before.jobId, actor_id: actorId, kind: 'edit', body })
+  if (jErr) throw jErr
 }

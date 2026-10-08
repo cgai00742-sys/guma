@@ -190,6 +190,9 @@ export interface PricedQuote {
    *  1000 × the shop's $/kWh. Zero when that data is not both set; see
    *  `costsIncomplete` to tell "genuinely free" from "not measured yet". */
   electricityCost: number
+  /** What machine time costs the shop: power where it can be measured,
+   *  the machine rate for any line where it cannot. */
+  machineCost: number
   /**
    * True when this job burned machine time but the shop hasn't supplied both
    * the printer's wattage and its own electricity rate. Margin still
@@ -554,12 +557,20 @@ export function priceQuote(
   // old, conservative assumption (machine time costs exactly what it's
   // charged) and `costsIncomplete` says so rather than presenting a guess as
   // fact.
+  //
+  // Per build line, on that line's own machine (review fix, 8 Oct): the
+  // single `printer` argument is Intake's hidden dropdown when lines exist,
+  // and costing a 1000 W machine's hours at a 50 W machine's draw understated
+  // power twentyfold. A line whose machine has no wattage falls back to its
+  // machine rate on its own; the rest stay measured.
   const needsElectricityData = !byPiece && machineHours > 0
-  const hasElectricityData =
-    needsElectricityData && printer?.watts != null && rates.electricityRateKwh != null
-  const electricityCost = hasElectricityData
-    ? machineHours * ((printer!.watts as number) / 1000) * (rates.electricityRateKwh as number)
-    : 0
+  const metered = (b: (typeof resolved)[number]) =>
+    b.hours > 0 && b.printer?.watts != null && b.printer.watts > 0 && rates.electricityRateKwh != null
+  const electricityCost = byPiece
+    ? 0
+    : sum((b) => (metered(b) ? b.hours * ((b.printer!.watts as number) / 1000) * (rates.electricityRateKwh as number) : 0))
+  const unmeteredMachine = byPiece ? 0 : sum((b) => (b.hours > 0 && !metered(b) ? b.machine : 0))
+  const hasElectricityData = needsElectricityData && resolved.every((b) => b.hours <= 0 || metered(b))
   const costsIncomplete = needsElectricityData && !hasElectricityData
 
   // Overhead per productive machine-hour: a month of fixed bills divided by
@@ -580,7 +591,7 @@ export function priceQuote(
   // counting design hours twice would overstate the loss on exactly the
   // jobs where design dominates.
   const machineSideCost =
-    materialCost + (hasElectricityData ? electricityCost : machineAmt) + wearAmt + overheadCost
+    materialCost + (needsElectricityData ? electricityCost + unmeteredMachine : machineAmt) + wearAmt + overheadCost
   const failureCost =
     rates.failurePct != null && rates.failurePct > 0
       ? (machineSideCost * rates.failurePct) / 100
@@ -640,6 +651,7 @@ export function priceQuote(
     machineHours,
     wearAmt,
     electricityCost,
+    machineCost: needsElectricityData ? electricityCost + unmeteredMachine : machineAmt,
     costsIncomplete,
     overheadCost,
     failureCost,

@@ -13,7 +13,9 @@
 import type { QuoteBuild } from './pricing'
 import type { SliceFile } from './sliceImport'
 
-const r2 = (n: number) => Math.round(n * 100) / 100
+// Four decimals, not two: 48 copies in 5 h is 0.104 h each, and rounding
+// to 0.10 lost 4% of the machine time the file said (review fix, 8 Oct).
+const r2 = (n: number) => Math.round(n * 10000) / 10000
 
 export function buildsFromFile(
   file: SliceFile,

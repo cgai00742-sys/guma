@@ -37,6 +37,7 @@ import {
   CHANGE_CAUSE_LABEL,
   sameSliceFile,
   describeHolds,
+  quoteBases,
   type StockHoldRow,
   type StockHoldInput,
 } from './data.types'
@@ -791,6 +792,13 @@ export async function listJobs(shopId: string): Promise<JobListRow[]> {
   }))
 }
 
+/** The id of the quote version that counts for a job: newest accepted,
+ *  else newest sent (job_money's pick), else the newest of any status. */
+const COUNTED_QUOTE_SQL = (jobCol: string) =>
+  `select cq2.id from quotes cq2 where cq2.job_id = ${jobCol}
+    order by (cq2.status = 'accepted') desc, (cq2.status = 'sent') desc, cq2.version desc
+    limit 1`
+
 /** Shared by listJobs and loadProjectDetail so the two can never disagree
  *  about what a project's facts are. */
 const JOB_LIST_SQL = `
@@ -803,6 +811,8 @@ const JOB_LIST_SQL = `
          c.id as client_id, c.name as client_name, c.kind as client_kind,
          c.contact as client_contact, c.email as client_email, c.phone as client_phone,
          q.id as quote_id, q.status as quote_status, q.total,
+         cq.status as counted_status, cq.total as counted_total,
+         cq.rates_snapshot as counted_snapshot, cq.discount_pct as counted_discount,
          coalesce(m.deposit_due, 0)  as deposit_due,
          coalesce(m.deposit_owed, 0) as deposit_owed,
          coalesce(m.balance_owed, 0) as balance_owed,
@@ -816,7 +826,9 @@ const JOB_LIST_SQL = `
                    ${LATEST_RATE_CARD} limit 1), 0) as minimum_order,
          -- What has actually been spent, on the same terms actuals.ts uses:
          -- power when wattage and $/kWh are both on file, the machine rate
-         -- as the conservative fallback when they are not.
+         -- as the conservative fallback when they are not. Decided per run
+         -- (0033_actuals_per_run_power.sql): on a mixed fleet power_cost
+         -- already carries the machine rate for the unmetered runs.
          coalesce(a.material_cost, 0)
            + coalesce(case when a.power_cost > 0 then a.power_cost else a.machine_cost end, 0)
            + coalesce(a.wear_cost, 0)
@@ -854,6 +866,12 @@ const JOB_LIST_SQL = `
   -- revision as PDF" opened a blank page for it (CG, 8 Oct).
   left join quotes q on q.id = (select q2.id from quotes q2 where q2.job_id = j.id
                                  order by q2.version desc limit 1)
+  -- The version that COUNTS, for the facts (flags, history, client value):
+  -- the same pick job_money makes -- newest accepted, else newest sent --
+  -- falling back to the newest of any status. An unsent draft revision of
+  -- an accepted quote must not make an agreed project read as "not agreed"
+  -- while job_money still bills the accepted price.
+  left join quotes cq on cq.id = (${COUNTED_QUOTE_SQL('j.id')})
   left join job_money m on m.job_id = j.id
   where j.shop_id = ?`
 
@@ -890,6 +908,11 @@ interface JobListSqlRow {
   quote_id: string | null
   quote_status: QuoteStatus | null
   total: number | null
+  /** The version that counts (see COUNTED_QUOTE_SQL), for the facts. */
+  counted_status: QuoteStatus | null
+  counted_total: number | null
+  counted_snapshot: string | null
+  counted_discount: number | null
   deposit_due: number
   deposit_owed: number
   balance_owed: number
@@ -935,8 +958,10 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     // someone sets one the client's named contact IS the person to chase —
     // asking for it twice would be busywork dressed as diligence.
     poc: r.poc ?? r.client_contact,
-    quoteStatus: r.quote_status,
-    quoteTotal: r.total == null ? null : Number(r.total),
+    quoteStatus: r.counted_status,
+    quoteTotal: r.counted_total == null ? null : Number(r.counted_total),
+    quotePreTax: quoteBases(r.counted_total, r.counted_snapshot, r.counted_discount).preTax,
+    quoteListPrice: quoteBases(r.counted_total, r.counted_snapshot, r.counted_discount).listPrice,
     depositDue: Number(r.deposit_due ?? 0),
     depositOwed: Number(r.deposit_owed ?? 0),
     balanceOwed: Number(r.balance_owed ?? 0),
@@ -1895,8 +1920,9 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
              where j2.client_id = c.id) as last_activity
      from clients c
      left join jobs j on j.client_id = c.id
-     left join quotes q on q.id = (select q2.id from quotes q2 where q2.job_id = j.id
-                                    order by q2.version desc limit 1)
+     -- The version that counts, as job_money and the project facts pick it:
+     -- a draft revision does not wipe out the price the client accepted.
+     left join quotes q on q.id = (${COUNTED_QUOTE_SQL('j.id')})
      left join job_money m on m.job_id = j.id
      -- The in-house row is a storage detail, not a client. It never appears
      -- in the list, the counts or the money. See 0012_in_house.sql.
@@ -2722,11 +2748,17 @@ export async function markPlatePrinted(
   const rows = await d.select<
     { part_id: string; per_plate: number; qty: number; printed_n: number; passed_n: number; reprint_n: number; copy_states: string | null }[]
   >(
-    `select s.part_id, s.qty as per_plate, p.qty, p.printed_n, p.passed_n, p.reprint_n, p.copy_states
+    // One row per PART, not per section: two sections of one plate can
+    // point at the same part (importSlice matches labels ignoring case), and
+    // moving them one by one from a single read moved the first and then
+    // threw on the second, half-applied.
+    `select s.part_id, sum(max(1, coalesce(s.qty, 1))) as per_plate,
+            p.qty, p.printed_n, p.passed_n, p.reprint_n, p.copy_states
        from slice_sections s
        join slice_imports i on i.id = s.import_id
        join job_parts p on p.id = s.part_id
-      where s.import_id = ? and i.job_id = ? and p.shop_id = ?`,
+      where s.import_id = ? and i.job_id = ? and p.shop_id = ?
+      group by s.part_id, p.qty, p.printed_n, p.passed_n, p.reprint_n, p.copy_states`,
     [sliceImportId, jobId, shopId],
   )
   let moved = 0
@@ -3812,4 +3844,37 @@ function parseCopies(v: string | null | undefined): number[] | null {
   if (!v) return null
   const out = v.split(',').map((x) => Number(x.trim())).filter((x) => Number.isInteger(x) && x > 0)
   return out.length ? out : null
+}
+
+/**
+ * Skip a failed copy: it will not be printed again, and the part needs one
+ * fewer (CG, 8 Oct: "failed prints can have an immediate way to ...
+ * skip"). The copy leaves the part; what it cost stays in the runs. A part
+ * of one copy cannot skip its last -- remove the part instead.
+ */
+export async function skipCopy(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  copy: number,
+  note: string | null,
+): Promise<void> {
+  const d = await db()
+  const before = await readCopies(shopId, partId)
+  if (before.states.length <= 1) throw new Error('This is the only copy — remove the part instead of skipping it.')
+  if (!Number.isInteger(copy) || copy < 0 || copy >= before.states.length) throw new Error(`There is no copy ${copy + 1}.`)
+  const states = before.states.filter((_, i) => i !== copy)
+  const c = countsOf(states)
+  await d.execute(
+    `update job_parts set qty = ?, copy_states = ?, printed_n = ?, passed_n = ?, reprint_n = ?, status = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      where id = ? and shop_id = ?`,
+    [states.length, JSON.stringify(states), c.printed, c.passed, c.reprint, statusOf(c), partId, shopId],
+  )
+  const body = `Copy ${copy + 1} skipped — not printed again; ${states.length} cop${states.length === 1 ? 'y' : 'ies'} now.${note?.trim() ? ` Why: ${note.trim()}` : ''}`
+  await d.execute(
+    `insert into part_events (part_id, job_id, kind, copies, note, actor_id) values (?, ?, 'note', ?, ?, ?)`,
+    [partId, before.jobId, String(copy + 1), body, actorId],
+  )
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [before.jobId, actorId, body])
 }

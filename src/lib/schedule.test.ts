@@ -23,6 +23,7 @@ function variant(estMinutes: number | null): PartVariant {
 }
 
 function part(status: PartRow['status'], minutes: number | null): PartRow {
+  // One copy, its counts in step with its status, as the data layer keeps them.
   return {
     id: Math.random().toString(),
     label: 'Part',
@@ -32,7 +33,27 @@ function part(status: PartRow['status'], minutes: number | null): PartRow {
     sort: 0,
     history: [],
     variants: minutes == null ? [] : [variant(minutes)],
-    chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0, copyStates: [],
+    chosenSectionId: null,
+    printedN: status === 'printed' ? 1 : 0,
+    passedN: status === 'passed' ? 1 : 0,
+    reprintN: status === 'reprint' ? 1 : 0,
+    copyStates: [status],
+  }
+}
+
+/** A part of `qty` copies with the given per-copy states, sliced on a plate
+ *  that carries `sectionQty` copies in `plateMinutes`. */
+function copiesPart(states: PartRow['status'][], plateMinutes: number, sectionQty: number): PartRow {
+  const n = (s: PartRow['status']) => states.filter((x) => x === s).length
+  return {
+    ...part('pending', plateMinutes),
+    qty: states.length,
+    status: n('reprint') ? 'reprint' : n('pending') === states.length ? 'pending' : 'printed',
+    printedN: n('printed'),
+    passedN: n('passed'),
+    reprintN: n('reprint'),
+    copyStates: states,
+    variants: [{ ...variant(plateMinutes), sectionQty }],
   }
 }
 
@@ -112,6 +133,43 @@ describe('when printing has to start', () => {
       today: TODAY,
     })
     expect(got.printHours).toBe(6)
+  })
+
+  it('counts copies still to print, not parts — one test copy of five leaves four', () => {
+    // A plate of 1 copy takes 3 h; 5 needed, 1 printed, 1 failed and going
+    // back: 3 not printed + 1 reprint = 4 copies x 3 h.
+    const got = startBy({
+      neededBy: '2026-10-20',
+      deliveryHow: 'Collected in person',
+      parts: [copiesPart(['printed', 'reprint', 'pending', 'pending', 'pending'], 3 * 60, 1)],
+      quote: null,
+      today: TODAY,
+    })
+    expect(got.printHours).toBe(12)
+  })
+
+  it('divides a plate estimate by the copies on that plate', () => {
+    // The plate carries 2 copies in 4 h, so 2 h a copy; 6 copies, none
+    // printed, is 12 h -- not 4 h (one plate) and not 24 h (6 plates).
+    const got = startBy({
+      neededBy: '2026-10-20',
+      deliveryHow: 'Collected in person',
+      parts: [copiesPart(Array(6).fill('pending'), 4 * 60, 2)],
+      quote: null,
+      today: TODAY,
+    })
+    expect(got.printHours).toBe(12)
+  })
+
+  it('reports done when every copy is off the machine, whatever the copy count', () => {
+    const got = startBy({
+      neededBy: '2026-10-20',
+      deliveryHow: 'Courier',
+      parts: [copiesPart(['printed', 'passed', 'passed'], 600, 1)],
+      quote: QUOTE,
+      today: TODAY,
+    })
+    expect(got.status).toBe('done')
   })
 
   it('reports done when everything is off the machines', () => {

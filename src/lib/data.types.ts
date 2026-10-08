@@ -507,6 +507,13 @@ export interface ProjectFacts {
   poc: string | null
   quoteStatus: QuoteStatus | null
   quoteTotal: number | null
+  /** The same quote before tax -- what the shop earns. Null with no quote.
+   *  Tax is collected for someone else, so cost is never measured against
+   *  it (review fix, 8 Oct). */
+  quotePreTax: number | null
+  /** Before tax AND discount: subtotal plus rush, the figure the shop
+   *  minimum is applied to. */
+  quoteListPrice: number | null
   /** All four already derived by the job_money view from append-only payments. */
   depositDue: number
   depositOwed: number
@@ -1378,4 +1385,31 @@ export function describeHolds(
 ): string {
   if (holds.length === 0) return 'Released the material set aside for this project.'
   return `Set aside ${holds.map((h) => `${Math.round(h.units).toLocaleString()}${h.unit} ${h.name}`).join(', ')}.`
+}
+
+/**
+ * A stored quote total, taken back to before tax and before discount. The
+ * tax rate comes from the quote's own frozen rates; a draft (no snapshot)
+ * falls back to treating the total as pre-tax, which errs toward flagging.
+ */
+export function quoteBases(
+  total: number | null,
+  snapshot: unknown,
+  discountPct: number | null | undefined,
+): { preTax: number | null; listPrice: number | null } {
+  if (total == null) return { preTax: null, listPrice: null }
+  let snap: unknown = snapshot
+  if (typeof snap === 'string') {
+    try {
+      snap = JSON.parse(snap)
+    } catch {
+      snap = null
+    }
+  }
+  const tax = Number((snap as { rates?: { taxPct?: number } } | null)?.rates?.taxPct ?? 0) || 0
+  const preTax = Number(total) / (1 + tax / 100)
+  const d = Number(discountPct ?? 0) || 0
+  const listPrice = d > 0 && d < 100 ? preTax / (1 - d / 100) : preTax
+  const r = (n: number) => Math.round(n * 100) / 100
+  return { preTax: r(preTax), listPrice: r(listPrice) }
 }

@@ -35,6 +35,7 @@ import {
   type AssetOrigin,
   type DesignBilling,
   type PricedQuote,
+  type PrinterRef,
   type QuoteInputs,
 } from '../lib/pricing'
 import {
@@ -54,6 +55,7 @@ import {
   CEILING_PCT,
   type ChangeCause,
   type ClientRow,
+  type PrinterRow,
   type ShopContext,
 } from '../lib/data'
 import { addDaysISO } from '../lib/dates'
@@ -68,6 +70,23 @@ const ASSET_NOTES: Record<AssetOrigin, string> = {
   fix: "Client sent a file that won't print as-is: wall thickness, non-manifold geometry, orientation, or a scale that has to be resolved before slicing.",
   ready: 'A print-ready file you only have to slice. No design line on the quote.',
 }
+
+/** Money as it is stored: to the cent, the same rounding the screen's
+ *  money() display uses (pricing.ts's round2, which is not exported). A
+ *  quote stored with toFixed(2) could read a cent lower than the figure the
+ *  shop saw -- 105.315 shows as 105.32 and toFixed stored 105.31. */
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+
+/** A machine row as the pricing code reads it -- the same conversion
+ *  loadShopContext makes for the live machines in ctx.printers. */
+const toPrinterRef = (p: PrinterRow): PrinterRef => ({
+  id: p.id,
+  name: p.name,
+  model: p.model,
+  ratePerHour: Number(p.rate_hourly),
+  wearPerHour: Number(p.wear_hourly),
+  watts: p.watts == null ? null : Number(p.watts),
+})
 
 const SOURCES = ['Word of mouth', 'Repeat client', 'Referral', 'Walk-in', 'Website enquiry']
 
@@ -174,6 +193,25 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   const [printerId, setPrinterId] = useState(ctx.printers[0]?.id ?? '')
   /** Sliced files read into the quote, saved onto the project with it. */
   const [files, setFiles] = useState<QuoteFile[]>([])
+  /** Machines named by the quote being revised. A retired one among them
+   *  is still offered and priced; a new quote never sees retired machines. */
+  const [keptPrinterIds, setKeptPrinterIds] = useState<string[]>([])
+  const retiredKept = useMemo(
+    () =>
+      ctx.printerRows
+        .filter((p) => Number(p.archived) && keptPrinterIds.includes(p.id))
+        .map(toPrinterRef),
+    [ctx.printerRows, keptPrinterIds],
+  )
+  const pricingPrinters = useMemo(() => [...ctx.printers, ...retiredKept], [ctx.printers, retiredKept])
+  /** The build-line pickers list a kept retired machine by name, marked. */
+  const filesCtx = useMemo(
+    () =>
+      retiredKept.length
+        ? { ...ctx, printers: [...ctx.printers, ...retiredKept.map((p) => ({ ...p, name: `${p.name} (retired)` }))] }
+        : ctx,
+    [ctx, retiredKept],
+  )
 
   // Load the project being revised: its client, its details and the exact
   // inputs of its newest quote, so a revision starts from what was priced
@@ -192,7 +230,13 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
         setTitle(d.title)
         setBrief(d.brief ?? '')
         setNeededBy(d.facts.neededBy ?? '')
-        setAcceptedTotal(d.quote?.status === 'accepted' ? d.quote.total : null)
+        // The ceiling is measured from the newest ACCEPTED version -- the
+        // rule reviseQuote enforces on save. d.quote is the newest version
+        // of any status, so once a draft or sent revision existed the
+        // ceiling box (and the only field for "what the client changed")
+        // disappeared while the save still demanded it. The facts carry the
+        // counted quote: newest accepted first, in both backends.
+        setAcceptedTotal(d.facts.quoteStatus === 'accepted' ? d.facts.quoteTotal : null)
         const q = d.quoteInputs
         if (q) {
           // The build sheet is what is actually being made. If its copies
@@ -240,6 +284,12 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           })
           if (q.materialId) setMaterialId(q.materialId)
           if (q.printerId) setPrinterId(q.printerId)
+          // Machines this quote was priced on stay priceable here even if
+          // they have been retired since -- otherwise the revision silently
+          // prices their machine time and wear at zero.
+          setKeptPrinterIds(
+            [q.printerId, ...lines.map((b) => b.printerId)].filter((x): x is string => !!x),
+          )
         }
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
@@ -285,7 +335,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   const [error, setError] = useState<string | null>(null)
 
   const material = ctx.materials.find((m) => m.id === materialId) ?? null
-  const printer = ctx.printers.find((p) => p.id === printerId) ?? null
+  const printer = pricingPrinters.find((p) => p.id === printerId) ?? null
 
   const set = <K extends keyof QuoteInputs>(k: K) => (v: QuoteInputs[K]) =>
     setInput((s) => ({ ...s, [k]: v }))
@@ -295,15 +345,19 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   }
 
   const fleet = useMemo(
-    () => ({ materials: ctx.materials, printers: ctx.printers }),
-    [ctx.materials, ctx.printers],
-  )
-  const q = useMemo(
-    () => priceQuote(input, rates, material, printer, fleet),
-    [input, rates, material, printer, fleet],
+    () => ({ materials: ctx.materials, printers: pricingPrinters }),
+    [ctx.materials, pricingPrinters],
   )
   const builds = input.builds ?? []
   const totalCopies = builds.length ? builds.reduce((a, b) => a + b.qty, 0) : input.quantity || 1
+  // With build lines the copies ARE the quantity, and that is what persist()
+  // stores. Pricing on input.quantity instead put a flat per-piece price (or
+  // anything per part) on one piece on screen and on every copy in the PDF.
+  const q = useMemo(
+    () =>
+      priceQuote(builds.length ? { ...input, quantity: totalCopies } : input, rates, material, printer, fleet),
+    [input, builds.length, totalCopies, rates, material, printer, fleet],
+  )
 
   const unitWord = material?.unit === 'ml' ? 'Millilitres' : 'Grams'
   // In-house work needs a title and nothing else. There is no client to
@@ -397,12 +451,12 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                   builds.length
                     ? {
                         materials: ctx.materials.filter((m) => builds.some((b) => b.materialId === m.id)),
-                        printers: ctx.printers.filter((p) => builds.some((b) => b.printerId === p.id)),
+                        printers: pricingPrinters.filter((p) => builds.some((b) => b.printerId === p.id)),
                       }
                     : undefined,
                 ),
-                total: Number(q.total.toFixed(2)),
-                deposit_due: q.deposit,
+                total: round2(q.total),
+                deposit_due: round2(q.deposit),
                 // Local calendar date: a quote that expires a day early because
                 // the shop is west of Greenwich is a quote the client argues about.
                 valid_until: addDaysISO(ctx.shop.quote_valid_days),
@@ -885,7 +939,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
               </span>
             </h3>
             <QuoteFiles
-              ctx={ctx}
+              ctx={filesCtx}
               lines={input.builds ?? []}
               fallbackPrinterId={printerId}
               fallbackMaterialId={materialId}
@@ -931,6 +985,11 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 {ctx.printers.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} — {p.model}
+                  </option>
+                ))}
+                {retiredKept.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} — {p.model} (retired)
                   </option>
                 ))}
               </select>

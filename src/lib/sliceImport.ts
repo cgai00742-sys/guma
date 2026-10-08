@@ -538,9 +538,12 @@ function parseGcode(src: string, fileName: string): SliceFile {
   for (const [, n] of src.matchAll(/EXCLUDE_OBJECT_DEFINE\s+NAME=([^\s\\]+)/g)) names.push(n)
   if (!names.length) {
     const seen = new Map<string, Set<string>>()
-    for (const [, n, copy] of src.matchAll(/;\s*printing object\s+(.+?)\s+id:\d+\s+copy\s+(\d+)/g)) {
+    // One object per id:copy pair, not per copy number: two pasted
+    // objects both named "Hull" are id:0 copy 0 and id:1 copy 0, and
+    // counting copy numbers per name read them as one hull.
+    for (const [, n, id, copy] of src.matchAll(/;\s*printing object\s+(.+?)\s+id:(\d+)\s+copy\s+(\d+)/g)) {
       if (!seen.has(n)) seen.set(n, new Set())
-      seen.get(n)!.add(copy)
+      seen.get(n)!.add(`${id}:${copy}`)
     }
     for (const [n, copies] of seen) for (let i = 0; i < copies.size; i++) names.push(n)
   }

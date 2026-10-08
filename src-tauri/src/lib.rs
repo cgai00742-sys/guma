@@ -200,6 +200,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0032_copy_states.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 33,
+      description: "power cost per run on a mixed fleet",
+      sql: include_str!("../migrations/0033_actuals_per_run_power.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

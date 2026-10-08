@@ -464,9 +464,9 @@ export function gateStatus(
         `${auto.length} that clear${auto.length > 1 ? '' : 's'} on their own once the work is done`,
       )
     }
-    reason = `${parts.join(', and ')}. Nothing advances to ${PHASE_LABEL[next]} until they are done or skipped with a reason.`
+    reason = `${parts.join(', and ')}. Nothing advances to ${phaseLabel(next, kind)} until they are done or skipped with a reason.`
   } else {
-    reason = `All ${total} cleared. Ready for ${PHASE_LABEL[next]}.`
+    reason = `All ${total} cleared. Ready for ${phaseLabel(next, kind)}.`
   }
 
   return { items, done, total, blocked, reason, next }
@@ -668,14 +668,17 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
   // actually been spent against what the client agreed to pay. The 80%
   // warning exists because a shop can still act at 80%; at 100% the only
   // thing left is to learn from it.
-  if (f.hasActuals && f.quoteTotal !== null && f.quoteTotal > 0) {
-    const share = f.actualCost / f.quoteTotal
+  // Against what the shop EARNS: tax is collected for someone else, and
+  // counting it as revenue let a job $10 underwater read as 92% spent.
+  const earns = f.quotePreTax ?? f.quoteTotal
+  if (f.hasActuals && earns !== null && earns > 0) {
+    const share = f.actualCost / earns
     if (share >= 1) {
       out.push({
         key: 'over-budget',
         tone: 'crit',
         label: 'Underwater',
-        cause: `Has cost ${money(f.actualCost)} against a quote of ${money(f.quoteTotal)} — ${Math.round(share * 100)}% of what it earns.`,
+        cause: `Has cost ${money(f.actualCost)} against ${money(earns)} it earns before tax — ${Math.round(share * 100)}%.`,
         action: delivered
           ? 'Too late to fix this one. Open it and see which line ran over, so the next quote of this shape is right.'
           : 'Stop and look at what is left to do. Finishing it as planned means finishing it at a loss; a scope conversation now is cheaper than the write-off.',
@@ -695,7 +698,9 @@ export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
   if (
     f.quoteTotal !== null &&
     f.minimumOrder > 0 &&
-    f.quoteTotal < f.minimumOrder &&
+    // The minimum applies before discount and tax, so a job priced AT the
+    // minimum and then discounted is not under it.
+    (f.quoteListPrice ?? f.quoteTotal) < f.minimumOrder - 0.005 &&
     f.quoteStatus !== 'declined'
   ) {
     out.push({

@@ -20,7 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -559,7 +559,8 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     expect(list.textContent).toMatch(/Copy 5/)
 
     // Copy 3 failed -- asks why, then only copy 3 goes back.
-    await user.selectOptions(screen.getByLabelText(/^copy 3 of hull$/i), 'reprint')
+    const copy = (n: number) => within(screen.getByRole('group', { name: new RegExp(`^copy ${n} of hull$`, 'i') }))
+    await user.click(copy(3).getByRole('button', { name: 'Failed' }))
     await user.type(screen.getByLabelText(/why did copy 3 fail/i), 'Stringing on the hull')
     await user.click(screen.getByRole('button', { name: /^mark it failed$/i }))
     await waitFor(() => expect(states()).toEqual(['printed', 'printed', 'reprint', 'printed', 'printed']))
@@ -567,7 +568,7 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     expect(screen.getByTestId(`each-copy-${partId}`).textContent).toMatch(/↩ Stringing on the hull/)
 
     // Copy 2 was marked printed by mistake: back to neutral, no reason asked.
-    await user.selectOptions(screen.getByLabelText(/^copy 2 of hull$/i), 'pending')
+    await user.click(copy(2).getByRole('button', { name: 'Not printed' }))
     await waitFor(() => expect(states()).toEqual(['printed', 'pending', 'reprint', 'printed', 'printed']))
     expect(line()).toBe('3 of 5 printed · 1 going back')
 
@@ -575,6 +576,34 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     await user.click(screen.getByRole('button', { name: /set every copy back to not printed/i }))
     await waitFor(() => expect(line()).toBe('0 of 5 printed'))
     expect(currentDb.sqlite.prepare("select status from job_parts where label = 'Hull'").get()).toEqual({ status: 'pending' })
+  })
+
+  it('a failed copy can be skipped, or given a new file and queued again (CG, 8 Oct)', async () => {
+    const { ctx, jobId, d, partId } = await inBuild()
+    await d.movePartCopies(ctx.shop.id, partId, ctx.profile.id, 'printed', 5, null)
+    await d.setCopyStates(ctx.shop.id, partId, ctx.profile.id, [1, 3], 'reprint', 'Warped corner')
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    const states = () =>
+      JSON.parse((currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Hull'").get() as { copy_states: string }).copy_states)
+    await user.click(screen.getByRole('button', { name: /each copy of hull/i }))
+
+    // Copy 2: a fixed file goes on the part and the copy goes back in the queue.
+    const gcode = new File(
+      ['; printing object Hull id:0 copy 0\n; total filament used [g] = 18\n; estimated printing time (normal mode) = 0h 55m 0s\n'],
+      'hull-fixed.gcode',
+      { type: 'text/plain' },
+    )
+    await user.upload(screen.getByLabelText(/new file for copy 2 of hull/i), gcode)
+    await waitFor(() => expect(states()).toEqual(['printed', 'pending', 'printed', 'reprint', 'printed']))
+    expect(currentDb.sqlite.prepare("select count(*) as n from slice_imports where file_name = 'hull-fixed.gcode'").get()).toEqual({ n: 1 })
+
+    // Copy 4: skipped -- the part needs four now, and it is on the record.
+    await user.click(screen.getAllByRole('button', { name: /^skip$/i })[0])
+    await user.click(screen.getByRole('button', { name: /^skip copy 4$/i }))
+    await waitFor(() => expect(states()).toEqual(['printed', 'pending', 'printed', 'printed']))
+    expect(currentDb.sqlite.prepare("select qty from job_parts where label = 'Hull'").get()).toEqual({ qty: 4 })
+    await screen.findAllByText(/Copy 4 skipped — not printed again; 4 copies now\./)
   })
 
   it('a part cannot be cut below the copies already made', async () => {

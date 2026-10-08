@@ -61,6 +61,7 @@ import {
   choosePartVariant,
   movePartCopies,
   setCopyStates,
+  skipCopy,
   markPlatePrinted,
   deletePrintRun,
   deleteWorkEntry,
@@ -1153,6 +1154,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                 .trim()}
               style={{ cursor: 'pointer' }}
               aria-current={p === detail.phase ? 'step' : undefined}
+              onClick={() => setViewPhase(p === detail.phase ? null : p)}
               title={
                 left
                   ? `${label(p)} — advanced past with items still open. Click to see which.`
@@ -1659,7 +1661,13 @@ function PaymentLog({
           type="button"
           className="btn sm"
           style={{ marginTop: 10 }}
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            // Fill from what is owed NOW, not when the page first drew:
+            // after the deposit lands the form must not offer it again.
+            setKind(suggestion?.kind ?? 'balance')
+            setAmount(suggestion ? suggestion.amount.toFixed(2) : '')
+            setOpen(true)
+          }}
         >
           Record a payment
         </button>
@@ -2075,7 +2083,10 @@ function SliceImport({
           control: clickable, focusable, and announced as a file input. A
           div with an onClick would be none of those. */}
       <label
-        className={`drop ${dragging ? 'over' : ''}`}
+        // Once the sheet has parts, importing is the exception (a fixed or
+        // added plate), so the box shrinks to one line and stops pushing the
+        // parts down the page.
+        className={`drop ${dragging ? 'over' : ''} ${detail.parts.length > 0 ? 'compact' : ''}`.trim()}
         htmlFor="slice-file"
         onDragOver={(e) => {
           e.preventDefault()
@@ -2088,11 +2099,13 @@ function SliceImport({
           void pick(e.dataTransfer.files?.[0])
         }}
       >
-        <span className="dropicon" style={{ fontSize: 22, display: 'block', marginBottom: 6 }}>
-          ⤓
-        </span>
+        <span className="dropicon">⤓</span>
         <span className="drop-title">
-          {dragging ? 'Drop it' : 'Drop a sliced file here, or click to choose one'}
+          {dragging
+            ? 'Drop it'
+            : detail.parts.length > 0
+              ? 'Add a plate — drop a sliced file, or click'
+              : 'Drop a sliced file here, or click to choose one'}
         </span>
         <span className="drop-sub">
           .gcode.3mf from Bambu Studio or Orca · .gcode or .bgcode from PrusaSlicer
@@ -2116,11 +2129,13 @@ function SliceImport({
           style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }}
         />
       </label>
-      <div className="hint" style={{ marginTop: 6 }}>
-        Guma reads the objects on the plate, the machine and the filament, and shows you before
-        writing anything. You choose whether it has already been printed; if not, it waits as an
-        estimate until you record it.
-      </div>
+      {detail.parts.length === 0 && (
+        <div className="hint" style={{ marginTop: 6 }}>
+          Guma reads the objects on the plate, the machine and the filament, and shows you before
+          writing anything. You choose whether it has already been printed; if not, it waits as an
+          estimate until you record it.
+        </div>
+      )}
 
       {read && (
         <div className="pane" style={{ marginTop: 10 }}>
@@ -2482,29 +2497,47 @@ function SliceRuns({
   return (
     <div style={{ marginTop: 14 }}>
       <div className="sechead">
-        <h4>Sliced files</h4>
+        <h4>Plates</h4>
         <span className="sub">
-          What the slicer said. Record one as printed and the filament comes off the shelf.
+          One per sliced file. When a plate comes off the bed, record it: its copies are marked
+          printed and the filament comes off the shelf.
         </span>
       </div>
 
+      <div className="platelist">
       {detail.slices.map((s) => {
         const runs = detail.runs.filter((r) => r.sliceImportId === s.id)
         const used = runs.reduce((a, r) => a + (r.unitsUsed ?? 0), 0)
         const hours = runs.reduce((a, r) => a + (r.hours ?? 0), 0)
         const failed = runs.filter((r) => r.outcome !== 'success').length
         return (
-          <div className="pane" key={s.id} style={{ marginTop: 8 }}>
-            <div className="btnrow" style={{ alignItems: 'baseline', justifyContent: 'space-between' }}>
-              <div>
+          <div className="plate" key={s.id}>
+            <div className="platehead">
+              <div className="platename">
                 <span className="pn">{s.fileName}</span>
-                <span className="hint" style={{ marginTop: 2 }}>
+                <span className="plmeta">
                   {s.printerName ?? s.printerModel ?? 'machine not matched'}
                   {s.materialName ? ` · ${s.materialName}` : s.materialText ? ` · ${s.materialText}` : ''}
                   {s.estGrams != null && ` · ~${Math.round(s.estGrams)} g`}
                   {s.estMinutes != null && ` · ~${hrs(s.estMinutes)}`}
                   {` · imported ${s.importedAt.slice(0, 10)}`}
+                  {s.keptBytes != null ? ` · ${mb(s.keptBytes)} kept` : ''}
                 </span>
+                {s.keptBytes == null && (
+                  <span
+                    className="chip"
+                    style={{ color: 'var(--warn)' }}
+                    title="Only what this file said was kept, not the file. Imports from here on keep the file itself; re-import it to store a copy."
+                  >
+                    file not stored
+                  </span>
+                )}
+                {runs.length > 0 && (
+                  <span className="chip" style={{ color: 'var(--ok)' }}>
+                    recorded{runs.length > 1 ? ` ×${runs.length}` : ''}
+                    {failed > 0 ? ` · ${failed} failed` : ''}
+                  </span>
+                )}
               </div>
               {openId !== s.id && (
                 <div className="btnrow" style={{ margin: 0 }}>
@@ -2580,16 +2613,6 @@ function SliceRuns({
               </div>
             )}
 
-            <div className="hint" style={{ marginTop: 4 }}>
-              {s.keptBytes != null ? (
-                <>The file is kept with this project — {mb(s.keptBytes)}.</>
-              ) : (
-                <span style={{ color: 'var(--warn)' }}>
-                  Only what this file said was kept, not the file. Imports from here on keep the
-                  file itself; re-import it to store a copy.
-                </span>
-              )}
-            </div>
 
             {removing === s.id && (
               <div className="attn crit" style={{ marginTop: 8 }}>
@@ -2618,12 +2641,11 @@ function SliceRuns({
               </div>
             )}
 
-            {runs.length > 0 && (
-              <div className="hint" style={{ marginTop: 6, color: 'var(--ok)' }}>
-                Recorded — {runs.length} run{runs.length === 1 ? '' : 's'}, {Math.round(used)} off
-                the spool, {Math.round(hours * 100) / 100} machine hours
-                {failed > 0 && ` · ${failed} of them failed`}. The material is off the shelf and the
-                hours are in this project&rsquo;s cost.
+            {runs.length > 0 && openId !== s.id && (
+              <div className="plmeta" style={{ marginTop: 4, color: 'var(--ok)' }}>
+                {Math.round(used)} {ctx.materials.find((m) => m.id === s.materialId)?.unit ?? 'g'} off the
+                spool · {Math.round(hours * 100) / 100} machine hours
+                in this project&rsquo;s cost
               </div>
             )}
 
@@ -2788,6 +2810,7 @@ function SliceRuns({
           </div>
         )
       })}
+      </div>
     </div>
   )
 }
@@ -2865,9 +2888,11 @@ function PartVariants({
         </span>
       )}
       {isOnSharedPlate(variant) && (
-        <span className="pmeta">
-          shares a plate with {(variant?.plateParts ?? 1) - 1} other object
-          {(variant?.plateParts ?? 1) - 1 === 1 ? '' : 's'} — one print, not several
+        <span
+          className="pmeta"
+          title={`Shares a plate with ${(variant?.plateParts ?? 1) - 1} other objects — one print, not several.`}
+        >
+          on a plate of {variant?.plateParts ?? 1}
         </span>
       )}
     </div>
@@ -3458,33 +3483,46 @@ function BuildSheet({
    * kept with the project, and waits under "Sliced files" to be recorded
    * when the reprint comes off the bed.
    */
+  /** Read a re-sliced file onto this part: same import as any other, so it
+   *  becomes the part's slice rather than a duplicate row. */
+  async function importFixed(part: PartRow, file: File): Promise<string> {
+    const parsed = await parseSliceFile(file)
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
+      file: await packFile(bytes),
+      fileName: parsed.fileName,
+      kind: parsed.kind,
+      printerModel: parsed.printerModel,
+      printerId: matchPrinter(ctx.printerRows, parsed.printerModel)?.id ?? null,
+      materialText: parsed.totals.material,
+      materialId: matchMaterial(ctx.materials, parsed.totals.material)?.id ?? null,
+      estMinutes: parsed.totals.estMinutes,
+      estGrams: parsed.totals.estGrams,
+      notes: parsed.notes,
+      forPartId: part.id,
+      sections: parsed.sections.map((sec) => ({
+        label: sec.label,
+        qty: sec.qty,
+        estMinutes: sec.estMinutes,
+        estGrams: sec.estGrams,
+        material: sec.material,
+      })),
+    })
+    return parsed.fileName
+  }
+
+  /**
+   * A failed copy, with a fixed file: the file goes on the part and the
+   * copy goes back in the queue to print from it (CG, 8 Oct: "an immediate
+   * way to substitute a new file").
+   */
+  async function replaceCopyFile(part: PartRow, copy: number, file: File) {
+    const name = await importFixed(part, file)
+    await setCopyStates(ctx.shop.id, part.id, ctx.profile.id, [copy], 'pending', `New file ${name} — queued to print again.`)
+  }
+
   async function sendBack(part: PartRow) {
-    let fileName: string | null = null
-    if (fixedFile) {
-      const parsed = await parseSliceFile(fixedFile)
-      const bytes = new Uint8Array(await fixedFile.arrayBuffer())
-      await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
-        file: await packFile(bytes),
-        fileName: parsed.fileName,
-        kind: parsed.kind,
-        printerModel: parsed.printerModel,
-        printerId: matchPrinter(ctx.printerRows, parsed.printerModel)?.id ?? null,
-        materialText: parsed.totals.material,
-        materialId: matchMaterial(ctx.materials, parsed.totals.material)?.id ?? null,
-        estMinutes: parsed.totals.estMinutes,
-        estGrams: parsed.totals.estGrams,
-        notes: parsed.notes,
-        forPartId: part.id,
-        sections: parsed.sections.map((sec) => ({
-          label: sec.label,
-          qty: sec.qty,
-          estMinutes: sec.estMinutes,
-          estGrams: sec.estGrams,
-          material: sec.material,
-        })),
-      })
-      fileName = parsed.fileName
-    }
+    const fileName = fixedFile ? await importFixed(part, fixedFile) : null
     await movePartCopies(ctx.shop.id, part.id, ctx.profile.id, 'reprint', n, reprintNote(why, fix, fileName))
     setAct(null)
     setFixedFile(null)
@@ -3624,16 +3662,35 @@ function BuildSheet({
           <table>
             <thead>
               <tr>
-                <th style={{ width: '40%' }}>Part</th>
-                <th style={{ width: 170 }}>Copies</th>
-                <th />
-                <th />
+                <th className="chev" aria-label="Show copies" />
+                <th>Part</th>
+                <th style={{ width: 190 }}>Copies</th>
+                <th style={{ width: 210 }} />
+                <th style={{ width: 150 }} />
               </tr>
             </thead>
             <tbody>
               {detail.parts.map((p, i) => (
                 <Fragment key={p.id}>
-                  <tr className={landed > 0 && i >= detail.parts.length - landed ? 'landed' : ''}>
+                  <tr
+                    className={`partrow ${copiesOpen === p.id ? 'open' : ''} ${
+                      landed > 0 && i >= detail.parts.length - landed ? 'landed' : ''
+                    }`.trim()}
+                  >
+                    <td className="chev">
+                      {/* The whole point of the row is its copies, so opening
+                          them is a big target at the start of the row, not a
+                          link buried mid-row (CG, 8 Oct). */}
+                      <button
+                        type="button"
+                        className="chevbtn"
+                        aria-expanded={copiesOpen === p.id}
+                        aria-label={`Each copy of ${p.label}`}
+                        onClick={() => setCopiesOpen(copiesOpen === p.id ? null : p.id)}
+                      >
+                        {copiesOpen === p.id ? '▾' : '▸'}
+                      </button>
+                    </td>
                     <td>
                       <div className="pn">{p.label}</div>
                       {p.note && <div className="pmeta">{p.note}</div>}
@@ -3660,17 +3717,12 @@ function BuildSheet({
                       {(() => {
                         const c = copiesOf(p)
                         return (
-                          <>
+                          <div
+                            className="copycell"
+                            title={copiesOpen === p.id ? 'Hide the copies' : 'Show each copy'}
+                            onClick={() => setCopiesOpen(copiesOpen === p.id ? null : p.id)}
+                          >
                             <CopyBar states={statesOf(p)} />
-                            <button
-                              type="button"
-                              className="linkbtn copytoggle"
-                              aria-expanded={copiesOpen === p.id}
-                              aria-label={`Each copy of ${p.label}`}
-                              onClick={() => setCopiesOpen(copiesOpen === p.id ? null : p.id)}
-                            >
-                              {copiesOpen === p.id ? 'hide copies' : 'each copy ▾'}
-                            </button>
                             <div
                               className="pmeta"
                               data-testid={`copies-${p.id}`}
@@ -3687,7 +3739,7 @@ function BuildSheet({
                             >
                               {describeCopies(c)}
                             </div>
-                          </>
+                          </div>
                         )
                       })()}
                     </td>
@@ -3774,8 +3826,8 @@ function BuildSheet({
                     </td>
                   </tr>
                   {copiesOpen === p.id && (
-                    <tr>
-                      <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
+                    <tr className="copiesrow">
+                      <td colSpan={5}>
                         <EachCopy
                           part={p}
                           options={copyOptions(detail.phase, detail.facts.kind)}
@@ -3783,13 +3835,16 @@ function BuildSheet({
                           onSet={(copies, to, why) =>
                             guard(() => setCopyStates(ctx.shop.id, p.id, ctx.profile.id, copies, to, why))
                           }
+                          onNewFile={(copy, file) => guard(() => replaceCopyFile(p, copy, file))}
+                          onSkip={(copy, why) => guard(() => skipCopy(ctx.shop.id, p.id, ctx.profile.id, copy, why))}
+                          onClose={() => setCopiesOpen(null)}
                         />
                       </td>
                     </tr>
                   )}
                   {removeId === p.id && (
                     <tr>
-                      <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
+                      <td colSpan={5} style={{ background: 'var(--panel-3)' }}>
                         <div className="attn crit" style={{ margin: 0 }}>
                           <b>
                             Remove “{p.label}” ×{p.qty} from the build sheet?
@@ -3839,7 +3894,7 @@ function BuildSheet({
                   )}
                   {editId === p.id && (
                     <tr>
-                      <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
+                      <td colSpan={5} style={{ background: 'var(--panel-3)' }}>
                         <PartEditor
                           part={p}
                           busy={busy || saving}
@@ -3856,7 +3911,7 @@ function BuildSheet({
                   )}
                   {act?.partId === p.id && act.to === 'reprint' && (
                     <tr>
-                      <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
+                      <td colSpan={5} style={{ background: 'var(--panel-3)' }}>
                         {movable(copiesOf(p), 'reprint') > 1 && (
                           <div className="fld" style={{ margin: '0 0 6px', maxWidth: 220 }}>
                             <label className="lbl" htmlFor={`fail-n-${p.id}`}>
@@ -3931,7 +3986,7 @@ function BuildSheet({
                   )}
                   {openId === p.id && (
                     <tr>
-                      <td colSpan={4} style={{ background: 'var(--panel-2)' }}>
+                      <td colSpan={5} style={{ background: 'var(--panel-2)' }}>
                         {p.history.map((h) => (
                           <div key={h.id} className="histitem">
                             <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt-3)' }}>
@@ -5911,107 +5966,188 @@ function copyReason(part: PartRow, copy: number): string | null {
   return ev?.note?.trim() || null
 }
 
+const COPY_SHORT: Record<PartStatus, string> = {
+  pending: 'Not printed',
+  printed: 'Printed',
+  passed: 'Passed',
+  reprint: 'Failed',
+}
+
 /**
- * Each copy of a part, one line each, with its own state (CG, 8 Oct: "each
- * instance can be marked printed or failed ... and back to neutral").
- * Changing a copy is one pick; failing one asks why first.
+ * Each copy of a part, as a card with its own state (CG, 8 Oct).
+ *
+ * One click per change: the state is a row of buttons, not a dropdown to
+ * open and read. Failing asks why, on the card. A failed copy gets its
+ * three ways forward right there -- a fixed file (back in the queue to
+ * print from it), skip it (not printed again; the part needs one fewer),
+ * or simply back to not printed -- so nobody has to go looking for them.
  */
 function EachCopy({
   part,
   options,
   busy,
   onSet,
+  onNewFile,
+  onSkip,
+  onClose,
 }: {
   part: PartRow
   options: PartStatus[]
   busy: boolean
   onSet: (copies: number[], to: PartStatus, why: string | null) => Promise<void>
+  onNewFile: (copy: number, file: File) => Promise<void>
+  onSkip: (copy: number, why: string | null) => Promise<void>
+  onClose: () => void
 }) {
   const states = statesOf(part)
   const [failing, setFailing] = useState<number | null>(null)
+  const [skipping, setSkipping] = useState<number | null>(null)
   const [why, setWhy] = useState('')
+  const editable = options.length > 0
   const made = states.map((s, i) => (s === 'pending' ? -1 : i)).filter((i) => i >= 0)
   return (
     <div className="eachcopy" data-testid={`each-copy-${part.id}`}>
-      {states.map((st, i) => (
-        <div key={i} className="copyline">
-          <span className="copyno">Copy {i + 1}</span>
-          <span className={`copydot ${st}`} aria-hidden="true" />
-          {options.length === 0 ? (
-            <span className="pmeta" style={{ margin: 0 }}>
-              {COPY_MOVE_LABEL[st]}
-            </span>
-          ) : (
-            <select
-              aria-label={`Copy ${i + 1} of ${part.label}`}
-              value={failing === i ? 'reprint' : st}
-              disabled={busy}
-              onChange={(e) => {
-                const to = e.target.value as PartStatus
-                if (to === 'reprint') {
-                  setFailing(i)
-                  setWhy('')
-                  return
-                }
-                setFailing(null)
-                void onSet([i], to, null)
-              }}
-            >
-              {(options.includes(st) ? options : [...options, st]).map((o) => (
-                <option key={o} value={o}>
-                  {o === 'pending' ? 'Not printed' : o === 'printed' ? 'Printed' : o === 'passed' ? 'Passed QC' : 'Failed'}
-                </option>
-              ))}
-            </select>
-          )}
-          {failing === i ? (
-            <>
-              <input
-                aria-label={`Why did copy ${i + 1} fail?`}
-                placeholder="What went wrong with this copy"
-                value={why}
-                autoFocus
-                onChange={(e) => setWhy(e.target.value)}
-                style={{ flex: 1, minWidth: 180 }}
-              />
-              <button
-                type="button"
-                className="btn sm danger"
-                disabled={busy || !why.trim()}
-                onClick={() =>
-                  void onSet([i], 'reprint', why).then(() => {
-                    setFailing(null)
-                    setWhy('')
-                  })
-                }
-              >
-                Mark it failed
-              </button>
-              <button type="button" className="btn sm ghost" onClick={() => setFailing(null)}>
-                Cancel
-              </button>
-            </>
-          ) : (
-            st === 'reprint' &&
-            copyReason(part, i) && (
-              <span className="pmeta" style={{ margin: 0, color: 'var(--red)' }}>
-                ↩ {copyReason(part, i)}
-              </span>
-            )
-          )}
-        </div>
-      ))}
-      {options.length > 0 && made.length > 0 && (
-        <button
-          type="button"
-          className="linkbtn"
-          style={{ width: 'auto', fontSize: 11, marginTop: 6 }}
-          disabled={busy}
-          onClick={() => void onSet(made, 'pending', null)}
-        >
-          set every copy back to not printed
+      <div className="copygrid">
+        {states.map((st, i) => (
+          <div key={i} className={`copycard ${st}`}>
+            <div className="copyhead">
+              <span className="copyno">Copy {i + 1}</span>
+              <span className={`copypill ${st}`}>{COPY_SHORT[st]}</span>
+            </div>
+            {editable && (
+              <div className="seg" role="group" aria-label={`Copy ${i + 1} of ${part.label}`}>
+                {(options.includes(st) ? options : [...options, st]).map((o) => (
+                  <button
+                    key={o}
+                    type="button"
+                    className={`segbtn ${o} ${st === o ? 'on' : ''}`.trim()}
+                    aria-pressed={st === o}
+                    disabled={busy || st === o}
+                    onClick={() => {
+                      setSkipping(null)
+                      if (o === 'reprint') {
+                        setFailing(i)
+                        setWhy('')
+                        return
+                      }
+                      setFailing(null)
+                      void onSet([i], o, null)
+                    }}
+                  >
+                    {COPY_SHORT[o]}
+                  </button>
+                ))}
+              </div>
+            )}
+            {failing === i && (
+              <div className="copyform">
+                <input
+                  aria-label={`Why did copy ${i + 1} fail?`}
+                  placeholder="What went wrong"
+                  value={why}
+                  autoFocus
+                  onChange={(e) => setWhy(e.target.value)}
+                />
+                <div className="btnrow">
+                  <button
+                    type="button"
+                    className="btn sm danger"
+                    disabled={busy || !why.trim()}
+                    onClick={() =>
+                      void onSet([i], 'reprint', why).then(() => {
+                        setFailing(null)
+                        setWhy('')
+                      })
+                    }
+                  >
+                    Mark it failed
+                  </button>
+                  <button type="button" className="btn sm ghost" onClick={() => setFailing(null)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            {st === 'reprint' && failing !== i && (
+              <>
+                {copyReason(part, i) && <div className="copywhy">↩ {copyReason(part, i)}</div>}
+                {editable && skipping !== i && (
+                  <div className="failacts">
+                    <label className="btn sm" style={busy ? { opacity: 0.5, pointerEvents: 'none' } : undefined}>
+                      New file…
+                      <input
+                        type="file"
+                        accept={SLICE_ACCEPT}
+                        aria-label={`New file for copy ${i + 1} of ${part.label}`}
+                        disabled={busy}
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0]
+                          e.target.value = ''
+                          if (f) void onNewFile(i, f)
+                        }}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn sm ghost"
+                      disabled={busy || states.length <= 1}
+                      title={states.length <= 1 ? 'The only copy — remove the part instead.' : undefined}
+                      onClick={() => {
+                        setSkipping(i)
+                        setWhy('')
+                      }}
+                    >
+                      Skip
+                    </button>
+                  </div>
+                )}
+                {skipping === i && (
+                  <div className="copyform">
+                    <div className="pmeta" style={{ margin: 0 }}>
+                      Not printed again — the part goes from {states.length} to {states.length - 1} copies.
+                    </div>
+                    <input
+                      aria-label={`Why skip copy ${i + 1}?`}
+                      placeholder="Why (optional) — client only needs four"
+                      value={why}
+                      onChange={(e) => setWhy(e.target.value)}
+                    />
+                    <div className="btnrow">
+                      <button
+                        type="button"
+                        className="btn sm danger"
+                        disabled={busy}
+                        onClick={() => void onSkip(i, why.trim() || null).then(() => setSkipping(null))}
+                      >
+                        Skip copy {i + 1}
+                      </button>
+                      <button type="button" className="btn sm ghost" onClick={() => setSkipping(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="copyfoot">
+        {editable && made.length > 0 && (
+          <button
+            type="button"
+            className="linkbtn"
+            disabled={busy}
+            onClick={() => void onSet(made, 'pending', null)}
+          >
+            set every copy back to not printed
+          </button>
+        )}
+        <button type="button" className="linkbtn" onClick={onClose}>
+          close ▴
         </button>
-      )}
+      </div>
     </div>
   )
 }

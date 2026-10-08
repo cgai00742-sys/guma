@@ -26,6 +26,7 @@
  */
 import { daysBetweenLocal, parseStored, toISODate } from './dates'
 import { chosenVariant } from './parts'
+import { countsOf, statesOf } from './copies'
 import type { PartRow, QuoteInputsRow } from './data.types'
 
 /** A printer left running overnight is normal in a small shop, but not
@@ -88,10 +89,20 @@ export function startBy(input: StartByInput): StartBy {
   const today = input.today ?? new Date()
   const assumptions: string[] = []
 
-  // Only work not yet done. A project half printed needs half the runway.
-  const left = input.parts.filter((p) => p.status === 'pending' || p.status === 'reprint')
+  // Only work not yet done, counted in COPIES. A part needing five with one
+  // off the machine still needs four printed; a slice's estimate is for the
+  // copies on its plate, so it is divided down to one copy first.
+  const copiesLeft = (p: PartRow) => {
+    const c = countsOf(statesOf(p))
+    return c.pending + c.reprint
+  }
+  const left = input.parts.filter((p) => copiesLeft(p) > 0)
   const sliced = left
-    .map((p) => chosenVariant(p).variant?.estMinutes ?? null)
+    .map((p) => {
+      const v = chosenVariant(p).variant
+      if (v?.estMinutes == null) return null
+      return (v.estMinutes / Math.max(1, v.sectionQty ?? 1)) * copiesLeft(p)
+    })
     .filter((m): m is number => m != null)
 
   // A build sheet with nothing left on it is finished work, whatever the

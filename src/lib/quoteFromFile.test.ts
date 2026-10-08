@@ -12,8 +12,8 @@ describe('a sliced file as quote lines', () => {
     } as unknown as SliceFile
     const lines = buildsFromFile(f, 'a', 'p1', 'm1')
     expect(lines).toEqual([
-      { key: 'a:0', label: 'Buoy shell', printerId: 'p1', materialId: 'm1', qty: 2, unitsPerPart: 28.85, printHrsPerPart: 0.68 },
-      { key: 'a:1', label: 'Cap', printerId: 'p1', materialId: 'm1', qty: 1, unitsPerPart: 28.8, printHrsPerPart: 0.68 },
+      { key: 'a:0', label: 'Buoy shell', printerId: 'p1', materialId: 'm1', qty: 2, unitsPerPart: 28.85, printHrsPerPart: 0.6833 },
+      { key: 'a:1', label: 'Cap', printerId: 'p1', materialId: 'm1', qty: 1, unitsPerPart: 28.8, printHrsPerPart: 0.6833 },
     ])
   })
 

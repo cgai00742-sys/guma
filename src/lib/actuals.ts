@@ -70,7 +70,7 @@ function actualMachineCost(a: ProjectActuals): number {
 }
 
 function quotedMachineCost(q: PricedQuote): number {
-  return q.costsIncomplete ? q.machineAmt : q.electricityCost
+  return q.machineCost
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -172,7 +172,11 @@ export function compareToQuote(
     quotedCost,
     actualCost,
     netRevenue,
-    quotedMargin: round2(quoted.margin),
+    // Like for like with actualMargin below: the same four lines on both
+    // sides. priced.margin also takes off overhead and the failure
+    // allowance, which no recorded run carries -- comparing the two made a
+    // job that cost exactly what was quoted read as $120 better than quoted.
+    quotedMargin: round2(netRevenue - quotedCost),
     actualMargin: actualCost === null ? null : round2(netRevenue - actualCost),
     actualMarginPct:
       actualCost === null || netRevenue <= 0 ? null : (netRevenue - actualCost) / netRevenue,

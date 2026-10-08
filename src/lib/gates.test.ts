@@ -62,6 +62,8 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     poc: null,
     quoteStatus: null,
     quoteTotal: null,
+    quotePreTax: null,
+    quoteListPrice: null,
     depositDue: 0,
     depositOwed: 0,
     balanceOwed: 0,

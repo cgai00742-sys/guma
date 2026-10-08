@@ -19,7 +19,7 @@
  * comes back from a project, and a preference that outlives the session is
  * a preference that needs a settings screen to undo.
  */
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Jobs from './Jobs'
 import Pipeline from './Pipeline'
@@ -33,11 +33,13 @@ export default function Projects({ ctx }: { ctx: ShopContext }) {
   // survives a reload — the same reason the project page is a page.
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
-  const fromUrl = params.get('view')
-  const [view, setView] = useState<View>(fromUrl === 'list' ? 'list' : 'board')
+  // Read from the URL on every render, not copied into state once: a link
+  // to this same route (the board's "N drafts →" chip goes to
+  // ?view=list&show=drafts) does not remount the page, so a copy taken at
+  // mount would leave the board on screen under a list URL.
+  const view: View = params.get('view') === 'list' ? 'list' : 'board'
 
   function choose(next: View) {
-    setView(next)
     const p = new URLSearchParams(params)
     if (next === 'board') p.delete('view')
     else p.set('view', next)

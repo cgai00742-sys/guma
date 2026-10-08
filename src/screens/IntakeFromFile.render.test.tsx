@@ -140,7 +140,7 @@ describe('pricing a new project from its sliced file', () => {
     // One line, on the XL, in PLA, per-copy figures from the file.
     expect((screen.getByLabelText(/copies of maui land standalone 3x/i) as HTMLInputElement).value).toBe('1')
     expect((screen.getByLabelText(/^g per copy/i) as HTMLInputElement).value).toBe('73.1')
-    expect((screen.getByLabelText(/hours per copy/i) as HTMLInputElement).value).toBe('7.57')
+    expect((screen.getByLabelText(/hours per copy/i) as HTMLInputElement).value).toBe('7.5667')
     // The hand-typed fields are gone while the lines are the print.
     expect(screen.queryByLabelText(/^print hours per part/i)).toBeNull()
 
@@ -151,7 +151,7 @@ describe('pricing a new project from its sliced file', () => {
         .prepare('select label, qty, units_per_part, print_hrs_part from quote_builds')
         .all()
       expect(b).toEqual([
-        { label: 'Maui LAND STANDALONE 3x', qty: 1, units_per_part: 73.1, print_hrs_part: 7.57 },
+        { label: 'Maui LAND STANDALONE 3x', qty: 1, units_per_part: 73.1, print_hrs_part: 7.5667 },
       ])
     })
     // The file is on the project as an estimate: kept, nothing recorded.

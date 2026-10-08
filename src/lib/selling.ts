@@ -247,5 +247,7 @@ export function splitJobCost(
 /** What one unit cost to produce. Zero units is not a division. */
 export function unitCostFrom(split: JobCostSplit, units: number): number {
   if (!(units > 0)) return 0
-  return round2(split.production / units)
+  // Unrounded: $1.20 over 250 units is $0.0048 each, and rounding to
+  // cents stored it as $0.00 -- free stock. Screens round for display.
+  return Math.round((split.production / units) * 1e6) / 1e6
 }

@@ -493,7 +493,7 @@ describe('turning the file into what actually happened', () => {
     })
     const m = currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }
     expect(Number(m.on_hand)).toBe(913)
-    await screen.findByText(/Recorded — 1 run/i)
+    await screen.findByText(/machine hours\s+in this project/i)
   })
 
   it('asks what went wrong when the print failed, and still bills the material', async () => {
@@ -546,7 +546,7 @@ describe('the file itself, kept', () => {
       expect(String(f.content).length).toBeGreaterThan(0)
     })
 
-    await screen.findByText(/The file is kept with this project/)
+    await screen.findByText(/\d+ (B|KB|MB) kept/)
     expect(screen.getByRole('button', { name: /save a copy/i })).toBeDefined()
   })
 
@@ -562,7 +562,7 @@ describe('the file itself, kept', () => {
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
-    await screen.findByText(/Recorded — 1 run/i)
+    await screen.findByText(/machine hours\s+in this project/i)
 
     await user.click(screen.getByRole('button', { name: /remove the file/i }))
     await screen.findByText(/the print still happened/i)
@@ -659,7 +659,7 @@ describe('a finished project reads like a record, not a control panel', () => {
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
-    await screen.findByText(/Recorded — 1 run/i)
+    await screen.findByText(/machine hours\s+in this project/i)
 
     for (const to of ['review', 'delivered'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
