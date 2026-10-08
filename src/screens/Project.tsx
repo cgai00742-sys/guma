@@ -106,7 +106,8 @@ import {
 import { useRowAnchor } from '../lib/rowAnchor'
 import { mb, packFile, tooBigNote, unpackFile, type KeptFile } from '../lib/sliceFile'
 import {
-  allowedStatuses,
+  awaitingPrint,
+  nextStatuses,
   buildingPhase,
   chosenVariant,
   isOnSharedPlate,
@@ -1798,11 +1799,11 @@ function SliceImport({
         // The plate came off, so every object on it came off.
         const fresh = await loadProjectDetail(ctx.shop.id, detail.jobId)
         let marked = 0
-        if (allowedStatuses(fresh.phase, fresh.facts.kind).includes('printed')) {
+        {
           const slice = fresh.slices.find((x) => x.id === res.importId)
           const ids = new Set(slice?.sections.map((sec) => sec.partId).filter(Boolean))
           for (const part of fresh.parts) {
-            if (ids.has(part.id) && part.status === 'pending') {
+            if (ids.has(part.id) && awaitingPrint(part.status)) {
               await setPartStatus(ctx.shop.id, part.id, ctx.profile.id, 'printed', null)
               marked++
             }
@@ -2234,11 +2235,10 @@ function SliceRuns({
   /** The parts this file produced that the build sheet still calls
    *  pending, and that this stage allows to be marked printed. */
   function pendingPartsOf(importId: string): string[] {
-    if (!allowedStatuses(detail.phase, detail.facts.kind).includes('printed')) return []
     const slice = detail.slices.find((x) => x.id === importId)
     if (!slice) return []
     const ids = new Set(slice.sections.map((sec) => sec.partId).filter((x): x is string => !!x))
-    return detail.parts.filter((p) => ids.has(p.id) && p.status === 'pending').map((p) => p.id)
+    return detail.parts.filter((p) => ids.has(p.id) && awaitingPrint(p.status)).map((p) => p.id)
   }
 
   async function record() {
@@ -3254,6 +3254,7 @@ function BuildSheet({
         estMinutes: parsed.totals.estMinutes,
         estGrams: parsed.totals.estGrams,
         notes: parsed.notes,
+        forPartId: part.id,
         sections: parsed.sections.map((sec) => ({
           label: sec.label,
           qty: sec.qty,
@@ -3468,20 +3469,28 @@ function BuildSheet({
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-                        {allowedStatuses(detail.phase, detail.facts.kind)
-                          .filter((st) => st !== p.status)
-                          .map((st) => (
-                            <button
-                              key={st}
-                              type="button"
-                              className="btn sm ghost"
-                              disabled={busy || saving}
-                              style={{ fontSize: 10 }}
-                              onClick={() => void move(p, st)}
-                            >
-                              {st === 'printed' ? 'Printed' : st === 'passed' ? 'Pass' : 'Send back'}
-                            </button>
-                          ))}
+                        {/* Offered from where the PART is, at any stage:
+                            a plate can be printed and checked before the
+                            project's stages catch up. */}
+                        {nextStatuses(p.status).map((st) => (
+                          <button
+                            key={st}
+                            type="button"
+                            className={`btn sm ${st === 'reprint' ? 'danger' : 'ghost'}`}
+                            disabled={busy || saving}
+                            style={{ fontSize: 10 }}
+                            aria-label={`${st === 'printed' ? (p.status === 'reprint' ? 'Reprinted' : 'Printed') : st === 'passed' ? 'Pass' : 'Fail'} ${p.label}`}
+                            onClick={() => void move(p, st)}
+                          >
+                            {st === 'printed'
+                              ? p.status === 'reprint'
+                                ? 'Reprinted'
+                                : 'Printed'
+                              : st === 'passed'
+                                ? 'Pass'
+                                : 'Fail'}
+                          </button>
+                        ))}
                         <button
                           type="button"
                           className="linkbtn"
@@ -3622,7 +3631,7 @@ function BuildSheet({
                             disabled={!why.trim() || saving}
                             onClick={() => void guard(() => sendBack(p))}
                           >
-                            Send it back
+                            Mark it failed
                           </button>
                           <button
                             type="button"
@@ -4760,12 +4769,12 @@ function FromTheFiles({
       startedAt: g.first.importedAt.slice(0, 10),
       sliceImportId: g.first.id,
     })
-    if (allowedStatuses(detail.phase, detail.facts.kind).includes('printed')) {
+    {
       const partIds = new Set(
         detail.slices.filter((s) => g.ids.includes(s.id)).flatMap((s) => s.sections.map((x) => x.partId)),
       )
       for (const p of detail.parts) {
-        if (partIds.has(p.id) && p.status === 'pending') {
+        if (partIds.has(p.id) && awaitingPrint(p.status)) {
           await setPartStatus(ctx.shop.id, p.id, ctx.profile.id, 'printed', null)
         }
       }

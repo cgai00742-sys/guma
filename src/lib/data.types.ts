@@ -1000,7 +1000,7 @@ export const PART_STATUS_LABEL: Record<PartStatus, string> = {
   pending: 'Not printed',
   printed: 'Printed, not checked',
   passed: 'Passed QC',
-  reprint: 'Going back',
+  reprint: 'Failed — reprint',
 }
 
 export interface PartRow {
@@ -1159,6 +1159,10 @@ export interface SliceImportInput {
   estGrams: number | null
   notes: string[]
   sections: SliceSectionInput[]
+  /** A replacement file for ONE failed part. When the file holds a single
+   *  object it is linked to this part whatever the slicer called it, and
+   *  becomes the slice the part is printed from -- no duplicate row. */
+  forPartId?: string | null
 }
 
 /** What an import did, so the screen can say it rather than guess. */

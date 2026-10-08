@@ -60,6 +60,38 @@ export function allowedStatuses(phase: JobPhase, kind: JobKind = 'client'): Part
   }
 }
 
+/**
+ * What a part can be moved to next, from where IT is -- at any stage.
+ *
+ * CG printed and checked plates while the project still sat at Intake, and
+ * the stage-based rule above offered nothing there: the plate was recorded
+ * and every part on it still read "Not printed", with no way to pass or
+ * fail them. A part's next step follows from the part, not the project:
+ *
+ *   not printed -> printed, or failed (the print failed)
+ *   printed     -> passed, or failed (failed QC)
+ *   failed      -> printed (the reprint came off)
+ *   passed      -> failed (found wrong later)
+ */
+export function nextStatuses(status: PartStatus): PartStatus[] {
+  switch (status) {
+    case 'pending':
+      return ['printed', 'reprint']
+    case 'printed':
+      return ['passed', 'reprint']
+    case 'reprint':
+      return ['printed']
+    case 'passed':
+      return ['reprint']
+  }
+}
+
+/** A part that a successful print of its file turns into "printed": one
+ *  not printed yet, or one waiting on its reprint. */
+export function awaitingPrint(status: PartStatus): boolean {
+  return status === 'pending' || status === 'reprint'
+}
+
 /** Where a part goes back TO when it fails QC: the stage that runs the
  *  machines on this job's own ladder. */
 export function buildingPhase(kind: JobKind = 'client'): JobPhase {

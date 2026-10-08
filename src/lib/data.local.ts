@@ -3133,7 +3133,8 @@ export async function importSlice(
     const label = sec.label.trim()
     if (!label) continue
     const qty = Math.max(1, Math.floor(Number(sec.qty) || 1))
-    let partId = byLabel.get(label.toLowerCase()) ?? null
+    const target = input.forPartId && input.sections.length === 1 ? input.forPartId : null
+    let partId = target ?? byLabel.get(label.toLowerCase()) ?? null
 
     if (partId) partsMatched++
     else {
@@ -3152,12 +3153,21 @@ export async function importSlice(
       partsAdded++
     }
 
+    const sectionId = crypto.randomUUID()
     await d.execute(
       `insert into slice_sections
          (id, import_id, part_id, label, qty, est_minutes, est_grams, material)
        values (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [crypto.randomUUID(), importId, partId, label, qty, sec.estMinutes, sec.estGrams, sec.material],
+      [sectionId, importId, partId, label, qty, sec.estMinutes, sec.estGrams, sec.material],
     )
+    // The replacement file is what the part is printed from now.
+    if (target) {
+      await d.execute('update job_parts set chosen_section_id = ? where id = ? and shop_id = ?', [
+        sectionId,
+        target,
+        shopId,
+      ])
+    }
   }
 
   return { importId, partsAdded, partsMatched }

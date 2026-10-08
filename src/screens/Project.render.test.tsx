@@ -261,21 +261,29 @@ describe('the build sheet at each stage', () => {
     return { ctx, jobId, data, partId }
   }
 
-  it('offers nothing to press before building — a part is still a plan', async () => {
+  it('follows the part, not the stage: a plate printed early can be marked', async () => {
+    // CG printed and checked plates while the project was still early on.
     const { ctx, jobId } = await withPart('scheduled')
     await renderProject(jobId, ctx)
     await screen.findByText('Bearing ring')
-    expect(screen.queryByRole('button', { name: /^printed$/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^pass$/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^printed bearing ring$/i })).toBeDefined()
+    expect(screen.getByRole('button', { name: /^fail bearing ring$/i })).toBeDefined()
+    // Not checked before it exists.
+    expect(screen.queryByRole('button', { name: /^pass bearing ring$/i })).toBeNull()
   })
 
-  it('offers printed or send-back while building, and never a QC pass', async () => {
-    const { ctx, jobId } = await withPart('building')
+  it('offers pass or fail once printed, and reprinted once failed', async () => {
+    const { ctx, jobId, data, partId } = await withPart('building')
+    await data.setPartStatus(ctx.shop.id, partId, ctx.profile.id, 'printed', null)
     await renderProject(jobId, ctx)
     await screen.findByText('Bearing ring')
-    expect(screen.getByRole('button', { name: /^printed$/i })).toBeDefined()
-    expect(screen.getByRole('button', { name: /send back/i })).toBeDefined()
-    expect(screen.queryByRole('button', { name: /^pass$/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^pass bearing ring$/i })).toBeDefined()
+    expect(screen.getByRole('button', { name: /^fail bearing ring$/i })).toBeDefined()
+    expect(screen.queryByRole('button', { name: /^printed bearing ring$/i })).toBeNull()
+    cleanup()
+    await data.setPartStatus(ctx.shop.id, partId, ctx.profile.id, 'reprint', 'Warped')
+    await renderProject(jobId, ctx)
+    expect(await screen.findByRole('button', { name: /^reprinted bearing ring$/i })).toBeDefined()
   })
 
   it('puts the reprint reason on the row, and offers to go back to building', async () => {

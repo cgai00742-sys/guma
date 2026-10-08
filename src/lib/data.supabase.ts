@@ -2476,7 +2476,8 @@ export async function importSlice(
     const label = sec.label.trim()
     if (!label) continue
     const qty = Math.max(1, Math.floor(Number(sec.qty) || 1))
-    let partId = byLabel.get(label.toLowerCase()) ?? null
+    const target = input.forPartId && input.sections.length === 1 ? input.forPartId : null
+    let partId = target ?? byLabel.get(label.toLowerCase()) ?? null
 
     if (partId) partsMatched++
     else {
@@ -2500,16 +2501,28 @@ export async function importSlice(
       partsAdded++
     }
 
-    const { error: secErr } = await supabase.from('slice_sections').insert({
-      import_id: importId,
-      part_id: partId,
-      label,
-      qty,
-      est_minutes: sec.estMinutes,
-      est_grams: sec.estGrams,
-      material: sec.material,
-    })
+    const { data: secRow, error: secErr } = await supabase
+      .from('slice_sections')
+      .insert({
+        import_id: importId,
+        part_id: partId,
+        label,
+        qty,
+        est_minutes: sec.estMinutes,
+        est_grams: sec.estGrams,
+        material: sec.material,
+      })
+      .select('id')
+      .single()
     if (secErr) throw secErr
+    if (target) {
+      const { error: chErr } = await supabase
+        .from('job_parts')
+        .update({ chosen_section_id: secRow.id })
+        .eq('id', target)
+        .eq('shop_id', shopId)
+      if (chErr) throw chErr
+    }
   }
 
   return { importId, partsAdded, partsMatched }

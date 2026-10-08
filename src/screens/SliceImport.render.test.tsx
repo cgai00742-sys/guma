@@ -782,8 +782,8 @@ describe('a failed part, Voltage-style', () => {
     await screen.findByText(/Recorded as printed on/i)
 
     const row = (await screen.findByText('Buoy shell')).closest('tr')!
-    await user.click(within(row).getByRole('button', { name: /send back/i }))
-    const send = screen.getByRole('button', { name: /send it back/i })
+    await user.click(within(row).getByRole('button', { name: /^fail buoy shell$/i }))
+    const send = screen.getByRole('button', { name: /mark it failed/i })
     expect((send as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
     await user.type(screen.getByLabelText(/what went wrong/i), 'Warped corner')
     await user.type(screen.getByLabelText(/how to get it right/i), 'Brim on, dry the spool')
@@ -1042,5 +1042,59 @@ describe('removing a part that is wrong', () => {
       expect(currentDb.sqlite.prepare('select count(*) as n from job_parts').get()).toEqual({ n: 1 }),
     )
     await screen.findByText(/Removed part "Duplicate" ×1\. Why: Imported twice/)
+  })
+})
+
+
+describe('failing one part of a plate, and swapping in its fixed file', () => {
+  it('links a one-object reprint file to that part, and recording it marks the part reprinted', async () => {
+    const { ctx, jobId } = await seedShop()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    // The plate prints -- at Intake, before the stages caught up.
+    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /record the print/i }))
+    await screen.findByText(/Recorded as printed on/i)
+
+    // Cap passes; one Buoy shell came off warped.
+    await user.click(await screen.findByRole('button', { name: /^pass cap$/i }))
+    await user.click(await screen.findByRole('button', { name: /^fail buoy shell$/i }))
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Warped corner')
+    // The fix, sliced on its own, under whatever name the slicer used.
+    const fixed = new File(
+      ['; printing object shell_v2 id:0 copy 0\n; total filament used [g] = 31\n; estimated printing time (normal mode) = 50m\n; printer_model = XL\n'],
+      'buoy shell fixed.gcode',
+      { type: 'text/plain' },
+    )
+    await user.upload(screen.getByLabelText(/fixed file/i), fixed)
+    await user.click(screen.getByRole('button', { name: /mark it failed/i }))
+
+    await waitFor(() => {
+      const parts = currentDb.sqlite.prepare('select label, status from job_parts order by sort').all()
+      // No "shell v2" row: the file belongs to the failed part.
+      expect(parts).toEqual([
+        { label: 'Buoy shell', status: 'reprint' },
+        { label: 'Cap', status: 'passed' },
+      ])
+    })
+    const shell = currentDb.sqlite
+      .prepare("select p.chosen_section_id, s.est_grams from job_parts p join slice_sections s on s.id = p.chosen_section_id where p.label = 'Buoy shell'")
+      .get() as { est_grams: number } | undefined
+    expect(shell?.est_grams).toBe(31)
+
+    // The reprint comes off: recording the fixed file marks the part printed.
+    const row = (await screen.findAllByText('buoy shell fixed.gcode'))
+      .map((el) => el.closest('.pane') as HTMLElement | null)
+      .find((el) => el && within(el).queryByRole('button', { name: /this print happened/i }))!
+    await user.click(within(row).getByRole('button', { name: /this print happened/i }))
+    await user.click(await screen.findByRole('button', { name: /^record it$/i }))
+    await waitFor(() => {
+      const p = currentDb.sqlite.prepare("select status from job_parts where label = 'Buoy shell'").get()
+      expect(p).toEqual({ status: 'printed' })
+    })
+    // Both prints are in the cost: the failed plate's filament was really used.
+    const a = currentDb.sqlite.prepare('select runs, material_units from job_actuals where job_id = ?').get(jobId)
+    expect(a).toEqual({ runs: 2, material_units: 87 + 31 })
   })
 })
