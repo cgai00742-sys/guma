@@ -194,6 +194,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0031_part_copies.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 32,
+      description: "each copy of a part keeps its own state",
+      sql: include_str!("../migrations/0032_copy_states.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

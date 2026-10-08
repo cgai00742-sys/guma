@@ -657,6 +657,15 @@ dialog.proj-dlg .stepper{margin:10px 0 0}
 .copybar i.ok{background:var(--ok)}
 .copybar i.fail{background:var(--red)}
 .sheetwrap .pn + .pmeta, .sheetwrap .pmeta{margin-top:2px}
+.copytoggle{font-size:10px;width:auto;margin-left:8px;vertical-align:middle}
+.eachcopy{display:flex;flex-direction:column;gap:4px;padding:2px 0}
+.copyline{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.copyline select{width:auto;min-width:130px}
+.copyno{font-family:var(--mono);font-size:11px;color:var(--txt-2);width:56px}
+.copydot{width:9px;height:9px;border-radius:2px;background:color-mix(in srgb, var(--line) 70%, transparent)}
+.copydot.printed{background:var(--ember)}
+.copydot.passed{background:var(--ok)}
+.copydot.reprint{background:var(--red)}
 .partacts{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
 .partlinks{display:flex;gap:10px;justify-content:flex-end;white-space:nowrap}
 .partlinks .linkbtn{font-size:10px;width:auto}

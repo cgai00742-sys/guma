@@ -545,6 +545,38 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     expect(document.querySelectorAll('.copybar i.on')).toHaveLength(5)
   })
 
+  it('each copy has its own state: copy 3 fails on its own, and a mistake goes back to neutral', async () => {
+    const { ctx, jobId, d, partId } = await inBuild()
+    await d.movePartCopies(ctx.shop.id, partId, ctx.profile.id, 'printed', 5, null)
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    const line = () => screen.getByTestId(`copies-${partId}`).textContent
+    const states = () =>
+      JSON.parse((currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Hull'").get() as { copy_states: string }).copy_states)
+
+    await user.click(screen.getByRole('button', { name: /each copy of hull/i }))
+    const list = await screen.findByTestId(`each-copy-${partId}`)
+    expect(list.textContent).toMatch(/Copy 5/)
+
+    // Copy 3 failed -- asks why, then only copy 3 goes back.
+    await user.selectOptions(screen.getByLabelText(/^copy 3 of hull$/i), 'reprint')
+    await user.type(screen.getByLabelText(/why did copy 3 fail/i), 'Stringing on the hull')
+    await user.click(screen.getByRole('button', { name: /^mark it failed$/i }))
+    await waitFor(() => expect(states()).toEqual(['printed', 'printed', 'reprint', 'printed', 'printed']))
+    expect(line()).toBe('4 of 5 printed · 1 going back')
+    expect(screen.getByTestId(`each-copy-${partId}`).textContent).toMatch(/↩ Stringing on the hull/)
+
+    // Copy 2 was marked printed by mistake: back to neutral, no reason asked.
+    await user.selectOptions(screen.getByLabelText(/^copy 2 of hull$/i), 'pending')
+    await waitFor(() => expect(states()).toEqual(['printed', 'pending', 'reprint', 'printed', 'printed']))
+    expect(line()).toBe('3 of 5 printed · 1 going back')
+
+    // And the whole part back to the start.
+    await user.click(screen.getByRole('button', { name: /set every copy back to not printed/i }))
+    await waitFor(() => expect(line()).toBe('0 of 5 printed'))
+    expect(currentDb.sqlite.prepare("select status from job_parts where label = 'Hull'").get()).toEqual({ status: 'pending' })
+  })
+
   it('a part cannot be cut below the copies already made', async () => {
     const { ctx, jobId, d, partId, importId } = await inBuild()
     await d.markPlatePrinted(ctx.shop.id, jobId, ctx.profile.id, importId)

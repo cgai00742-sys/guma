@@ -12,12 +12,12 @@ function part(status: PartRow['status'], history: PartRow['history'] = []): Part
     sort: 0,
     history,
     variants: [],
-    chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0,
+    chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0, copyStates: [],
   }
 }
 
 function ev(toStatus: PartRow['status'], note: string | null, id = 1): PartRow['history'][number] {
-  return { id, kind: 'status', fromStatus: null, toStatus, n: null, note, actor: 'CG', at: '2026-09-27' }
+  return { id, kind: 'status', fromStatus: null, toStatus, n: null, copies: null, note, actor: 'CG', at: '2026-09-27' }
 }
 
 describe('what a stage lets you do', () => {

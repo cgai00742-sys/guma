@@ -672,3 +672,14 @@ export async function markPlatePrinted(
 ): Promise<number> {
   return (await backend()).markPlatePrinted(shopId, jobId, actorId, sliceImportId)
 }
+
+export async function setCopyStates(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  copies: number[],
+  to: PartStatus,
+  note: string | null,
+): Promise<void> {
+  return (await backend()).setCopyStates(shopId, partId, actorId, copies, to, note)
+}

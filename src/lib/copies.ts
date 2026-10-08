@@ -85,3 +85,114 @@ export function describeCopies(c: Copies): string {
   if (c.reprint > 0) bits.push(`${c.reprint} going back`)
   return bits.join(' · ')
 }
+
+/* ------------------------------------------------------------------ */
+/* Per copy (0032_copy_states.sql)                                     */
+/* ------------------------------------------------------------------ */
+
+const STATES: PartStatus[] = ['pending', 'printed', 'passed', 'reprint']
+
+/**
+ * Each copy's state, in order -- copy 1 is states[0]. A part whose copies
+ * were never split out (stored null, or written before a qty change) is
+ * read from its counts: passed first, then printed, going back, not
+ * printed, so the boxes on the row and the list under it agree.
+ */
+export function statesOf(p: {
+  qty: number
+  printedN: number
+  passedN: number
+  reprintN: number
+  copyStates?: unknown
+}): PartStatus[] {
+  const raw = p.copyStates
+  let arr: unknown = raw
+  if (typeof raw === 'string') {
+    try {
+      arr = JSON.parse(raw)
+    } catch {
+      arr = null
+    }
+  }
+  if (Array.isArray(arr) && arr.length === p.qty && arr.every((s) => STATES.includes(s as PartStatus))) {
+    return arr as PartStatus[]
+  }
+  const c = copiesOf(p)
+  return [
+    ...Array<PartStatus>(c.passed).fill('passed'),
+    ...Array<PartStatus>(c.printed).fill('printed'),
+    ...Array<PartStatus>(c.reprint).fill('reprint'),
+    ...Array<PartStatus>(c.pending).fill('pending'),
+  ].slice(0, Math.max(0, p.qty))
+}
+
+export function countsOf(states: PartStatus[]): Copies {
+  const c: Copies = { pending: 0, printed: 0, passed: 0, reprint: 0 }
+  for (const s of states) c[s]++
+  return c
+}
+
+/**
+ * Move n copies, the bulk way ("2 came off"): from the same sources as
+ * moveCopies, lowest-numbered copy first within each source. Returns the
+ * 0-based copies that moved, so the event can name them.
+ */
+export function moveStates(states: PartStatus[], to: PartStatus, n: number): { states: PartStatus[]; moved: number[] } {
+  moveCopies(countsOf(states), to, n) // same checks, same messages
+  const next = [...states]
+  const moved: number[] = []
+  let left = Math.floor(n)
+  for (const from of FROM[to as Exclude<PartStatus, 'pending'>]) {
+    for (let i = 0; i < next.length && left > 0; i++) {
+      if (next[i] === from) {
+        next[i] = to
+        moved.push(i)
+        left--
+      }
+    }
+  }
+  return { states: next, moved: moved.sort((a, b) => a - b) }
+}
+
+/**
+ * Set named copies to a state -- any state, including back to not printed.
+ * This is the correction path (CG: "a part that was accidentally marked
+ * failed or printed back to neutral"), so it does not police the order
+ * a copy normally moves in; the history records every change.
+ */
+export function setStates(states: PartStatus[], copies: number[], to: PartStatus): PartStatus[] {
+  if (copies.length === 0) throw new Error('Pick at least one copy.')
+  const next = [...states]
+  for (const i of copies) {
+    if (!Number.isInteger(i) || i < 0 || i >= next.length) throw new Error(`There is no copy ${i + 1}.`)
+    next[i] = to
+  }
+  return next
+}
+
+/**
+ * The copies after a change of qty. More copies arrive as not printed;
+ * fewer removes not-printed copies from the end. Copies already printed,
+ * passed or going back are never removed by editing a number.
+ */
+export function resizeStates(states: PartStatus[], qty: number): PartStatus[] {
+  if (qty >= states.length) return [...states, ...Array<PartStatus>(qty - states.length).fill('pending')]
+  const done = states.filter((s) => s !== 'pending').length
+  if (qty < done) {
+    throw new Error(`${done} copies of this part are already printed, passed or going back — it cannot be fewer than ${done}.`)
+  }
+  const next = [...states]
+  let drop = states.length - qty
+  for (let i = next.length - 1; i >= 0 && drop > 0; i--) {
+    if (next[i] === 'pending') {
+      next.splice(i, 1)
+      drop--
+    }
+  }
+  return next
+}
+
+/** "2" / "1, 4" -- copies as a person numbers them. */
+export function copyList(zeroBased: number[]): string {
+  return zeroBased.map((i) => String(i + 1)).join(',')
+}

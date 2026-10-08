@@ -38,3 +38,42 @@ describe('copies of a part (CG, 8 Oct: one test plate of five)', () => {
     expect(moveCopies(five, 'reprint', 1)).toEqual({ pending: 4, printed: 0, passed: 0, reprint: 1 })
   })
 })
+
+import { countsOf, moveStates, resizeStates, setStates, statesOf } from './copies'
+
+describe('each copy in its own place (CG, 8 Oct: a dropdown per instance)', () => {
+  const fresh = statesOf({ qty: 5, printedN: 0, passedN: 0, reprintN: 0, copyStates: null })
+
+  it('a part never split out reads from its counts', () => {
+    expect(statesOf({ qty: 3, printedN: 1, passedN: 1, reprintN: 0, copyStates: null })).toEqual(['passed', 'printed', 'pending'])
+  })
+
+  it('copy 3 can fail on its own and stays copy 3', () => {
+    const s = setStates(moveStates(fresh, 'printed', 5).states, [2], 'reprint')
+    expect(s).toEqual(['printed', 'printed', 'reprint', 'printed', 'printed'])
+    expect(countsOf(s)).toEqual({ pending: 0, printed: 4, passed: 0, reprint: 1 })
+  })
+
+  it('a copy marked by mistake goes back to neutral', () => {
+    const s = setStates(moveStates(fresh, 'printed', 2).states, [1], 'pending')
+    expect(s).toEqual(['printed', 'pending', 'pending', 'pending', 'pending'])
+  })
+
+  it('bulk "printed" takes the reprint first, then the lowest copy, and names them', () => {
+    const s: ReturnType<typeof statesOf> = ['printed', 'pending', 'reprint', 'pending', 'pending']
+    const r = moveStates(s, 'printed', 2)
+    expect(r.moved).toEqual([1, 2])
+    expect(r.states).toEqual(['printed', 'printed', 'printed', 'pending', 'pending'])
+  })
+
+  it('stored states are used when they fit the qty', () => {
+    expect(statesOf({ qty: 2, printedN: 0, passedN: 0, reprintN: 0, copyStates: '["pending","reprint"]' })).toEqual(['pending', 'reprint'])
+  })
+
+  it('resizing keeps made copies and drops not-printed ones from the end', () => {
+    const s: ReturnType<typeof statesOf> = ['printed', 'pending', 'reprint', 'pending']
+    expect(resizeStates(s, 6)).toEqual(['printed', 'pending', 'reprint', 'pending', 'pending', 'pending'])
+    expect(resizeStates(s, 2)).toEqual(['printed', 'reprint'])
+    expect(() => resizeStates(s, 1)).toThrow(/cannot be fewer than 2/)
+  })
+})

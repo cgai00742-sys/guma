@@ -1033,6 +1033,9 @@ export interface PartRow {
   printedN: number
   passedN: number
   reprintN: number
+  /** Each copy's state, copy 1 first (0032_copy_states.sql). Always the
+   *  length of qty -- read from the counts when never split out. */
+  copyStates: PartStatus[]
   note: string | null
   sort: number
   /** Newest first. Empty until something has happened to this part. */
@@ -1101,6 +1104,8 @@ export interface PartEvent {
   toStatus: PartStatus | null
   /** Copies this moved; null on events that moved all of them. */
   n: number | null
+  /** Which copies, 1-based, when the event named them. */
+  copies: number[] | null
   note: string | null
   actor: string | null
   at: string

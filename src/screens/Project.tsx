@@ -60,6 +60,7 @@ import {
   updatePart,
   choosePartVariant,
   movePartCopies,
+  setCopyStates,
   markPlatePrinted,
   deletePrintRun,
   deleteWorkEntry,
@@ -155,7 +156,7 @@ import { sheetVsQuote } from '../lib/sheetVsQuote'
 import type { StockHoldRow } from '../lib/data.types'
 import { materialCheck } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
-import { copiesOf, describeCopies, movable, type Copies } from '../lib/copies'
+import { copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
 const DELIVERY_METHODS = [
@@ -3433,6 +3434,8 @@ function BuildSheet({
   const [act, setAct] = useState<{ partId: string; to: PartStatus } | null>(null)
   /** How many copies the open move moves. */
   const [n, setN] = useState(1)
+  /** The part with its per-copy list open. */
+  const [copiesOpen, setCopiesOpen] = useState<string | null>(null)
   // A part's history drawer changes the height of the build sheet above
   // whatever you click next. See rowAnchor.ts.
   const holdRow = useRowAnchor(openId)
@@ -3658,7 +3661,16 @@ function BuildSheet({
                         const c = copiesOf(p)
                         return (
                           <>
-                            <CopyBar copies={c} />
+                            <CopyBar states={statesOf(p)} />
+                            <button
+                              type="button"
+                              className="linkbtn copytoggle"
+                              aria-expanded={copiesOpen === p.id}
+                              aria-label={`Each copy of ${p.label}`}
+                              onClick={() => setCopiesOpen(copiesOpen === p.id ? null : p.id)}
+                            >
+                              {copiesOpen === p.id ? 'hide copies' : 'each copy ▾'}
+                            </button>
                             <div
                               className="pmeta"
                               data-testid={`copies-${p.id}`}
@@ -3761,6 +3773,20 @@ function BuildSheet({
                       </div>
                     </td>
                   </tr>
+                  {copiesOpen === p.id && (
+                    <tr>
+                      <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
+                        <EachCopy
+                          part={p}
+                          options={copyOptions(detail.phase, detail.facts.kind)}
+                          busy={busy || saving}
+                          onSet={(copies, to, why) =>
+                            guard(() => setCopyStates(ctx.shop.id, p.id, ctx.profile.id, copies, to, why))
+                          }
+                        />
+                      </td>
+                    </tr>
+                  )}
                   {removeId === p.id && (
                     <tr>
                       <td colSpan={4} style={{ background: 'var(--panel-3)' }}>
@@ -3912,7 +3938,9 @@ function BuildSheet({
                               {h.at.slice(0, 10)}
                             </span>
                             <span style={{ color: 'var(--txt-2)' }}>
-                              {h.n != null && h.kind === 'status'
+                              {h.copies && h.kind === 'status'
+                                ? `Cop${h.copies.length === 1 ? 'y' : 'ies'} ${h.copies.join(', ')} → ${COPY_MOVE_LABEL[h.toStatus ?? 'pending']}`
+                                : h.n != null && h.kind === 'status'
                                 ? `${h.n} cop${h.n === 1 ? 'y' : 'ies'} → ${COPY_MOVE_LABEL[h.toStatus ?? 'pending']}`
                                 : h.fromStatus
                                   ? `${PART_STATUS_LABEL[h.fromStatus]} → ${PART_STATUS_LABEL[h.toStatus ?? 'pending']}`
@@ -5847,24 +5875,144 @@ const COPY_MOVE_LABEL: Record<PartStatus, string> = {
 }
 
 /**
- * One box per copy, so "1 of 5" is seen rather than read. Past a dozen
- * copies the boxes stop helping and the line below carries it alone.
+ * One box per copy, in copy order, so "1 of 5" is seen rather than read
+ * and copy 3 is always the third box. Past a dozen copies the boxes stop
+ * helping and the line below carries it alone.
  */
-function CopyBar({ copies: c }: { copies: Copies }) {
-  const total = c.pending + c.printed + c.passed + c.reprint
-  if (total > 12) return null
-  const cells = [
-    ...Array(c.passed).fill('ok'),
-    ...Array(c.printed).fill('on'),
-    ...Array(c.reprint).fill('fail'),
-    ...Array(c.pending).fill(''),
-  ] as string[]
+function CopyBar({ states }: { states: PartStatus[] }) {
+  if (states.length > 12) return null
+  const cls: Record<PartStatus, string> = { pending: '', printed: 'on', passed: 'ok', reprint: 'fail' }
   return (
     <span className="copybar" aria-hidden="true">
-      {cells.map((k, i) => (
-        <i key={i} className={k} />
+      {states.map((st, i) => (
+        <i key={i} className={cls[st]} title={`Copy ${i + 1}: ${COPY_MOVE_LABEL[st]}`} />
       ))}
     </span>
+  )
+}
+
+/** What a copy can be set to at this stage. "Not printed" is always there:
+ *  it is how a copy marked by mistake goes back (CG, 8 Oct). Before
+ *  anything prints, and once delivered, the list is read-only. */
+function copyOptions(phase: JobPhase, kind: ProjectDetail["facts"]["kind"]): PartStatus[] {
+  const allowed = allowedStatuses(phase, kind)
+  if (allowed.length === 0) return []
+  const order: PartStatus[] = ['pending', 'printed', 'passed', 'reprint']
+  // A copy that passed in Review can still be set back to printed there.
+  const set = new Set<PartStatus>(['pending', 'printed', ...allowed])
+  return order.filter((s) => set.has(s))
+}
+
+/** The newest reason given for a copy going back, from the part's history. */
+function copyReason(part: PartRow, copy: number): string | null {
+  const ev = part.history.find(
+    (h) => h.kind === 'status' && h.toStatus === 'reprint' && (h.copies ?? []).includes(copy + 1),
+  )
+  return ev?.note?.trim() || null
+}
+
+/**
+ * Each copy of a part, one line each, with its own state (CG, 8 Oct: "each
+ * instance can be marked printed or failed ... and back to neutral").
+ * Changing a copy is one pick; failing one asks why first.
+ */
+function EachCopy({
+  part,
+  options,
+  busy,
+  onSet,
+}: {
+  part: PartRow
+  options: PartStatus[]
+  busy: boolean
+  onSet: (copies: number[], to: PartStatus, why: string | null) => Promise<void>
+}) {
+  const states = statesOf(part)
+  const [failing, setFailing] = useState<number | null>(null)
+  const [why, setWhy] = useState('')
+  const made = states.map((s, i) => (s === 'pending' ? -1 : i)).filter((i) => i >= 0)
+  return (
+    <div className="eachcopy" data-testid={`each-copy-${part.id}`}>
+      {states.map((st, i) => (
+        <div key={i} className="copyline">
+          <span className="copyno">Copy {i + 1}</span>
+          <span className={`copydot ${st}`} aria-hidden="true" />
+          {options.length === 0 ? (
+            <span className="pmeta" style={{ margin: 0 }}>
+              {COPY_MOVE_LABEL[st]}
+            </span>
+          ) : (
+            <select
+              aria-label={`Copy ${i + 1} of ${part.label}`}
+              value={failing === i ? 'reprint' : st}
+              disabled={busy}
+              onChange={(e) => {
+                const to = e.target.value as PartStatus
+                if (to === 'reprint') {
+                  setFailing(i)
+                  setWhy('')
+                  return
+                }
+                setFailing(null)
+                void onSet([i], to, null)
+              }}
+            >
+              {(options.includes(st) ? options : [...options, st]).map((o) => (
+                <option key={o} value={o}>
+                  {o === 'pending' ? 'Not printed' : o === 'printed' ? 'Printed' : o === 'passed' ? 'Passed QC' : 'Failed'}
+                </option>
+              ))}
+            </select>
+          )}
+          {failing === i ? (
+            <>
+              <input
+                aria-label={`Why did copy ${i + 1} fail?`}
+                placeholder="What went wrong with this copy"
+                value={why}
+                autoFocus
+                onChange={(e) => setWhy(e.target.value)}
+                style={{ flex: 1, minWidth: 180 }}
+              />
+              <button
+                type="button"
+                className="btn sm danger"
+                disabled={busy || !why.trim()}
+                onClick={() =>
+                  void onSet([i], 'reprint', why).then(() => {
+                    setFailing(null)
+                    setWhy('')
+                  })
+                }
+              >
+                Mark it failed
+              </button>
+              <button type="button" className="btn sm ghost" onClick={() => setFailing(null)}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            st === 'reprint' &&
+            copyReason(part, i) && (
+              <span className="pmeta" style={{ margin: 0, color: 'var(--red)' }}>
+                ↩ {copyReason(part, i)}
+              </span>
+            )
+          )}
+        </div>
+      ))}
+      {options.length > 0 && made.length > 0 && (
+        <button
+          type="button"
+          className="linkbtn"
+          style={{ width: 'auto', fontSize: 11, marginTop: 6 }}
+          disabled={busy}
+          onClick={() => void onSet(made, 'pending', null)}
+        >
+          set every copy back to not printed
+        </button>
+      )}
+    </div>
   )
 }
 
