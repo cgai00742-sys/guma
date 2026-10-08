@@ -222,6 +222,7 @@ export function buildComparison(detail: ProjectDetail, ctx: PricingContext): Com
           rates: toRateSet(ctx.rateCard, ctx.shop),
           material: ctx.materials.find((m) => m.id === q.materialId) ?? null,
           printer: ctx.printers.find((p) => p.id === q.printerId) ?? null,
+          fleet: null,
         }
     rates = basis.rates
     priced = priceQuote(
@@ -237,10 +238,22 @@ export function buildComparison(detail: ProjectDetail, ctx: PricingContext): Com
         rush: q.rush,
         flatEach: q.flatEach,
         discountPct: q.discountPct,
+        builds: (q.builds ?? []).map((b, i) => ({
+          key: b.id ?? String(i),
+          label: b.label,
+          printerId: b.printerId,
+          materialId: b.materialId,
+          qty: b.qty,
+          unitsPerPart: b.unitsPerPart,
+          printHrsPerPart: b.printHrsPerPart,
+        })),
       },
       rates,
       basis.material,
       basis.printer,
+      // Build lines price at the machines and spools frozen with the quote;
+      // a draft (no snapshot) prices at today's.
+      basis.fleet ?? { materials: ctx.materials, printers: ctx.printers },
     )
     return compareToQuote(priced, detail.actuals, rates, basis.material?.unit ?? 'g')
   } catch {

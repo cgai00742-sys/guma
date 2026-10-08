@@ -45,6 +45,7 @@ import {
   loadProjectDetail,
   nextJobRef,
   saveQuote,
+  importSlice,
   takeProjectIn,
   toRateSet,
   CHANGE_CAUSES,
@@ -56,6 +57,7 @@ import {
 } from '../lib/data'
 import { addDaysISO } from '../lib/dates'
 import { seriesPath } from '../lib/series'
+import QuoteFiles, { type QuoteFile } from '../components/QuoteFiles'
 import { normalise, search } from '../lib/search'
 import { clientItem } from '../lib/searchItems'
 
@@ -167,6 +169,8 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
   })
   const [materialId, setMaterialId] = useState(ctx.materials[0]?.id ?? '')
   const [printerId, setPrinterId] = useState(ctx.printers[0]?.id ?? '')
+  /** Sliced files read into the quote, saved onto the project with it. */
+  const [files, setFiles] = useState<QuoteFile[]>([])
 
   // Load the project being revised: its client, its details and the exact
   // inputs of its newest quote, so a revision starts from what was priced
@@ -204,6 +208,15 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             rush: q.rush,
             flatEach: q.flatEach,
             discountPct: q.discountPct,
+            builds: (q.builds ?? []).map((b, i) => ({
+              key: b.id ?? String(i),
+              label: b.label,
+              printerId: b.printerId,
+              materialId: b.materialId,
+              qty: b.qty,
+              unitsPerPart: b.unitsPerPart,
+              printHrsPerPart: b.printHrsPerPart,
+            })),
           })
           if (q.materialId) setMaterialId(q.materialId)
           if (q.printerId) setPrinterId(q.printerId)
@@ -259,10 +272,16 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
     setInput((s) => ({ ...s, [k]: (isNaN(v) ? 0 : v) as QuoteInputs[K] }))
   }
 
-  const q = useMemo(
-    () => priceQuote(input, rates, material, printer),
-    [input, rates, material, printer],
+  const fleet = useMemo(
+    () => ({ materials: ctx.materials, printers: ctx.printers }),
+    [ctx.materials, ctx.printers],
   )
+  const q = useMemo(
+    () => priceQuote(input, rates, material, printer, fleet),
+    [input, rates, material, printer, fleet],
+  )
+  const builds = input.builds ?? []
+  const totalCopies = builds.length ? builds.reduce((a, b) => a + b.qty, 0) : input.quantity || 1
 
   const unitWord = material?.unit === 'ml' ? 'Millilitres' : 'Grams'
   // In-house work needs a title and nothing else. There is no client to
@@ -332,11 +351,13 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           design_billing: input.assetOrigin === 'ready' ? 'none' : input.designBilling,
           design_qty: input.designQty,
           revisions_incl: input.revisions,
-          quantity: input.quantity,
-          material_id: materialId || null,
-          printer_id: printerId || null,
-          units_per_part: input.unitsPerPart,
-          print_hrs_part: input.printHrsPerPart,
+          // With build lines the lines ARE the print; these columns then
+          // carry the totals for anything that reads one figure.
+          quantity: builds.length ? totalCopies : input.quantity,
+          material_id: (builds.length ? builds[0].materialId : materialId) || null,
+          printer_id: (builds.length ? builds[0].printerId : printerId) || null,
+          units_per_part: builds.length ? 0 : input.unitsPerPart,
+          print_hrs_part: builds.length ? 0 : input.printHrsPerPart,
           finishing_hrs: input.finishingHrs,
           rush: input.rush,
           flat_each: input.flatEach,
@@ -347,7 +368,17 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             ? {
                 // Frozen at send time. A later rate change must never alter a
                 // quote the client already holds.
-                rates_snapshot: buildRatesSnapshot(rates, material, printer),
+                rates_snapshot: buildRatesSnapshot(
+                  rates,
+                  material,
+                  printer,
+                  builds.length
+                    ? {
+                        materials: ctx.materials.filter((m) => builds.some((b) => b.materialId === m.id)),
+                        printers: ctx.printers.filter((p) => builds.some((b) => b.printerId === p.id)),
+                      }
+                    : undefined,
+                ),
                 total: Number(q.total.toFixed(2)),
                 deposit_due: q.deposit,
                 // Local calendar date: a quote that expires a day early because
@@ -355,7 +386,42 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 valid_until: addDaysISO(ctx.shop.quote_valid_days),
               }
             : undefined,
+        builds: builds.map((b) => ({
+          label: b.label,
+          printerId: b.printerId,
+          materialId: b.materialId,
+          qty: b.qty,
+          unitsPerPart: b.unitsPerPart,
+          printHrsPerPart: b.printHrsPerPart,
+        })),
       })
+
+      // The files the price came from go onto the project: kept, filling its
+      // build sheet, and waiting to be recorded once the plates come off the
+      // bed. An estimate only -- nothing is recorded as printed here. A file
+      // already on the project (a revision) is recognised and not added twice.
+      for (const f of files) {
+        const line = builds.find((b) => b.key.startsWith(`${f.key}:`))
+        await importSlice(ctx.shop.id, saved.jobId, ctx.profile.id, {
+          file: f.kept,
+          fileName: f.parsed.fileName,
+          kind: f.parsed.kind,
+          printerModel: f.parsed.printerModel,
+          printerId: line?.printerId ?? null,
+          materialText: f.parsed.totals.material,
+          materialId: line?.materialId ?? null,
+          estMinutes: f.parsed.totals.estMinutes,
+          estGrams: f.parsed.totals.estGrams,
+          notes: f.parsed.notes,
+          sections: f.parsed.sections.map((sec) => ({
+            label: sec.label,
+            qty: sec.qty,
+            estMinutes: sec.estMinutes,
+            estGrams: sec.estGrams,
+            material: sec.material,
+          })),
+        })
+      }
 
       // Both paths land on the project. Intake's job ends the moment a
       // project exists; everything after that -- the stage, its gate, the
@@ -787,6 +853,23 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 per part × quantity
               </span>
             </h3>
+            <QuoteFiles
+              ctx={ctx}
+              lines={input.builds ?? []}
+              fallbackPrinterId={printerId}
+              fallbackMaterialId={materialId}
+              onAdd={(lines, file) => {
+                setInput((s) => ({ ...s, builds: [...(s.builds ?? []), ...lines] }))
+                setFiles((f) => [...f, file])
+              }}
+              onChange={(builds) => setInput((s) => ({ ...s, builds }))}
+              onClear={() => {
+                setInput((s) => ({ ...s, builds: [] }))
+                setFiles([])
+              }}
+            />
+            {(input.builds?.length ?? 0) === 0 ? (
+              <>
             <div className="grid2">
               <div className="fld">
                 <label className="lbl" htmlFor="q-qty">
@@ -869,6 +952,25 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 <div className="hint">Support removal, sanding, wash &amp; cure, assembly.</div>
               </div>
             </div>
+              </>
+            ) : (
+              <div className="grid3" style={{ marginTop: 10 }}>
+              <div className="fld">
+                <label className="lbl" htmlFor="q-post">
+                  Finishing hours, all parts
+                </label>
+                <input
+                  id="q-post"
+                  type="number"
+                  step="0.25"
+                  min="0"
+                  value={input.finishingHrs}
+                  onChange={num('finishingHrs')}
+                />
+                <div className="hint">Support removal, sanding, wash &amp; cure, assembly.</div>
+              </div>
+              </div>
+            )}
   <label
               style={{
                 display: 'flex',
@@ -1223,7 +1325,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           )}
 
           {/* Owner-only. Never shown to a client, never printed. */}
-          <CostPanel q={q} money={money} qty={input.quantity || 1} />
+          <CostPanel q={q} money={money} qty={totalCopies} />
 
           <div className="pane" style={{ margin: 0 }}>
             <h3>Rates used</h3>

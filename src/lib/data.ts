@@ -115,6 +115,7 @@ export {
   sameSliceFile,
 } from './data.types'
 export type {
+  QuoteBuildRow,
   SeriesRow,
   SeriesInput,
   RelatedProject,

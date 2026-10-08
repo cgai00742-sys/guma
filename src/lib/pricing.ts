@@ -676,15 +676,50 @@ export function priceQuote(
  * every number it was priced with — including the material and machine, which
  * can be edited or archived after the fact.
  */
+const snapMaterial = (m: MaterialRef, markup: number) => ({
+  id: m.id,
+  name: m.name,
+  unit: m.unit,
+  cost_per_unit: m.costPerUnit,
+  sell_per_unit: sellPerUnit(m, markup),
+  swatch: m.swatch,
+})
+const snapPrinter = (p: PrinterRef) => ({
+  id: p.id,
+  name: p.name,
+  model: p.model,
+  rate_hourly: p.ratePerHour,
+  wear_hourly: p.wearPerHour,
+  watts: p.watts,
+})
+
+/**
+ * Freeze the rates a quote was priced at.
+ *
+ * `fleet` is every machine and spool the quote's build lines use. A quote
+ * read from sliced files can span several machines, and a reprint months
+ * later must price each line at what THAT machine cost on the day, not
+ * today -- so each one is frozen too. Absent on single-machine quotes,
+ * which read exactly as before.
+ */
 export function buildRatesSnapshot(
   rates: RateSet,
   material: MaterialRef | null,
   printer: PrinterRef | null,
+  fleet?: Fleet,
 ) {
   return {
     snapshot_version: 1,
     taken_at: new Date().toISOString(),
     rates,
+    ...(fleet
+      ? {
+          fleet: {
+            materials: fleet.materials.map((m) => snapMaterial(m, rates.materialMarkup)),
+            printers: fleet.printers.map(snapPrinter),
+          },
+        }
+      : {}),
     material: material
       ? {
           id: material.id,
@@ -715,8 +750,32 @@ export function ratesFromSnapshot(snap: RatesSnapshot): {
   rates: RateSet
   material: MaterialRef | null
   printer: PrinterRef | null
+  fleet: Fleet | null
 } {
+  type SM = { id: string; name: string; unit: 'g' | 'ml'; cost_per_unit: number; sell_per_unit: number; swatch: string }
+  type SP = { id: string; name: string; model: string; rate_hourly: number; wear_hourly: number; watts?: number | null }
+  const f = (snap as { fleet?: { materials: SM[]; printers: SP[] } }).fleet
   return {
+    fleet: f
+      ? {
+          materials: f.materials.map((m) => ({
+            id: m.id,
+            name: m.name,
+            unit: m.unit,
+            costPerUnit: m.cost_per_unit,
+            sellOverride: m.sell_per_unit,
+            swatch: m.swatch,
+          })),
+          printers: f.printers.map((p) => ({
+            id: p.id,
+            name: p.name,
+            model: p.model,
+            ratePerHour: p.rate_hourly,
+            wearPerHour: p.wear_hourly,
+            watts: p.watts ?? null,
+          })),
+        }
+      : null,
     rates: snap.rates,
     material: snap.material
       ? {

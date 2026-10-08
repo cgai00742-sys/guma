@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { loadQuoteForPrint } from '../lib/data'
+import { listQuoteBuilds, loadQuoteForPrint, type QuoteBuildRow } from '../lib/data'
 import {
   priceQuote,
   ratesFromSnapshot,
@@ -59,8 +59,8 @@ export default function QuoteDoc() {
 
   useEffect(() => {
     if (!quoteId) return
-    loadQuoteForPrint(quoteId)
-      .then(setRow)
+    Promise.all([loadQuoteForPrint(quoteId), listQuoteBuilds(quoteId).catch(() => [])])
+      .then(([r, builds]) => setRow({ ...r, builds }))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }, [quoteId])
 
@@ -125,8 +125,21 @@ export function QuoteDocument({ row }: { row: any }) {
       rush: row.rush,
       flatEach: Number(row.flat_each),
       discountPct: Number(row.discount_pct),
+      builds: ((row.builds ?? []) as QuoteBuildRow[]).map((b, i) => ({
+        key: b.id ?? String(i),
+        label: b.label,
+        printerId: b.printerId,
+        materialId: b.materialId,
+        qty: b.qty,
+        unitsPerPart: b.unitsPerPart,
+        printHrsPerPart: b.printHrsPerPart,
+      })),
     }
-    return { q: priceQuote(input, rates, material, printer), rates }
+    const { fleet } = ratesFromSnapshot(snap)
+    return {
+      q: priceQuote(input, rates, material, printer, fleet ?? { materials: [], printers: [] }),
+      rates,
+    }
   }, [row])
 
   if (!priced) return null

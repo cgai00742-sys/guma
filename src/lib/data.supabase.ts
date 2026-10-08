@@ -1224,7 +1224,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
     quote: quote ? { id: quote.id, status: quote.status, total: quote.total ?? null } : null,
     facts: factsFrom(r, rates.minimumOrder, rates),
     actuals: actualsFrom(r),
-    quoteInputs: quote ? quoteInputsFrom(quote) : null,
+    quoteInputs: quote ? { ...quoteInputsFrom(quote), builds: await listQuoteBuilds(quote.id) } : null,
     runs: ((runs.data ?? []) as any[]).map(
       (x): PrintRunRow => ({
         id: x.id,
@@ -1768,7 +1768,7 @@ export async function deleteMaterialPurchase(shopId: string, purchaseId: string)
 
 /** The quote row's pricing inputs, in the shape the project page needs to
  *  reprice it from its own frozen snapshot. */
-function quoteInputsFrom(q: any): QuoteInputsRow {
+function quoteInputsFrom(q: any): Omit<QuoteInputsRow, 'builds'> {
   return {
     designBilling: q.design_billing,
     designQty: Number(q.design_qty ?? 0),

@@ -639,6 +639,10 @@ export interface QuoteInputsRow {
   discountPct: number
   /** Parsed, not the raw TEXT column. Null on a draft, which has none. */
   ratesSnapshot: unknown | null
+  /** The quote's build lines (quote_builds). Empty means the single-machine
+   *  shape above. Present means they ARE the print -- quantity, units and
+   *  hours above are then ignored by priceQuote. */
+  builds: QuoteBuildRow[]
 }
 
 /** The handful of project fields the detail screen can edit in place. */

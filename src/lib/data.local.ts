@@ -1406,7 +1406,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
   const actuals = toActuals(actualsRow[0])
 
   const quoteRow = await d.select<Record<string, unknown>[]>(
-    `select design_billing, design_qty, revisions_incl, quantity, material_id, printer_id,
+    `select id, design_billing, design_qty, revisions_incl, quantity, material_id, printer_id,
             units_per_part, print_hrs_part, finishing_hrs, rush, flat_each, discount_pct,
             rates_snapshot
        from quotes where job_id = ? order by version desc limit 1`,
@@ -1584,7 +1584,9 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
         : null,
     facts: factsFrom(r),
     actuals,
-    quoteInputs: quoteRow[0] ? toQuoteInputs(quoteRow[0]) : null,
+    quoteInputs: quoteRow[0]
+      ? { ...toQuoteInputs(quoteRow[0]), builds: await listQuoteBuilds(String(quoteRow[0].id)) }
+      : null,
     runs: runs.map(
       (x): PrintRunRow => ({
         id: x.id,
@@ -2353,7 +2355,7 @@ function toActuals(a: Record<string, number> | undefined): ProjectActuals {
   }
 }
 
-function toQuoteInputs(q: Record<string, unknown>): QuoteInputsRow {
+function toQuoteInputs(q: Record<string, unknown>): Omit<QuoteInputsRow, 'builds'> {
   return {
     designBilling: q.design_billing as 'hourly' | 'flat' | 'none',
     designQty: Number(q.design_qty ?? 0),

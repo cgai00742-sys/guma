@@ -559,3 +559,30 @@ describe('a quote split across machines', () => {
     expect(round2(flat.lines.find((l) => l.key === 'piece')?.amount ?? 0)).toBe(150)
   })
 })
+
+describe('a quote priced from build lines reprints at its own machines', () => {
+  it('freezes every machine and spool the lines use, and reads them back', async () => {
+    const { buildRatesSnapshot, ratesFromSnapshot, priceQuote } = await import('./pricing')
+    const mat = { id: 'm', name: 'PLA', unit: 'g' as const, costPerUnit: 0.022, sellOverride: null, swatch: '#fff' }
+    const xl = { id: 'p', name: 'Hatsa', model: 'Prusa XL', ratePerHour: 6, wearPerHour: 0.5, watts: 200 }
+    const rates = {
+      currency: 'USD', locale: 'en-US', designHourly: 45, finishingHourly: 20, rushPct: 0,
+      minimumOrder: 0, depositPct: 0, depositWhen: 'design', depositWaiveBelow: 0, materialMarkup: 2,
+      revisionsIncl: 0, revisionHourly: null, taxLabel: 'GET', taxPct: 4.5, electricityRateKwh: 0.43,
+      failurePct: 0,
+    } as never
+    const input = {
+      assetOrigin: 'ready' as const, designBilling: 'hourly' as const, designQty: 0, revisions: 0,
+      quantity: 1, unitsPerPart: 0, printHrsPerPart: 0, finishingHrs: 0, rush: false, flatEach: 0,
+      discountPct: 0,
+      builds: [{ key: 'a', label: 'Maui', printerId: 'p', materialId: 'm', qty: 2, unitsPerPart: 73.1, printHrsPerPart: 7.57 }],
+    }
+    const live = priceQuote(input, rates, mat as never, xl as never, { materials: [mat as never], printers: [xl as never] })
+    const snap = JSON.parse(JSON.stringify(buildRatesSnapshot(rates, mat as never, xl as never, { materials: [mat as never], printers: [xl as never] })))
+    const back = ratesFromSnapshot(snap)
+    expect(back.fleet?.printers.map((p) => p.ratePerHour)).toEqual([6])
+    const reprinted = priceQuote(input, back.rates, back.material, back.printer, back.fleet!)
+    expect(reprinted.total).toBeCloseTo(live.total, 2)
+    expect(live.total).toBeGreaterThan(0)
+  })
+})
