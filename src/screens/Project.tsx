@@ -154,6 +154,7 @@ import type { PricedQuote, RateSet } from '../lib/pricing'
 import { sheetVsQuote } from '../lib/sheetVsQuote'
 import type { StockHoldRow } from '../lib/data.types'
 import { materialCheck } from '../lib/scheduleCheck'
+import AddStock from '../components/AddStock'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
 const DELIVERY_METHODS = [
@@ -924,6 +925,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             busy={busy || inRecord}
             onPick={(id) => void patch({ printerId: id })}
             holds={holds}
+            onStocked={() => void reload()}
             onHold={(h) =>
               void (async () => {
                 setBusy(true)
@@ -5612,6 +5614,7 @@ function MachineAndMaterial({
   onPick,
   holds,
   onHold,
+  onStocked,
 }: {
   ctx: ShopContext
   detail: ProjectDetail
@@ -5621,7 +5624,11 @@ function MachineAndMaterial({
   onPick: (printerId: string | null) => void
   holds: StockHoldRow[]
   onHold: (h: { materialId: string; units: number }[]) => void
+  onStocked: () => void
 }) {
+  /** The spool with "add stock" open under it. */
+  const [stocking, setStocking] = useState<string | null>(null)
+  const [stocked, setStocked] = useState<string | null>(null)
   const picked = detail.facts.printerId
   const name = (id: string | null) => ctx.printers.find((p) => p.id === id)?.name ?? null
   const alsoOn = picked
@@ -5700,8 +5707,24 @@ function MachineAndMaterial({
             </thead>
             <tbody>
               {m.lines.map((l) => (
-                <tr key={l.materialId}>
-                  <td>{l.name}</td>
+                <Fragment key={l.materialId}>
+                <tr>
+                  <td>
+                    {l.name}
+                    {!busy && (
+                      <div>
+                        <button
+                          type="button"
+                          className="linkbtn"
+                          style={{ width: 'auto', fontSize: 11 }}
+                          aria-label={`Add stock of ${l.name}`}
+                          onClick={() => setStocking(stocking === l.materialId ? null : l.materialId)}
+                        >
+                          {stocking === l.materialId ? 'close' : '+ add stock'}
+                        </button>
+                      </div>
+                    )}
+                  </td>
                   <td className="r mono">
                     {l.need.toLocaleString()}
                     {l.unit}
@@ -5730,9 +5753,31 @@ function MachineAndMaterial({
                         : 'covered, not set aside'}
                   </td>
                 </tr>
+                {stocking === l.materialId && (
+                  <tr>
+                    <td colSpan={8} style={{ background: 'var(--panel-2)' }}>
+                      <AddStock
+                        shopId={ctx.shop.id}
+                        actorId={ctx.profile.id}
+                        material={{ id: l.materialId, name: l.name, unit: l.unit, onHand: l.onHand }}
+                        onDone={(said) => {
+                          setStocked(said)
+                          setStocking(null)
+                          onStocked()
+                        }}
+                      />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
+        )}
+        {stocked && (
+          <div className="hint" role="status" style={{ color: 'var(--ok)', marginTop: 6 }}>
+            {stocked}
+          </div>
         )}
         {m.lines.length > 0 && !busy && (
           <div className="btnrow" style={{ marginTop: 8, alignItems: 'center' }}>
@@ -5752,7 +5797,7 @@ function MachineAndMaterial({
             )}
             <span className="hint" style={{ margin: 0 }}>
               {m.ok === false
-                ? 'Not enough is free to set aside. Buy or receive more, or skip the material item with a reason.'
+                ? 'Not enough is free to set aside. Add stock on the short spool above, or skip the material item with a reason.'
                 : m.allSetAside
                   ? 'Held for this project: other projects see it as taken. It is drawn down as prints are recorded and released when the project is delivered.'
                   : 'Setting it aside takes it out of what every other project sees as available.'}

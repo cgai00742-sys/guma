@@ -160,7 +160,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       // page. Null (a plain tick) where that check cannot be made.
       auto: (f) => f.schedule?.materialOk ?? null,
       autoFrom: 'from Machine and material',
-      fix: 'Set the material aside under Machine and material, above -- or, if a spool is short, buy more or skip with a reason.',
+      fix: 'Set the material aside under Machine and material, above. If a spool is short, add stock there first, or skip with a reason.',
     },
     {
       key: 'slot',

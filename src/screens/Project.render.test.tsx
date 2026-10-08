@@ -453,6 +453,21 @@ describe('setting material aside (CG, 8 Oct: the more accurate stock accounting)
     expect(check.textContent).toMatch(/short 244g/) // 500 needed
   })
 
+  it('a short spool can be stocked right there, then set aside (CG, 8 Oct)', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'scheduled')
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    expect((await screen.findByTestId('material-check')).textContent).toMatch(/short 744g/)
+    await user.click(screen.getByRole('button', { name: /add stock of pla/i }))
+    await user.type(screen.getByLabelText(/how much came in/i), '1')
+    await user.type(screen.getByLabelText(/what you paid, all in/i), '24')
+    await user.click(screen.getByRole('button', { name: /add to the shelf/i }))
+    await waitFor(() => expect(screen.getByTestId('material-check').textContent).toMatch(/covered, not set aside/))
+    await user.click(screen.getByRole('button', { name: /set aside for this project/i }))
+    await waitFor(() => expect((document.getElementById('g-material') as HTMLInputElement).checked).toBe(true))
+  })
+
   it('prints draw the hold down, and delivery releases it', async () => {
     const { ctx, jobId, data } = await seed({ takeIn: true })
     await moveTo(data, ctx, jobId, 'scheduled')

@@ -291,14 +291,19 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
           </div>
           <div className="pane">
             {s.lowStock.length > 0 ? (
-              s.lowStock.slice(0, 5).map((m) => (
-                <Row
-                  key={m.id}
-                  label={m.name}
-                  value={`${round1(m.onHand)} ${m.unit} left · reorder at ${round1(m.reorderAt)}`}
-                  tone="warn"
-                />
-              ))
+              <>
+                {s.lowStock.slice(0, 5).map((m) => (
+                  <Row
+                    key={m.id}
+                    label={m.name}
+                    value={`${round1(m.onHand)} ${m.unit} left · reorder at ${round1(m.reorderAt)}`}
+                    tone="warn"
+                  />
+                ))}
+                <div className="hint">
+                  <Link to="/settings?tab=materials">Add stock in Settings → Materials</Link>
+                </div>
+              </>
             ) : (
               <div className="hint" style={{ marginTop: 0 }}>
                 {s.materialCount === 0 ? (

@@ -64,6 +64,7 @@ import SearchField from '../components/SearchField'
 import { asSearchItem } from '../lib/searchItems'
 import { filterBy } from '../lib/search'
 import type { StockHoldRow } from '../lib/data.types'
+import AddStock from '../components/AddStock'
 import { useRowAnchor } from '../lib/rowAnchor'
 import FieldGuide, { benchmarkGroup, makeBenchmarkFormatter } from '../components/FieldGuide'
 import { benchmarksFor, hasLocalRates, ratedCurrencies } from '../lib/benchmarks'
@@ -1513,6 +1514,9 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
 
   /** Set aside by live projects, so "on hand" is not read as "free". */
   const [holds, setHolds] = useState<StockHoldRow[]>([])
+  /** The row with "Add stock" open under it. */
+  const [stockingId, setStockingId] = useState<string | null>(null)
+  const [stocked, setStocked] = useState<string | null>(null)
   const reload = () =>
     Promise.all([listMaterials(ctx.shop.id), listStockHolds(ctx.shop.id)])
       .then(([m, h]) => {
@@ -1692,6 +1696,17 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
                     title="Moves by purchase, print and count. Weigh it under Stock to correct it."
                   >
                     {fmtQty(m.onHand, m.unit)}
+                    <div>
+                      <button
+                        type="button"
+                        className="linkbtn"
+                        style={{ width: 'auto', fontSize: 11 }}
+                        aria-label={`Add stock of ${m.name}`}
+                        onClick={() => setStockingId(stockingId === m.id ? null : m.id)}
+                      >
+                        {stockingId === m.id ? 'close' : '+ add stock'}
+                      </button>
+                    </div>
                     {(() => {
                       const mine = holds.filter((h) => h.materialId === m.id && h.remaining > 0)
                       const held = mine.reduce((a, h) => a + h.remaining, 0)
@@ -1734,7 +1749,7 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
                           setOpenId(openId === m.id ? null : m.id)
                         }}
                       >
-                        {openId === m.id ? 'Close' : 'Stock'}
+                        {openId === m.id ? 'Close' : 'History'}
                       </button>
                       <button
                         type="button"
@@ -1747,6 +1762,23 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
                     </div>
                   </td>
                 </tr>
+                {stockingId === m.id && (
+                  <tr>
+                    <td colSpan={8} style={{ background: 'var(--panel-2)', padding: '12px 14px' }}>
+                      <AddStock
+                        shopId={ctx.shop.id}
+                        actorId={ctx.profile.id}
+                        material={m}
+                        onDone={async (said) => {
+                          setStocked(said)
+                          setStockingId(null)
+                          await reload()
+                          onSaved()
+                        }}
+                      />
+                    </td>
+                  </tr>
+                )}
                 {openId === m.id && (
                   <tr>
                     <td colSpan={8} style={{ background: 'var(--panel-2)', padding: '12px 14px' }}>
@@ -1776,6 +1808,11 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
         </table>
       </div>
 
+      {stocked && (
+        <div className="hint" role="status" style={{ color: 'var(--ok)', marginTop: 8 }}>
+          {stocked}
+        </div>
+      )}
       {adding ? (
         <NewMaterial
           ctx={ctx}
@@ -2206,6 +2243,9 @@ function NewMaterial({
   })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** What is on the shelf today, in kg/L by default -- the way it is bought. */
+  const [have, setHave] = useState('')
+  const [haveBig, setHaveBig] = useState(true)
 
   return (
     <div className="pane" style={{ marginTop: 10 }}>
@@ -2267,6 +2307,31 @@ function NewMaterial({
           <div className="hint">A starting guess. Log a purchase and this stops mattering.</div>
         </div>
         <div className="fld">
+          <label className="lbl" htmlFor="nm-have">
+            On the shelf now
+          </label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              id="nm-have"
+              type="number"
+              min="0"
+              step="any"
+              value={have}
+              placeholder="0"
+              onChange={(e) => setHave(e.target.value)}
+            />
+            <select
+              aria-label="Unit on the shelf"
+              value={haveBig ? 'big' : 'base'}
+              style={{ width: 'auto' }}
+              onChange={(e) => setHaveBig(e.target.value === 'big')}
+            >
+              <option value="big">{draft.unit === 'g' ? 'kg' : 'L'}</option>
+              <option value="base">{draft.unit}</option>
+            </select>
+          </div>
+        </div>
+        <div className="fld">
           <label className="lbl" htmlFor="nm-reorder">
             Tell me to reorder below
           </label>
@@ -2298,7 +2363,10 @@ function NewMaterial({
           onClick={() => {
             setBusy(true)
             setError(null)
-            saveMaterial(ctx.shop.id, draft)
+            saveMaterial(ctx.shop.id, {
+              ...draft,
+              onHand: Math.max(0, (Number(have) || 0) * (haveBig ? 1000 : 1)),
+            })
               .then(() => onSaved())
               .catch((e) => setError(e instanceof Error ? e.message : String(e)))
               .finally(() => setBusy(false))
