@@ -176,7 +176,7 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0028_job_money_latest.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
-    Migration {
+    tauri_plugin_sql::Migration {
       version: 29,
       description: "the machine a project is booked on",
       sql: include_str!("../migrations/0029_job_printer.sql"),

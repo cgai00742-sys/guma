@@ -37,6 +37,16 @@ describe('the desktop shell migrates every workspace', () => {
     const calls = LIB_RS.match(/\.add_migrations\(/g) ?? []
     expect(calls.length).toBe(Object.keys(FILES).length)
   })
+
+  it('names every migration the way lib.rs imports it (CG, 8 Oct: E0422)', () => {
+    // There is no Rust compiler in the test run, and lib.rs does not
+    // \`use\` Migration -- a bare \`Migration {\` passed every test and then
+    // stopped \`tauri dev\` from compiling on CG's Mac.
+    const bare = LIB_RS.match(/^\s+Migration \{/gm) ?? []
+    expect(bare).toEqual([])
+    const versions = [...LIB_RS.matchAll(/tauri_plugin_sql::Migration \{\s*version: (\d+)/g)].map((m) => Number(m[1]))
+    expect(versions).toEqual(versions.map((_, i) => i + 1))
+  })
 })
 
 describe('the desktop window lets a file be dropped on the page', () => {
