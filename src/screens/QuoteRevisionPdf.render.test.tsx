@@ -238,6 +238,11 @@ describe('changing copies on the build sheet reprices the project (CG, 8 Oct)', 
       </MemoryRouter>,
     )
     expect((await screen.findByTestId('sheet-price')).textContent).toMatch(/matches the quote/)
+    // Design: nothing is printed yet, so an estimate -- not an empty
+    // "actual" column and a Log hours button (CG, 8 Oct).
+    expect(screen.getByText('Estimated build')).toBeDefined()
+    expect(screen.queryByText('What it actually took')).toBeNull()
+    expect(screen.queryByRole('button', { name: /log hours/i })).toBeNull()
 
     // Five of the first part, through the real editor.
     await user.click(screen.getByRole('button', { name: `Edit ${before[0].label}` }))
@@ -248,6 +253,10 @@ describe('changing copies on the build sheet reprices the project (CG, 8 Oct)', 
     await waitFor(() => expect(screen.getByTestId('sheet-price').textContent).toMatch(/now prices at/))
     const shown = screen.getByTestId('sheet-price').textContent ?? ''
     expect(shown).toMatch(/\+\$/)
+    // The table under it moved with it: a Build sheet column, and what
+    // they pay matches the headline less tax.
+    expect(screen.getByRole('columnheader', { name: 'Build sheet' })).toBeDefined()
+    expect(document.querySelector('[data-fold="estimate"]')!.textContent).toMatch(/Estimated margin/)
     // The accepted price itself has not moved.
     expect(currentDb.sqlite.prepare('select count(*) as n from quotes').get()).toEqual({ n: 1 })
 

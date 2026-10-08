@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { canImport, canPrint, recordFor, stagesBehind, workFor } from './stagePlan'
 
+describe('nothing printed, nothing logged, before In build (CG, 8 Oct)', () => {
+  it('Design and Scheduled show an estimate, not what it took', () => {
+    expect(workFor('design', 'client')).toEqual(['build', 'estimate'])
+    expect(workFor('scheduled', 'client')).toEqual(['build', 'estimate'])
+    expect(workFor('building', 'client')).toContain('took')
+  })
+})
+
 describe('each stage shows only what moves it forward', () => {
   it('starts small and ends with the whole project to review', () => {
     expect(workFor('intake', 'client')).toEqual(['brief', 'money'])

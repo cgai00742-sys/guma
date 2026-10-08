@@ -2039,7 +2039,8 @@ describe('data.local.ts against a real SQLite database', () => {
         (i) => i.key === item.key,
       )!
       if (resolved.automatic) continue
-      await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'review', item.key, true, null)
+      await local.setGateItem(shopId, saved.jobId, ctx.profile.id, 'review', item.key, true,
+        item.needsNote ? '6h design, 2h finishing, as quoted.' : null)
     }
     ;({ g } = await gateNow())
     expect(g.blocked, `stuck in Review: ${g.reason}`).toBe(false)

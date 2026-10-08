@@ -20,6 +20,7 @@ export type Section =
   | 'money' // the quote and its payments
   | 'window' // the delivery date, committed with the client
   | 'build' // the build sheet and its sliced files
+  | 'estimate' // estimated build: what the build sheet will cost, before anything is printed
   | 'took' // what it actually took: hours, and print runs where printing is allowed
   | 'handover' // when and how it changed hands
   | 'made' // in-house: what it produced
@@ -31,8 +32,11 @@ export type MoneyMode = 'price' | 'approve' | 'payments'
 const CLIENT_WORK: Record<JobPhase, Section[]> = {
   intake: ['brief', 'money'],
   approval: ['money', 'window'],
-  design: ['build', 'took'],
-  scheduled: ['build'],
+  // Nothing is printed and no time is booked against a client job until
+  // In build (CG, 8 Oct): before then the cost is an estimate, and the
+  // page says so rather than showing an empty "actual" column.
+  design: ['build', 'estimate'],
+  scheduled: ['build', 'estimate'],
   building: ['build', 'took'],
   review: ['build', 'took', 'handover', 'money'],
   delivered: ['closeout', 'money'],
@@ -50,7 +54,8 @@ const CLIENT_HOME: Record<Section, JobPhase> = {
   money: 'approval',
   window: 'approval',
   build: 'design',
-  took: 'design',
+  estimate: 'design',
+  took: 'building',
   handover: 'review',
   made: 'review',
   closeout: 'delivered',

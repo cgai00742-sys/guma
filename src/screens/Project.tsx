@@ -85,6 +85,7 @@ import {
   type PartStatus,
   type PrintRunInput,
   type ProjectDetail,
+  type ProjectActuals,
   type ProjectFieldsInput,
   type QuoteStatus,
   type RunOutcome,
@@ -144,7 +145,8 @@ import {
   pathLabel,
   programTotals,
 } from '../lib/programs'
-import { buildComparison, priceProjectQuote, type Comparison } from '../lib/actuals'
+import { buildComparison, compareToQuote, priceProjectQuote, type Comparison } from '../lib/actuals'
+import type { PricedQuote, RateSet } from '../lib/pricing'
 import { sheetVsQuote } from '../lib/sheetVsQuote'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
@@ -866,12 +868,25 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           onChanged={reload}
           setError={setError}
         />
-        {facts.kind === 'client' && (
-          <SheetPrice ctx={ctx} detail={detail} money={money} jobId={jobId} inRecord={inRecord} />
-        )}
       </details>
 
       </>
+    ),
+    estimate: (inRecord) => (
+      <details
+        className="sec fold"
+        data-fold="estimate"
+        open={inRecord || fold.isOpen('estimate')}
+        onToggle={(e) => fold.set('estimate', e.currentTarget.open)}
+      >
+        <summary className="sechead">
+          <h4>Estimated build</h4>
+          <span className="secstat">nothing printed yet — an estimate, not a cost</span>
+        </summary>
+        <div className="pane" style={{ marginBottom: 0 }}>
+          <EstimatedBuild ctx={ctx} detail={detail} money={money} jobId={jobId} inRecord={inRecord} />
+        </div>
+      </details>
     ),
     took: (inRecord) => (
       <>
@@ -5325,16 +5340,19 @@ function GoAheadWithout({
 }
 
 /**
- * What the build sheet costs now, against what was quoted (CG, 8 Oct).
+ * Estimated build: what the build sheet will cost to make and what it
+ * earns, before a single print (CG, 8 Oct). Replaces "What it actually
+ * took" until In build -- an "actual" column with nothing in it, and a
+ * Log hours button, are noise at a stage where nothing has run.
  *
- * Recomputed on every change to a part's copies, at the quote's own rates,
- * so the figure moves the moment the sheet does. What it does NOT do is
- * change the quote itself: a sent or accepted price is what the client
- * agreed to, and changing it behind them is how an invoice gets disputed.
- * The difference goes into a revision -- one click, copies already filled
- * in, "they added parts or copies" already chosen.
+ * Both columns are priced the same way, at the quote's own frozen rates:
+ * "Quoted" is the quote as it stands, "Build sheet" the same quote with
+ * the sheet's copies. Recomputed on every edit to a part. The quote itself
+ * is not changed behind the client: a sent or accepted price is what they
+ * agreed to, so the difference goes into a revision -- one click, copies
+ * already in it, "they added parts or copies" already chosen.
  */
-function SheetPrice({
+function EstimatedBuild({
   ctx,
   detail,
   money,
@@ -5348,56 +5366,131 @@ function SheetPrice({
   inRecord: boolean
 }) {
   const q = detail.quoteInputs
-  if (!q || detail.parts.length === 0) return null
-  const sheet = sheetVsQuote(q.builds ?? [], q.quantity, detail.parts)
   const pctx = { rateCard: ctx.rateCard, shop: ctx.shop, materials: ctx.materials, printers: ctx.printers }
-  const asQuoted = priceProjectQuote(detail, pctx)
-  const asBuilt = sheet.changed ? priceProjectQuote(detail, pctx, { builds: sheet.builds, quantity: sheet.quantity }) : asQuoted
-  if (!asQuoted || !asBuilt) return null
-  const diff = asBuilt.priced.total - asQuoted.priced.total
-  const status = detail.facts.quoteStatus
-  const loose = [...sheet.unpriced.map((l) => `${l} (no sliced numbers)`), ...sheet.quotedOnly.map((l) => `${l} (on the quote, not the sheet)`)]
-
-  if (!sheet.changed && loose.length === 0) {
+  const asQuoted = q ? priceProjectQuote(detail, pctx) : null
+  if (!q || !asQuoted) {
     return (
-      <div className="hint" data-testid="sheet-price" style={{ marginTop: 8 }}>
-        The build sheet matches the quote: {sheet.sheetCopies} cop{sheet.sheetCopies === 1 ? 'y' : 'ies'},{' '}
-        {money(asQuoted.priced.total)}.
+      <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
+        There is no priced quote to estimate from yet.
       </div>
     )
   }
+  const sheet = sheetVsQuote(q.builds ?? [], q.quantity, detail.parts)
+  const asBuilt = sheet.changed
+    ? (priceProjectQuote(detail, pctx, { builds: sheet.builds, quantity: sheet.quantity }) ?? asQuoted)
+    : asQuoted
+  const changed = sheet.changed
+  const a = estimateOf(asQuoted.priced, asQuoted.rates)
+  const b = estimateOf(asBuilt.priced, asBuilt.rates)
+  const unit = asQuoted.unit
+  const diff = asBuilt.priced.total - asQuoted.priced.total
+  const status = detail.facts.quoteStatus
+  const loose = [
+    ...sheet.unpriced.map((l) => `${l} (no sliced numbers)`),
+    ...sheet.quotedOnly.map((l) => `${l} (on the quote, not the build sheet)`),
+  ]
+  const delta = (x: number, y: number) => {
+    const d = Math.round((y - x) * 100) / 100
+    return Math.abs(d) < 0.005 ? '—' : `${d > 0 ? '+' : '−'}${money(Math.abs(d))}`
+  }
+  const copies = (n: number) => `${n} cop${n === 1 ? 'y' : 'ies'}`
+
   return (
-    <div className={`attn ${Math.abs(diff) >= 0.005 ? 'warn' : ''}`} data-testid="sheet-price" style={{ marginTop: 10 }}>
-      <div>
-        <strong>The build sheet now prices at {money(asBuilt.priced.total)}</strong>{' '}
-        — {sheet.sheetCopies} cop{sheet.sheetCopies === 1 ? 'y' : 'ies'} against {sheet.quotedCopies} quoted at{' '}
-        {money(asQuoted.priced.total)}
-        {Math.abs(diff) >= 0.005 && (
+    <>
+      <div className={changed ? 'attn warn' : 'hint'} data-testid="sheet-price" style={{ marginTop: 0, marginBottom: 10 }}>
+        {changed ? (
           <>
-            {' '}
-            ({diff > 0 ? '+' : '−'}
-            {money(Math.abs(diff))})
+            <strong>The build sheet now prices at {money(asBuilt.priced.total)}</strong> — {copies(sheet.sheetCopies)}{' '}
+            against {sheet.quotedCopies} quoted at {money(asQuoted.priced.total)} ({delta(asQuoted.priced.total, asBuilt.priced.total)}).
+          </>
+        ) : (
+          <>
+            The build sheet matches the quote: {copies(sheet.sheetCopies)}, {money(asQuoted.priced.total)}.
           </>
         )}
-        .
+        {sheet.added.length > 0 && <> New from their own files: {sheet.added.join(', ')}.</>}
+        {loose.length > 0 && <> Not repriced: {loose.join('; ')}.</>}
       </div>
-      <div className="hint" style={{ marginTop: 4 }}>
-        Same rates, design and finishing as the quote; only the copies changed.
-        {sheet.added.length > 0 && ` New from their own files: ${sheet.added.join(', ')}.`}
-        {loose.length > 0 && ` Not repriced: ${loose.join('; ')}.`}
+
+      <div style={{ overflowX: 'auto' }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Cost to make it</th>
+              <th className="r">{changed ? 'Quoted' : 'Estimate'}</th>
+              {changed && <th className="r">Build sheet</th>}
+              {changed && <th className="r">Difference</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {a.lines.map((l, i) => {
+              const m = b.lines[i]
+              return (
+                <tr key={l.key}>
+                  <td>
+                    <div style={{ color: 'var(--txt)' }}>{l.label}</div>
+                    <div className="pmeta" style={{ whiteSpace: 'normal' }}>
+                      {l.key === 'material'
+                        ? `${Math.round(asBuilt.priced.totalUnits).toLocaleString()}${unit} on the build sheet`
+                        : l.key === 'machine' || l.key === 'wear'
+                          ? `${Math.round(asBuilt.priced.machineHours * 10) / 10} machine hours on the build sheet`
+                          : 'Design and finishing, at the hours quoted'}
+                    </div>
+                  </td>
+                  <td className="r mono">{money(l.quoted)}</td>
+                  {changed && <td className="r mono">{money(m.quoted)}</td>}
+                  {changed && <td className="r mono">{delta(l.quoted, m.quoted)}</td>}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
       </div>
-      {!inRecord && sheet.changed && (
-        <div className="btnrow" style={{ marginTop: 8, alignItems: 'center' }}>
+
+      <div className="grid3" style={{ marginTop: 12 }}>
+        <Stat
+          label="They pay (before tax)"
+          value={money(b.netRevenue)}
+          sub={changed ? `quoted ${money(a.netRevenue)}` : undefined}
+        />
+        <Stat
+          label="Cost to make it"
+          value={money(b.quotedCost)}
+          sub={changed ? `quoted ${money(a.quotedCost)}` : undefined}
+        />
+        <Stat
+          label="Estimated margin"
+          value={money(b.quotedMargin)}
+          tone={b.quotedMargin < 0 ? 'crit' : ''}
+          sub={changed ? `quoted ${money(a.quotedMargin)}` : 'before anything is printed'}
+        />
+      </div>
+
+      {!inRecord && changed && (
+        <div className="btnrow" style={{ marginTop: 12, alignItems: 'center' }}>
           <Link to={`/intake?revise=${jobId}&from=sheet`} className="btn sm" style={{ textDecoration: 'none' }}>
             Revise the quote to match
           </Link>
           <span className="hint" style={{ margin: 0 }}>
-            {status === 'accepted'
-              ? 'The client accepted the old price. The new one is a revision they see and agree to.'
-              : 'The quote stays as sent until you revise it.'}
+            {Math.abs(diff) < 0.005
+              ? 'Same price, different copies -- revise so the quote says what is being made.'
+              : status === 'accepted'
+                ? 'The client accepted the old price. The new one is a revision they see and agree to.'
+                : 'The quote stays as sent until you revise it.'}
           </span>
         </div>
       )}
-    </div>
+    </>
   )
+}
+
+/** A priced quote's cost lines and margin, with nothing recorded against
+ *  it -- the "quoted" half of the variance, on its own. */
+function estimateOf(p: PricedQuote, rates: RateSet) {
+  return compareToQuote(p, NO_ACTUALS, rates)
+}
+
+const NO_ACTUALS: ProjectActuals = {
+  materialUnits: 0, failedUnits: 0, materialCost: 0, machineHours: 0, machineCost: 0, wearCost: 0,
+  powerCost: 0, runs: 0, failedRuns: 0, designHours: 0, finishingHours: 0, adminHours: 0,
 }

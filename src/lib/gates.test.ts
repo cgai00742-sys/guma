@@ -162,10 +162,10 @@ describe('gateStatus', () => {
   it('a starred item ticked without a note blocks, and says so', () => {
     const answers: Record<string, GateAnswer> = {
       ...ticked(...GATES.design.map((i) => i.key)),
-      hours: { checked: true, note: '   ' },
+      signoff: { checked: true, note: '   ' },
     }
     const g = gateStatus('design', answers, facts())
-    expect(g.items.find((i) => i.key === 'hours')!.noteMissing).toBe(true)
+    expect(g.items.find((i) => i.key === 'signoff')!.noteMissing).toBe(true)
     expect(g.blocked).toBe(true)
     expect(g.reason).toContain('note')
   })

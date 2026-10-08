@@ -142,12 +142,6 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       why: 'Printing a design nobody approved is printing it twice. Say where the yes lives.',
       needsNote: true,
     },
-    {
-      key: 'hours',
-      label: 'Design hours on the quote match the hours actually spent',
-      why: 'The single most common place a small shop quietly loses its margin. Log your hours above and this page shows you the gap.',
-      needsNote: true,
-    },
   ],
   scheduled: [
     {
@@ -208,6 +202,15 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       key: 'finishing',
       label: 'Finishing done, or explicitly not needed',
       why: 'Finishing hours quoted but never done means the price was wrong; done but never quoted, worse.',
+    },
+    {
+      // Moved from Design (CG, 8 Oct: no hour logging before anything is
+      // built). Checked here, where every hour -- design and finishing --
+      // is logged against the job, before the invoice goes out.
+      key: 'hours',
+      label: 'Hours on the quote match the hours actually spent',
+      why: 'The single most common place a small shop quietly loses its margin. Log your hours under What it actually took and this page shows you the gap.',
+      needsNote: true,
     },
     {
       key: 'photos',
