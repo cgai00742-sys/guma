@@ -1631,3 +1631,13 @@ a.brand:focus-visible{outline:2px solid var(--biolum);outline-offset:3px;border-
   body{background:#fff}
   .pane,.card,.kpi{break-inside:avoid}
 }
+
+/* "The project so far": earlier stages, read-only (CG, 7 Oct 2026). */
+fieldset.record{border:0;padding:0;margin:0;min-width:0}
+fieldset.record[disabled] input,
+fieldset.record[disabled] select,
+fieldset.record[disabled] textarea{opacity:.85;cursor:default}
+fieldset.record[disabled] .btn,
+fieldset.record[disabled] .linkbtn{display:none}
+details.sofar-stage{border:1px solid var(--line);border-radius:var(--radius);padding:0 10px 6px;background:var(--panel-2)}
+details.sofar-stage>summary{cursor:pointer;list-style:none}

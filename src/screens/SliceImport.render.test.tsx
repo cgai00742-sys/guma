@@ -145,6 +145,11 @@ async function seedShop(kind: 'client' | 'inhouse' = 'client') {
     },
   })
   await data.takeProjectIn(ctx.shop.id, saved.jobId, ctx.profile.id)
+  // Files are read in and prints recorded where the machines run: In build
+  // (stagePlan). Intake shows only the brief and the quote.
+  for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
+    await data.updateJobPhase(ctx.shop.id, saved.jobId, ctx.profile.id, to)
+  }
   if (kind === 'inhouse') {
     const id = await data.createInHouseJob(ctx.shop.id, { title: 'PETG calibration tower' })
     return { ctx, data, jobId: id }
@@ -164,7 +169,7 @@ async function renderProject(jobId: string, ctx: unknown) {
       </Routes>
     </MemoryRouter>,
   )
-  await screen.findByLabelText(/import a sliced file/i)
+  await screen.findByText('The project so far')
 }
 
 /** A PrusaSlicer G-code with two labelled objects, as the slicer writes it. */
@@ -804,7 +809,7 @@ describe('a failed part, Voltage-style', () => {
   })
 })
 
-describe("CG's Maui: one G-code uploaded several times, project already Done", () => {
+describe("CG's Maui: one G-code uploaded several times, project at Made", () => {
   it('shows the file once under What it actually took, and one click records it', async () => {
     const { ctx, jobId, data } = await seedShop('inhouse')
     currentDb.sqlite.exec('update materials set on_hand = 1000')
@@ -831,7 +836,7 @@ describe("CG's Maui: one G-code uploaded several times, project already Done", (
         )
         .run(`old-${i}`, ctx.shop.id, jobId, input.fileName, input.kind, input.printerModel, input.materialId, input.estMinutes, input.estGrams, `2026-09-2${i}T10:00:00Z`)
     }
-    for (const to of ['review', 'delivered'] as const) {
+    for (const to of ['review'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
 
@@ -839,7 +844,7 @@ describe("CG's Maui: one G-code uploaded several times, project already Done", (
     await renderProject(jobId, ctx)
 
     const region = await screen.findByRole('region', { name: /from the sliced files/i })
-    // Open on a finished project, not folded away.
+    // Open, not folded away.
     expect(region.closest('details')?.hasAttribute('open')).toBe(true)
     expect(within(region).getAllByText('Maui bathy.gcode')).toHaveLength(1)
     within(region).getByText(/uploaded 3 times — counted once/i)
@@ -896,10 +901,10 @@ describe('moving a project backwards', () => {
 })
 
 describe('adding parts after the sheet was checked', () => {
-  it('lets a Done project take another piece, with a reason in Activity', async () => {
+  it('lets a project at Made take another piece, with a reason in Activity', async () => {
     const { ctx, jobId, data } = await seedShop('inhouse')
     await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Maui Top', qty: 1 })
-    for (const to of ['review', 'delivered'] as const) {
+    for (const to of ['review'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     const user = userEvent.setup()
@@ -1024,11 +1029,11 @@ describe('removing a part that is wrong', () => {
     await screen.findByText(/Removed part "Wrong piece" ×2\./)
   })
 
-  it('works on a Done project too, with a reason', async () => {
+  it('works on a project at Made too, with a reason', async () => {
     const { ctx, jobId, data } = await seedShop('inhouse')
     await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Maui Top', qty: 1 })
     await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Duplicate', qty: 1 })
-    for (const to of ['review', 'delivered'] as const) {
+    for (const to of ['review'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     const user = userEvent.setup()
@@ -1048,16 +1053,19 @@ describe('removing a part that is wrong', () => {
 
 describe('failing one part of a plate, and swapping in its fixed file', () => {
   it('links a one-object reprint file to that part, and recording it marks the part reprinted', async () => {
-    const { ctx, jobId } = await seedShop()
+    const { ctx, jobId, data } = await seedShop()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
-    // The plate prints -- at Intake, before the stages caught up.
+    // The plate prints, In build.
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByText(/Recorded as printed on/i)
 
-    // Cap passes; one Buoy shell came off warped.
+    // Checking happens at Review: Cap passes, one Buoy shell came off warped.
+    await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, 'review')
+    cleanup()
+    await renderProject(jobId, ctx)
     await user.click(await screen.findByRole('button', { name: /^pass cap$/i }))
     await user.click(await screen.findByRole('button', { name: /^fail buoy shell$/i }))
     await user.type(screen.getByLabelText(/what went wrong/i), 'Warped corner')

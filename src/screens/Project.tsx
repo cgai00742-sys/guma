@@ -71,6 +71,7 @@ import {
   deleteProject,
   recordPayment,
   setGateItem,
+  skipGateItem,
   updateJobPhase,
   updateProjectFields,
   listShelf,
@@ -106,6 +107,7 @@ import {
 import { useRowAnchor } from '../lib/rowAnchor'
 import { mb, packFile, tooBigNote, unpackFile, type KeptFile } from '../lib/sliceFile'
 import {
+  allowedStatuses,
   awaitingPrint,
   nextStatuses,
   buildingPhase,
@@ -122,6 +124,16 @@ import { makeMoney } from '../lib/pricing'
 import { todayISO, formatDate } from '../lib/dates'
 import { groupSliceFiles, machineFor, type FileGroup } from '../lib/fromFiles'
 import { seriesAncestors, seriesPath } from '../lib/series'
+import {
+  canImport,
+  canPrint,
+  hoursKind,
+  moneyMode,
+  recordFor,
+  stagesBehind,
+  workFor,
+  type Section,
+} from '../lib/stagePlan'
 import { startBy } from '../lib/schedule'
 import { defaultOpen, readFolds, writeFolds, type FoldScope } from '../lib/folds'
 import {
@@ -318,6 +330,16 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
     }
   }
 
+  /** Skip a gate item on purpose with a reason, or take the skip back. */
+  async function skipItem(item: ResolvedGateItem, reason: string | null) {
+    try {
+      await skipGateItem(jobId, ctx.profile.id, shown, item.key, item.label, reason)
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   async function advance() {
     if (!liveGate.next || liveGate.blocked) return
     setBusy(true)
@@ -425,6 +447,500 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   const ladder = ladderFor(detail.facts.kind)
   const label = (p: JobPhase) => phaseLabel(p, detail.facts.kind)
   const here = phaseIndex(detail.phase, detail.facts.kind)
+
+
+  /* ---- sections: each one is either this stage's work or history ---- */
+  // `inRecord` renders a section inside "The project so far": forced open
+  // (its stage dropdown is the thing that folds) and read-only.
+  const mm = moneyMode(detail.phase)
+  const sectionView: Record<Section, (inRecord: boolean) => React.ReactNode> = {
+    brief: (inRecord) => (
+      <>
+      {/* ---- what this project is ----
+          Sits first because the intake gate reads the brief, and a fact a
+          gate reads has to be changeable from the same screen that tells
+          you it is blocking. It was not, and a project saved with an empty
+          brief could never leave intake. */}
+      <details className="sec fold" style={{ marginTop: 18 }}
+        data-fold="brief"
+        open={inRecord || fold.isOpen('brief')}
+        onToggle={(e) => fold.set('brief', e.currentTarget.open)}
+      >
+        <summary className="sechead">
+          <h4>What they want</h4>
+          <span className={`secstat ${(detail.brief ?? '').trim().length >= 20 ? 'ok' : 'warn'}`}>
+            {(detail.brief ?? '').trim() ? 'written down' : 'nothing written down'}
+          </span>
+        </summary>
+        <div className="pane" style={{ marginBottom: 0 }}>
+          <div className="fld" style={{ marginBottom: 0 }}>
+            <label className="lbl" htmlFor="p-brief">
+              What they asked for
+            </label>
+            <textarea
+              id="p-brief"
+              rows={3}
+              defaultValue={detail.brief ?? ''}
+              placeholder="Two lines you can re-read in three weeks."
+              onBlur={(e) => {
+                const v = e.target.value.trim() || null
+                if (v !== detail.brief) void patch({ brief: v })
+              }}
+            />
+            <div className="hint">
+              Saved when you click away — the two lines you will wish you had written when the
+              revision argument starts.
+            </div>
+          </div>
+          {!mine && (
+            <div className="grid2" style={{ marginTop: 10 }}>
+              <div className="fld" style={{ marginBottom: 0 }}>
+                <label className="lbl" htmlFor="poc">
+                  Point of contact
+                </label>
+                <input
+                  id="poc"
+                  defaultValue={facts.poc ?? ''}
+                  placeholder="Who to chase"
+                  onBlur={(e) => {
+                    if ((e.target.value.trim() || null) !== facts.poc)
+                      void patch({ poc: e.target.value.trim() || null })
+                  }}
+                />
+              </div>
+              <div className="fld" style={{ marginBottom: 0 }}>
+                <label className="lbl" htmlFor="p-needed">
+                  Needed by
+                </label>
+                <input
+                  id="p-needed"
+                  type="date"
+                  value={facts.neededBy ?? ''}
+                  onChange={(e) => void patch({ neededBy: e.target.value || null })}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      </details>
+
+      </>
+    ),
+    money: (inRecord) =>
+      mine ? null : (
+        <>
+      {/* ---- money ---- */}
+      <details className="sec fold"
+        data-fold="money"
+        open={inRecord || fold.isOpen('money')}
+        onToggle={(e) => fold.set('money', e.currentTarget.open)}
+      >
+        <summary className="sechead">
+          <h4>{mm === 'price' ? 'The quote' : mm === 'approve' ? 'Quote and deposit' : 'Money'}</h4>
+          <span
+            className={`secstat ${
+              facts.depositOwed > 0 || (detail.phase === 'delivered' && facts.balanceOwed > 0)
+                ? 'crit'
+                : facts.quoteStatus === null
+                  ? 'warn'
+                  : 'ok'
+            }`}
+          >
+            {facts.quoteStatus === null ? 'not priced' : `quote ${facts.quoteStatus}`}
+          </span>
+        </summary>
+        <div className="pane" style={{ marginBottom: 0 }}>
+          {facts.quoteStatus === null || (detail.quote == null) ? (
+            <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
+              No quote has been priced for this project yet. Everything spent on it so far is
+              unbilled.{' '}
+              <Link to="/intake" className="linkbtn">
+                Price it now
+              </Link>
+              .
+            </div>
+          ) : (
+            <>
+              <div className="grid3">
+                <Stat label="Quoted" value={facts.quoteTotal == null ? '—' : money(facts.quoteTotal)} />
+                {mm !== 'price' && (
+                  <Stat
+                    label="Deposit owed"
+                    value={money(facts.depositOwed)}
+                    tone={facts.depositOwed > 0 ? 'crit' : 'ok'}
+                    sub={facts.depositDue > 0 ? `of ${money(facts.depositDue)} due` : 'none required'}
+                  />
+                )}
+                {mm === 'payments' && (
+                  <Stat
+                    label="Balance owed"
+                    value={money(facts.balanceOwed)}
+                    tone={
+                      facts.balanceOwed > 0 && detail.phase === 'delivered'
+                        ? 'crit'
+                        : facts.balanceOwed > 0
+                          ? ''
+                          : facts.quoteStatus === 'accepted'
+                            ? 'ok'
+                            : ''
+                    }
+                    // Not "paid in full" on a quote nobody has accepted: nothing
+                    // has been billed yet, which is a different fact.
+                    sub={
+                      facts.quoteStatus !== 'accepted'
+                        ? 'nothing billed yet'
+                        : facts.balanceOwed > 0
+                          ? 'still outstanding'
+                          : 'paid in full'
+                    }
+                  />
+                )}
+              </div>
+              <div className="btnrow" style={{ marginTop: 12, alignItems: 'center' }}>
+                {mm === 'approve' && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                  <span style={{ color: 'var(--txt-3)' }}>Quote is</span>
+                  <select
+                    value={facts.quoteStatus ?? 'draft'}
+                    disabled={busy || !detail.quote}
+                    style={{ width: 'auto' }}
+                    onChange={(e) => void markQuote(e.target.value as QuoteStatus)}
+                  >
+                    <option value="draft">a draft — not sent yet</option>
+                    <option value="sent">sent to the client</option>
+                    <option value="accepted">accepted</option>
+                    <option value="declined">declined</option>
+                    <option value="expired">expired</option>
+                  </select>
+                </label>
+                )}
+                {detail.quote && (
+                  <Link
+                    to={`/intake?revise=${detail.jobId}`}
+                    className="btn sm"
+                    style={{ textDecoration: 'none' }}
+                    title={
+                      detail.quote.status === 'accepted'
+                        ? 'Prices a new version against this project. The accepted one stays exactly as the client saw it, and above 10% over it you will be asked what the client changed.'
+                        : 'Prices a new version against this project.'
+                    }
+                  >
+                    Revise the quote
+                  </Link>
+                )}
+                {mm === 'approve' && (
+                  <span className="hint" style={{ marginTop: 0 }}>
+                    Move it when the quote actually moves — a quote marked accepted that nobody
+                    agreed to is worse than no record at all.
+                  </span>
+                )}
+              </div>
+
+              <div className="hint" style={{ marginTop: 10 }}>
+                Every figure here is derived from the payments below, not stored — record one and
+                all three move at once.
+                {detail.quote?.status === 'sent' || detail.quote?.status === 'accepted' ? (
+                  <>
+                    {' '}
+                    <Link to={`/quote/${detail.quote.id}/print`} className="linkbtn">
+                      Open the quote document
+                    </Link>
+                    .
+                  </>
+                ) : null}
+              </div>
+
+              {mm !== 'price' && (
+              <PaymentLog
+                payments={detail.payments}
+                money={money}
+                suggestion={
+                  facts.depositOwed > 0
+                    ? { kind: 'deposit', amount: facts.depositOwed }
+                    : facts.balanceOwed > 0
+                      ? { kind: 'balance', amount: facts.balanceOwed }
+                      : null
+                }
+                quoteId={detail.quote?.id ?? null}
+                busy={busy}
+                onRecord={pay}
+              />
+              )}
+            </>
+          )}
+        </div>
+      </details>
+
+        </>
+      ),
+    window: (inRecord) =>
+      mine ? null : (
+        <>
+      {/* ---- the promise ---- */}
+      <details className="sec fold"
+        data-fold="people"
+        open={inRecord || fold.isOpen('people')}
+        onToggle={(e) => fold.set('people', e.currentTarget.open)}
+      >
+        <summary className="sechead">
+          <h4>Delivery window</h4>
+          <span className={`secstat ${facts.windowLocked ? 'ok' : 'warn'}`}>
+            {facts.windowLocked ? 'committed' : 'still moveable'}
+          </span>
+        </summary>
+        <div className="pane" style={{ marginBottom: 0 }}>
+          <div className="grid2">
+            <div className="fld">
+              <label className="lbl" htmlFor="w-from">
+                Earliest
+              </label>
+              <input
+                id="w-from"
+                type="date"
+                value={facts.windowFrom ?? ''}
+                onChange={(e) => void patch({ windowFrom: e.target.value || null })}
+              />
+            </div>
+            <div className="fld">
+              <label className="lbl" htmlFor="w-to">
+                Needed by
+              </label>
+              <input
+                id="w-to"
+                type="date"
+                value={facts.neededBy ?? ''}
+                onChange={(e) => void patch({ neededBy: e.target.value || null })}
+              />
+            </div>
+          </div>
+          <div className="btnrow" style={{ alignItems: 'center' }}>
+            <button
+              type="button"
+              className={facts.windowLocked ? 'btn' : 'btn primary'}
+              disabled={busy || !facts.neededBy}
+              onClick={() => void patch({ windowLocked: !facts.windowLocked })}
+            >
+              {facts.windowLocked ? 'Reopen the window' : 'Commit to this date'}
+            </button>
+            <button
+              type="button"
+              className={facts.atRisk ? 'btn danger' : 'btn'}
+              disabled={busy}
+              onClick={() => void patch({ atRisk: !facts.atRisk })}
+            >
+              {facts.atRisk ? 'Clear the risk flag' : 'Flag as at risk'}
+            </button>
+            <span className="hint" style={{ marginTop: 0 }}>
+              {!facts.neededBy
+                ? 'Set a date before committing to one.'
+                : facts.windowLocked
+                  ? 'The client is holding you to this. Reopening it is a conversation you have to have with them.'
+                  : 'Until you commit, this date is yours to move without telling anyone.'}
+            </span>
+          </div>
+        </div>
+      </details>
+
+        </>
+      ),
+    handover: (inRecord) =>
+      mine ? null : (
+        <>
+      {/* ---- what actually happened ---- */}
+      <details className="sec fold"
+        data-fold="handover"
+        open={inRecord || fold.isOpen('handover')}
+        onToggle={(e) => fold.set('handover', e.currentTarget.open)}
+      >
+        <summary className="sechead">
+          <h4>Handover</h4>
+          <span className={`secstat ${facts.deliveryOn ? 'ok' : ''}`}>
+            {facts.deliveryOn ? `handed over ${facts.deliveryOn}` : 'not yet delivered'}
+          </span>
+        </summary>
+        <div className="pane" style={{ marginBottom: 0 }}>
+          <div className="grid2">
+            <div className="fld">
+              <label className="lbl" htmlFor="d-on">
+                Date it changed hands
+              </label>
+              <input
+                id="d-on"
+                type="date"
+                value={facts.deliveryOn ?? ''}
+                onChange={(e) => void patch({ deliveryOn: e.target.value || null })}
+              />
+            </div>
+            <div className="fld">
+              <label className="lbl" htmlFor="d-how">
+                How
+              </label>
+              <select
+                id="d-how"
+                value={facts.deliveryHow ?? ''}
+                onChange={(e) => void patch({ deliveryHow: e.target.value || null })}
+              >
+                <option value="">—</option>
+                {DELIVERY_METHODS.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="hint" style={{ marginTop: 0 }}>
+            Recorded because it is the date every later argument is measured from — a warranty
+            claim, a late-payment chase, a repeat order six months on.
+          </div>
+        </div>
+      </details>
+        </>
+      ),
+    build: (inRecord) => (
+      <>
+      <details className="sec fold"
+        data-fold="build"
+        open={inRecord || fold.isOpen('build')}
+        onToggle={(e) => fold.set('build', e.currentTarget.open)}
+      >
+        <summary className="sechead">
+          <h4>Build sheet</h4>
+          <span
+            className={`secstat ${
+              detail.parts.length === 0
+                ? ''
+                : facts.partsReprint > 0
+                  ? 'warn'
+                  : facts.partsPassed === facts.parts
+                    ? 'ok'
+                    : ''
+            }`}
+          >
+            {detail.parts.length === 0
+              ? 'not used on this project'
+              : `${facts.partsPassed} of ${facts.parts} passed` +
+                (facts.partsReprint > 0 ? ` · ${facts.partsReprint} going back` : '')}
+          </span>
+        </summary>
+        <StartByLine detail={detail} locale={rates.locale} />
+        <BuildSheet
+          ctx={ctx}
+          detail={detail}
+          locked={phaseIndex(detail.phase) >= phaseIndex('review')}
+          busy={busy}
+          onChanged={reload}
+          setError={setError}
+        />
+      </details>
+
+      </>
+    ),
+    took: (inRecord) => (
+      <>
+      {/* ---- what it actually took ---- */}
+      <details className="sec fold"
+        data-fold="actuals"
+        open={inRecord || fold.isOpen('actuals')}
+        onToggle={(e) => fold.set('actuals', e.currentTarget.open)}
+      >
+        <summary className="sechead">
+          <h4>What it actually took</h4>
+          <span
+            className={`secstat ${
+              unrecordedFiles > 0
+                ? 'warn'
+                : mine
+                ? ''
+                : comparison === null
+                ? ''
+                : !comparison.hasActuals
+                  ? ''
+                  : comparison.actualMargin !== null && comparison.actualMargin < 0
+                    ? 'crit'
+                    : comparison.actualCost !== null && comparison.actualCost > comparison.quotedCost
+                      ? 'warn'
+                      : 'ok'
+            }`}
+          >
+            {unrecordedFiles > 0
+              ? `${unrecordedFiles} sliced file${unrecordedFiles === 1 ? '' : 's'} not recorded yet`
+              : mine
+              ? detail.facts.hasActuals
+                ? `${money(detail.facts.actualCost)} spent so far`
+                : 'nothing recorded yet'
+              : comparison === null
+                ? 'needs a quote'
+                : !comparison.hasActuals
+                  ? 'nothing recorded yet'
+                  : comparison.partial
+                    ? 'partly recorded'
+                    : `real margin ${money(comparison.actualMargin ?? 0)}`}
+          </span>
+        </summary>
+        <div className="pane" style={{ marginBottom: 0 }}>
+          {/*
+            An in-house job has no quote and never will, so "there is
+            nothing to compare against until this has a quote" would be a
+            permanent, useless sentence. What its cost compares against is
+            what it produced -- which is the section directly below.
+          */}
+          {mine ? (
+            <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
+              Nobody is paying for this, so there is no quote to measure it against. What it cost is
+              measured against what it made instead — log the runs and hours here, then record what
+              came out of it below.
+            </div>
+          ) : comparison === null ? (
+            <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
+              There is nothing to compare against until this project has a quote. Runs and hours can
+              still be logged below — they will line up once it does.
+            </div>
+          ) : (
+            <Variance comparison={comparison} money={money} />
+          )}
+
+          <FromTheFiles ctx={ctx} detail={detail} busy={busy} onChanged={reload} setError={setError} />
+
+          <RunLog
+            ctx={ctx}
+            detail={detail}
+            money={money}
+            busy={busy}
+            onChanged={reload}
+            setError={setError}
+          />
+        </div>
+      </details>
+
+      </>
+    ),
+    made: () => (
+      <>
+      {/* ---- what it made, for the shop's own work ---- */}
+      {detail.facts.kind === 'inhouse' && (
+        <MadeSection
+          ctx={ctx}
+          detail={detail}
+          money={money}
+          onSaved={reload}
+          setError={setError}
+        />
+      )}
+
+      </>
+    ),
+    closeout: () => (
+      <>
+      {/* ---- what it came to, once it is finished ---- */}
+      {detail.phase === 'delivered' && (
+        <Closeout detail={detail} money={money} locale={rates.locale} jobId={jobId} />
+      )}
+
+      </>
+    ),
+  }
+  const behind = isDraft ? [] : stagesBehind(detail.phase, detail.facts.kind)
 
   return (
     <div className="wrap" style={{ paddingTop: 16, paddingBottom: 96 }}>
@@ -580,7 +1096,75 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         </div>
       )}
 
-      {/* ---- the family ----
+      {/* ---- flags, spelled out ---- */}
+      {flags.length > 0 && (
+        <FlagPanel
+          flags={flags}
+          busy={busy}
+          onClear={(key) => (key === 'over-ceiling' ? patch({ overCeiling: null }) : undefined)}
+        />
+      )}
+
+
+      {/* ---- the project so far ----
+          Everything earlier stages did, filed under the stage that did it,
+          read-only. Closed while there is work to do; open on a finished
+          project, where it IS the page (CG, 7 Oct: "the last stage is a
+          review of the entire project"). */}
+      <details
+        className="sec fold"
+        data-fold="sofar"
+        style={{ marginTop: 18 }}
+        open={fold.isOpen('sofar')}
+        onToggle={(e) => fold.set('sofar', e.currentTarget.open)}
+      >
+        <summary className="sechead">
+          <h4>The project so far</h4>
+          <span className="secstat">
+            {behind.length === 0
+              ? 'just started'
+              : `${behind.length} stage${behind.length === 1 ? '' : 's'} behind this one`}
+            {` · ${detail.events.length} entr${detail.events.length === 1 ? 'y' : 'ies'} in Activity`}
+          </span>
+        </summary>
+        <div className="stack" style={{ gap: 6 }}>
+          {behind.map((p) => {
+            const g = gateStatus(p, detail.gates[p] ?? {}, facts)
+            const skipped = g.items.filter((i) => i.skipped).length
+            const secs = recordFor(p, detail.phase, detail.facts.kind)
+            return (
+              <details key={p} className="sofar-stage">
+                <summary className="sechead">
+                  <h4>{label(p)}</h4>
+                  <span className={`secstat ${g.blocked ? 'warn' : 'ok'}`}>
+                    {g.total === 0 ? 'no gate' : `${g.done} of ${g.total} cleared`}
+                    {skipped > 0 ? ` · ${skipped} skipped` : ''}
+                  </span>
+                </summary>
+                <div className="pane" style={{ marginBottom: 6 }}>
+                  {g.items.map((i) => (
+                    <div key={i.key} className="histitem">
+                      <span style={{ color: i.skipped ? 'var(--warn)' : i.checked ? 'var(--ok)' : 'var(--txt-3)' }}>
+                        {i.skipped ? '↷' : i.checked ? '✓' : '·'}
+                      </span>
+                      <span>{i.label}</span>
+                      {i.skipped && <div className="histnote">Skipped — {i.skipped}</div>}
+                      {!i.skipped && i.note && <div className="histnote">{i.note}</div>}
+                    </div>
+                  ))}
+                  {g.total === 0 && <div className="hint">Nothing to check at this stage.</div>}
+                </div>
+                {secs.length > 0 && (
+                  <fieldset disabled className="record">
+                    {secs.map((sec) => (
+                      <Fragment key={sec}>{sectionView[sec](true)}</Fragment>
+                    ))}
+                  </fieldset>
+                )}
+              </details>
+            )
+          })}
+          {/* ---- the family ----
           The shop's own work lives in a series (0026_series.sql); client
           work keeps the older "continues from" program link. */}
       {detail.facts.kind === 'inhouse' ? (
@@ -606,72 +1190,77 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       />
       )}
 
-      {/* ---- what it came to, once it is finished ---- */}
-      {detail.phase === 'delivered' && (
-        <Closeout detail={detail} money={money} locale={rates.locale} jobId={jobId} />
-      )}
 
-      {/* ---- flags, spelled out ---- */}
-      {flags.length > 0 && (
-        <FlagPanel
-          flags={flags}
-          busy={busy}
-          onClear={(key) => (key === 'over-ceiling' ? patch({ overCeiling: null }) : undefined)}
-        />
-      )}
-
-      {/* ---- what this project is ----
-          Sits first because the intake gate reads the brief, and a fact a
-          gate reads has to be changeable from the same screen that tells
-          you it is blocking. It was not, and a project saved with an empty
-          brief could never leave intake. */}
-      <details className="sec fold" style={{ marginTop: 18 }}
-        data-fold="brief"
-        open={fold.isOpen('brief')}
-        onToggle={(e) => fold.set('brief', e.currentTarget.open)}
+      {/* ---- activity ---- */}
+      <details className="sec fold"
+        data-fold="activity"
+        open={fold.isOpen('activity')}
+        onToggle={(e) => fold.set('activity', e.currentTarget.open)}
       >
         <summary className="sechead">
-          <h4>The brief</h4>
-          <span className={`secstat ${(detail.brief ?? '').trim().length >= 20 ? 'ok' : 'warn'}`}>
-            {(detail.brief ?? '').trim() ? 'written down' : 'nothing written down'}
+          <h4>Activity</h4>
+          <span className="secstat">
+            {detail.events.length} entr{detail.events.length === 1 ? 'y' : 'ies'}
           </span>
         </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
-          <div className="fld">
-            <label className="lbl" htmlFor="p-title">
-              Project
-            </label>
-            <input
-              id="p-title"
-              defaultValue={detail.title}
-              onBlur={(e) => {
-                const v = e.target.value.trim()
-                if (v && v !== detail.title) void patch({ title: v })
-              }}
+          <div className="fld" style={{ marginBottom: 8 }}>
+            <textarea
+              value={note}
+              rows={2}
+              placeholder="What changed? Even “waiting on the client” is information the next person needs."
+              onChange={(e) => setNote(e.target.value)}
             />
           </div>
-          <div className="fld" style={{ marginBottom: 0 }}>
-            <label className="lbl" htmlFor="p-brief">
-              What they asked for
-            </label>
-            <textarea
-              id="p-brief"
-              rows={3}
-              defaultValue={detail.brief ?? ''}
-              placeholder="Two lines you can re-read in three weeks."
-              onBlur={(e) => {
-                const v = e.target.value.trim() || null
-                if (v !== detail.brief) void patch({ brief: v })
-              }}
-            />
-            <div className="hint">
-              Saved when you click away. The intake gate reads this, so it is worth the two lines —
-              and it is the thing you will wish you had written when the revision argument starts.
-            </div>
+          <button
+            type="button"
+            className="btn sm primary"
+            disabled={busy || !note.trim()}
+            onClick={() => void postNote()}
+          >
+            Post update
+          </button>
+
+          <div className="updates">
+            {detail.events.length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--txt-3)' }}>
+                Nothing logged yet. Moving this project between stages will start the record on its
+                own.
+              </div>
+            )}
+            {detail.events.map((e) => (
+              <div key={e.id} className="upd">
+                <div className="m">
+                  {e.actorName ?? 'Someone'} · {e.at.slice(0, 10)}
+                  {e.kind === 'phase_change' ? ' · stage change' : e.kind === 'edit' ? ' · edit' : ''}
+                </div>
+                {e.kind === 'phase_change'
+                  ? `Moved ${
+                      phaseIndex(e.toPhase ?? 'intake', detail.facts.kind) <
+                      phaseIndex(e.fromPhase ?? 'intake', detail.facts.kind)
+                        ? 'back '
+                        : ''
+                    }from ${label(e.fromPhase ?? 'intake')} to ${label(e.toPhase ?? 'intake')}.${
+                      e.body ? ` Why: ${e.body}` : ''
+                    }`
+                  : (e.body ?? '')}
+              </div>
+            ))}
           </div>
         </div>
       </details>
 
+        </div>
+      </details>
+
+      {/* ---- this stage's work: only what moves it forward ---- */}
+      {workFor(detail.phase, detail.facts.kind).map((sec) => (
+        <Fragment key={sec}>{sectionView[sec](false)}</Fragment>
+      ))}
+
+      {/* ---- the gate: last, so it is the thing the page ends on ---- */}
+      {detail.phase !== 'delivered' && (
+        <>
       {/* ---- the gate ---- */}
       <details className="sec fold" style={{ marginTop: 18 }}
         data-fold="gate"
@@ -747,6 +1336,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                 item={item}
                 onToggle={(c) => void toggleGate(item, c)}
                 onNote={(t) => void saveGateNote(item, t)}
+                onSkip={(r) => void skipItem(item, r)}
               />
             ))}
             {gate.blocked && <div className="gblock">{gate.reason}</div>}
@@ -754,511 +1344,8 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         )}
       </details>
 
-      {/*
-        Three sections below exist only for work somebody is paying for.
-        Money, a promised window and a handover are not "empty" on a trial
-        print -- they do not apply at all, and showing them as unfilled
-        turns the page into a list of things you have failed to do. The
-        whole complaint about this program was too many options that do not
-        apply; this is the same bug wearing a different hat.
-      */}
-      {!mine && (
-        <>
-      {/* ---- money ---- */}
-      <details className="sec fold"
-        data-fold="money"
-        open={fold.isOpen('money')}
-        onToggle={(e) => fold.set('money', e.currentTarget.open)}
-      >
-        <summary className="sechead">
-          <h4>Money</h4>
-          <span
-            className={`secstat ${
-              facts.depositOwed > 0 || (detail.phase === 'delivered' && facts.balanceOwed > 0)
-                ? 'crit'
-                : facts.quoteStatus === null
-                  ? 'warn'
-                  : 'ok'
-            }`}
-          >
-            {facts.quoteStatus === null ? 'not priced' : `quote ${facts.quoteStatus}`}
-          </span>
-        </summary>
-        <div className="pane" style={{ marginBottom: 0 }}>
-          {facts.quoteStatus === null ? (
-            <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
-              No quote has been priced for this project yet. Everything spent on it so far is
-              unbilled.{' '}
-              <Link to="/intake" className="linkbtn">
-                Price it now
-              </Link>
-              .
-            </div>
-          ) : (
-            <>
-              <div className="grid3">
-                <Stat label="Quoted" value={facts.quoteTotal == null ? '—' : money(facts.quoteTotal)} />
-                <Stat
-                  label="Deposit owed"
-                  value={money(facts.depositOwed)}
-                  tone={facts.depositOwed > 0 ? 'crit' : 'ok'}
-                  sub={facts.depositDue > 0 ? `of ${money(facts.depositDue)} due` : 'none required'}
-                />
-                <Stat
-                  label="Balance owed"
-                  value={money(facts.balanceOwed)}
-                  tone={
-                    facts.balanceOwed > 0 && detail.phase === 'delivered'
-                      ? 'crit'
-                      : facts.balanceOwed > 0
-                        ? ''
-                        : 'ok'
-                  }
-                  sub={facts.balanceOwed > 0 ? 'still outstanding' : 'paid in full'}
-                />
-              </div>
-              <div className="btnrow" style={{ marginTop: 12, alignItems: 'center' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
-                  <span style={{ color: 'var(--txt-3)' }}>Quote is</span>
-                  <select
-                    value={facts.quoteStatus ?? 'draft'}
-                    disabled={busy || !detail.quote}
-                    style={{ width: 'auto' }}
-                    onChange={(e) => void markQuote(e.target.value as QuoteStatus)}
-                  >
-                    <option value="draft">a draft — not sent yet</option>
-                    <option value="sent">sent to the client</option>
-                    <option value="accepted">accepted</option>
-                    <option value="declined">declined</option>
-                    <option value="expired">expired</option>
-                  </select>
-                </label>
-                {detail.quote && (
-                  <Link
-                    to={`/intake?revise=${detail.jobId}`}
-                    className="btn sm"
-                    style={{ textDecoration: 'none' }}
-                    title={
-                      detail.quote.status === 'accepted'
-                        ? 'Prices a new version against this project. The accepted one stays exactly as the client saw it, and above 10% over it you will be asked what the client changed.'
-                        : 'Prices a new version against this project.'
-                    }
-                  >
-                    Revise the quote
-                  </Link>
-                )}
-                <span className="hint" style={{ marginTop: 0 }}>
-                  The client-approval gate reads this. Move it when the quote actually moves — a
-                  quote marked accepted that nobody agreed to is worse than no record at all.
-                </span>
-              </div>
-
-              <div className="hint" style={{ marginTop: 10 }}>
-                Every figure here is derived from the payments below, not stored — record one and
-                all three move at once.
-                {detail.quote?.status === 'sent' || detail.quote?.status === 'accepted' ? (
-                  <>
-                    {' '}
-                    <Link to={`/quote/${detail.quote.id}/print`} className="linkbtn">
-                      Open the quote document
-                    </Link>
-                    .
-                  </>
-                ) : null}
-              </div>
-
-              <PaymentLog
-                payments={detail.payments}
-                money={money}
-                suggestion={
-                  facts.depositOwed > 0
-                    ? { kind: 'deposit', amount: facts.depositOwed }
-                    : facts.balanceOwed > 0
-                      ? { kind: 'balance', amount: facts.balanceOwed }
-                      : null
-                }
-                quoteId={detail.quote?.id ?? null}
-                busy={busy}
-                onRecord={pay}
-              />
-            </>
-          )}
-        </div>
-      </details>
-
-      {/* ---- the promise ---- */}
-      <details className="sec fold"
-        data-fold="people"
-        open={fold.isOpen('people')}
-        onToggle={(e) => fold.set('people', e.currentTarget.open)}
-      >
-        <summary className="sechead">
-          <h4>Who and when</h4>
-          <span className={`secstat ${facts.windowLocked ? 'ok' : 'warn'}`}>
-            {facts.windowLocked ? 'committed' : 'still moveable'}
-          </span>
-        </summary>
-        <div className="pane" style={{ marginBottom: 0 }}>
-          <div className="grid3">
-            <div className="fld">
-              <label className="lbl" htmlFor="w-from">
-                Earliest
-              </label>
-              <input
-                id="w-from"
-                type="date"
-                value={facts.windowFrom ?? ''}
-                onChange={(e) => void patch({ windowFrom: e.target.value || null })}
-              />
-            </div>
-            <div className="fld">
-              <label className="lbl" htmlFor="w-to">
-                Needed by
-              </label>
-              <input
-                id="w-to"
-                type="date"
-                value={facts.neededBy ?? ''}
-                onChange={(e) => void patch({ neededBy: e.target.value || null })}
-              />
-            </div>
-            <div className="fld">
-              <label className="lbl" htmlFor="poc">
-                Point of contact
-              </label>
-              <input
-                id="poc"
-                defaultValue={facts.poc ?? ''}
-                placeholder="Who to chase"
-                onBlur={(e) => {
-                  if ((e.target.value.trim() || null) !== facts.poc)
-                    void patch({ poc: e.target.value.trim() || null })
-                }}
-              />
-            </div>
-          </div>
-          <div className="btnrow" style={{ alignItems: 'center' }}>
-            <button
-              type="button"
-              className={facts.windowLocked ? 'btn' : 'btn primary'}
-              disabled={busy || !facts.neededBy}
-              onClick={() => void patch({ windowLocked: !facts.windowLocked })}
-            >
-              {facts.windowLocked ? 'Reopen the window' : 'Commit to this date'}
-            </button>
-            <button
-              type="button"
-              className={facts.atRisk ? 'btn danger' : 'btn'}
-              disabled={busy}
-              onClick={() => void patch({ atRisk: !facts.atRisk })}
-            >
-              {facts.atRisk ? 'Clear the risk flag' : 'Flag as at risk'}
-            </button>
-            <span className="hint" style={{ marginTop: 0 }}>
-              {!facts.neededBy
-                ? 'Set a date before committing to one.'
-                : facts.windowLocked
-                  ? 'The client is holding you to this. Reopening it is a conversation you have to have with them.'
-                  : 'Until you commit, this date is yours to move without telling anyone.'}
-            </span>
-          </div>
-        </div>
-      </details>
-
-      {/* ---- what actually happened ---- */}
-      <details className="sec fold"
-        data-fold="handover"
-        open={fold.isOpen('handover')}
-        onToggle={(e) => fold.set('handover', e.currentTarget.open)}
-      >
-        <summary className="sechead">
-          <h4>Handover</h4>
-          <span className={`secstat ${facts.deliveryOn ? 'ok' : ''}`}>
-            {facts.deliveryOn ? `handed over ${facts.deliveryOn}` : 'not yet delivered'}
-          </span>
-        </summary>
-        <div className="pane" style={{ marginBottom: 0 }}>
-          <div className="grid2">
-            <div className="fld">
-              <label className="lbl" htmlFor="d-on">
-                Date it changed hands
-              </label>
-              <input
-                id="d-on"
-                type="date"
-                value={facts.deliveryOn ?? ''}
-                onChange={(e) => void patch({ deliveryOn: e.target.value || null })}
-              />
-            </div>
-            <div className="fld">
-              <label className="lbl" htmlFor="d-how">
-                How
-              </label>
-              <select
-                id="d-how"
-                value={facts.deliveryHow ?? ''}
-                onChange={(e) => void patch({ deliveryHow: e.target.value || null })}
-              >
-                <option value="">—</option>
-                {DELIVERY_METHODS.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="hint" style={{ marginTop: 0 }}>
-            Recorded because it is the date every later argument is measured from — a warranty
-            claim, a late-payment chase, a repeat order six months on.
-          </div>
-        </div>
-      </details>
-
         </>
       )}
-
-      {/*
-        The build sheet is NOT inside the !mine block above, and the reason
-        is worth stating because it was inside it until now.
-
-        Money, a promised window and a handover genuinely do not apply to a
-        shop's own trial print -- that is the whole point of that block. The
-        build sheet is different: a prototype has parts, a test plate has
-        parts, and an R&D print that fails twice has cost the shop material
-        and machine time exactly as a client's would. It was hidden only
-        because it happened to sit inside the same fragment, which also
-        meant slicer import was unreachable on in-house work -- the work
-        most likely to be sliced and re-sliced.
-      */}
-      <details className="sec fold"
-        data-fold="build"
-        open={fold.isOpen('build')}
-        onToggle={(e) => fold.set('build', e.currentTarget.open)}
-      >
-        <summary className="sechead">
-          <h4>Build sheet</h4>
-          <span
-            className={`secstat ${
-              detail.parts.length === 0
-                ? ''
-                : facts.partsReprint > 0
-                  ? 'warn'
-                  : facts.partsPassed === facts.parts
-                    ? 'ok'
-                    : ''
-            }`}
-          >
-            {detail.parts.length === 0
-              ? 'not used on this project'
-              : `${facts.partsPassed} of ${facts.parts} passed` +
-                (facts.partsReprint > 0 ? ` · ${facts.partsReprint} going back` : '')}
-          </span>
-        </summary>
-        <StartByLine detail={detail} locale={rates.locale} />
-        <BuildSheet
-          ctx={ctx}
-          detail={detail}
-          locked={phaseIndex(detail.phase) >= phaseIndex('review')}
-          busy={busy}
-          onChanged={reload}
-          setError={setError}
-        />
-      </details>
-
-      {/* ---- what it actually took ---- */}
-      <details className="sec fold"
-        data-fold="actuals"
-        open={fold.isOpen('actuals')}
-        onToggle={(e) => fold.set('actuals', e.currentTarget.open)}
-      >
-        <summary className="sechead">
-          <h4>What it actually took</h4>
-          <span
-            className={`secstat ${
-              unrecordedFiles > 0
-                ? 'warn'
-                : mine
-                ? ''
-                : comparison === null
-                ? ''
-                : !comparison.hasActuals
-                  ? ''
-                  : comparison.actualMargin !== null && comparison.actualMargin < 0
-                    ? 'crit'
-                    : comparison.actualCost !== null && comparison.actualCost > comparison.quotedCost
-                      ? 'warn'
-                      : 'ok'
-            }`}
-          >
-            {unrecordedFiles > 0
-              ? `${unrecordedFiles} sliced file${unrecordedFiles === 1 ? '' : 's'} not recorded yet`
-              : mine
-              ? detail.facts.hasActuals
-                ? `${money(detail.facts.actualCost)} spent so far`
-                : 'nothing recorded yet'
-              : comparison === null
-                ? 'needs a quote'
-                : !comparison.hasActuals
-                  ? 'nothing recorded yet'
-                  : comparison.partial
-                    ? 'partly recorded'
-                    : `real margin ${money(comparison.actualMargin ?? 0)}`}
-          </span>
-        </summary>
-        <div className="pane" style={{ marginBottom: 0 }}>
-          {/*
-            An in-house job has no quote and never will, so "there is
-            nothing to compare against until this has a quote" would be a
-            permanent, useless sentence. What its cost compares against is
-            what it produced -- which is the section directly below.
-          */}
-          {mine ? (
-            <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
-              Nobody is paying for this, so there is no quote to measure it against. What it cost is
-              measured against what it made instead — log the runs and hours here, then record what
-              came out of it below.
-            </div>
-          ) : comparison === null ? (
-            <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
-              There is nothing to compare against until this project has a quote. Runs and hours can
-              still be logged below — they will line up once it does.
-            </div>
-          ) : (
-            <Variance comparison={comparison} money={money} />
-          )}
-
-          <FromTheFiles ctx={ctx} detail={detail} busy={busy} onChanged={reload} setError={setError} />
-
-          <RunLog
-            ctx={ctx}
-            detail={detail}
-            money={money}
-            busy={busy}
-            onChanged={reload}
-            setError={setError}
-          />
-        </div>
-      </details>
-
-      {/* ---- what it made, for the shop's own work ---- */}
-      {detail.facts.kind === 'inhouse' && (
-        <MadeSection
-          ctx={ctx}
-          detail={detail}
-          money={money}
-          onSaved={reload}
-          setError={setError}
-        />
-      )}
-
-      {/* ---- activity ---- */}
-      <details className="sec fold"
-        data-fold="activity"
-        open={fold.isOpen('activity')}
-        onToggle={(e) => fold.set('activity', e.currentTarget.open)}
-      >
-        <summary className="sechead">
-          <h4>Activity</h4>
-          <span className="secstat">
-            {detail.events.length} entr{detail.events.length === 1 ? 'y' : 'ies'}
-          </span>
-        </summary>
-        <div className="pane" style={{ marginBottom: 0 }}>
-          <div className="fld" style={{ marginBottom: 8 }}>
-            <textarea
-              value={note}
-              rows={2}
-              placeholder="What changed? Even “waiting on the client” is information the next person needs."
-              onChange={(e) => setNote(e.target.value)}
-            />
-          </div>
-          <button
-            type="button"
-            className="btn sm primary"
-            disabled={busy || !note.trim()}
-            onClick={() => void postNote()}
-          >
-            Post update
-          </button>
-
-          <div className="updates">
-            {detail.events.length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--txt-3)' }}>
-                Nothing logged yet. Moving this project between stages will start the record on its
-                own.
-              </div>
-            )}
-            {detail.events.map((e) => (
-              <div key={e.id} className="upd">
-                <div className="m">
-                  {e.actorName ?? 'Someone'} · {e.at.slice(0, 10)}
-                  {e.kind === 'phase_change' ? ' · stage change' : e.kind === 'edit' ? ' · edit' : ''}
-                </div>
-                {e.kind === 'phase_change'
-                  ? `Moved ${
-                      phaseIndex(e.toPhase ?? 'intake', detail.facts.kind) <
-                      phaseIndex(e.fromPhase ?? 'intake', detail.facts.kind)
-                        ? 'back '
-                        : ''
-                    }from ${label(e.fromPhase ?? 'intake')} to ${label(e.toPhase ?? 'intake')}.${
-                      e.body ? ` Why: ${e.body}` : ''
-                    }`
-                  : (e.body ?? '')}
-              </div>
-            ))}
-          </div>
-        </div>
-      </details>
-
-      {/* ---- earlier stages ---- */}
-      <section className="sec">
-        <div className="sechead">
-          <h4>Earlier stages</h4>
-          <span className="secstat">{here === 0 ? 'none yet' : `${here} behind this one`}</span>
-        </div>
-        <div className="stack">
-          {/* This job's OWN ladder, not the client one. A trial print
-              climbs three stages, and listing the seven client stages
-              behind it offered "Client approval" on work with no client. */}
-          {ladder.slice(0, here).map((p) => {
-            const g = gateStatus(p, detail.gates[p] ?? {}, facts)
-            return (
-              <details key={p}>
-                <summary>
-                  <span className="caret">▸</span>
-                  <b>{label(p)}</b>
-                  <span className={`secstat ${g.blocked ? 'warn' : 'ok'}`}>
-                    {g.done} of {g.total}
-                  </span>
-                </summary>
-                <div className="dbody">
-                  {g.items.map((i) => (
-                    <div key={i.key} className="histitem">
-                      <span style={{ color: i.checked ? 'var(--ok)' : 'var(--warn)' }}>
-                        {i.checked ? '✓' : '·'}
-                      </span>
-                      <span>{i.label}</span>
-                      {i.note && <div className="histnote">{i.note}</div>}
-                    </div>
-                  ))}
-                  {g.blocked && (
-                    <div className="hint">
-                      This stage was advanced past with items outstanding. That is allowed — the
-                      record just says so.
-                    </div>
-                  )}
-                </div>
-              </details>
-            )
-          })}
-          {here === 0 && (
-            <div style={{ fontSize: 12, color: 'var(--txt-3)' }}>
-              This project is still in its first stage.
-            </div>
-          )}
-        </div>
-      </section>
 
       {/* ---- one primary action, with its precondition beside it ---- */}
       <div
@@ -1707,7 +1794,11 @@ function SliceImport({
    * plate's parts marked printed. Unchecked, the file waits under "Sliced
    * files" as an estimate until someone records it.
    */
-  const [printedNow, setPrintedNow] = useState(true)
+  // Offered only where printing belongs (stagePlan.canPrint). Before In
+  // build a file is read in to price and plan -- never as printed.
+  const printing = canPrint(detail.phase, detail.facts.kind)
+  const [printedState, setPrintedNow] = useState(true)
+  const printedNow = printing && printedState
   const [printedOn, setPrintedOn] = useState(todayISO)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -2002,6 +2093,7 @@ function SliceImport({
             </div>
           ))}
 
+          {printing && (
           <div className="btnrow" style={{ marginTop: 10, alignItems: 'center' }}>
             <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
               <input
@@ -2021,6 +2113,7 @@ function SliceImport({
               />
             )}
           </div>
+          )}
           {printedNow && (
             <div className="hint" style={{ marginTop: 4 }}>
               {printerId
@@ -2306,14 +2399,16 @@ function SliceRuns({
                       Save a copy
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className={`btn sm ${runs.length ? '' : 'primary'}`}
-                    disabled={busy || saving}
-                    onClick={() => open(s)}
-                  >
-                    {runs.length ? 'Record another run' : 'This print happened'}
-                  </button>
+                  {canPrint(detail.phase, detail.facts.kind) && (
+                    <button
+                      type="button"
+                      className={`btn sm ${runs.length ? '' : 'primary'}`}
+                      disabled={busy || saving}
+                      onClick={() => open(s)}
+                    >
+                      {runs.length ? 'Record another run' : 'This print happened'}
+                    </button>
+                  )}
                   {/* Removing an import is allowed and deliberately small.
                       A file imported onto the wrong project is the common
                       case, and the runs recorded from it STAY -- the print
@@ -3303,9 +3398,9 @@ function BuildSheet({
           footnote. Reported as "I uploaded a gcode and nothing happened".
           Reading a file is the primary action here; typing parts by hand is
           the fallback, and is now ordered that way. */}
-      {/* Import is open at every stage. It was hidden from Review on, so a
-          finished project -- Maui -- had nowhere to put the file that made it. */}
-      {(
+      {/* Read files in while the job is priced, designed, planned or built
+          (fixed files); not once it is being checked or is done. */}
+      {canImport(detail.phase, detail.facts.kind) && (
         <SliceImport
           ctx={ctx}
           detail={detail}
@@ -3472,7 +3567,9 @@ function BuildSheet({
                         {/* Offered from where the PART is, at any stage:
                             a plate can be printed and checked before the
                             project's stages catch up. */}
-                        {nextStatuses(p.status).map((st) => (
+                        {nextStatuses(p.status)
+                          .filter((st) => allowedStatuses(detail.phase, detail.facts.kind).includes(st))
+                          .map((st) => (
                           <button
                             key={st}
                             type="button"
@@ -3805,8 +3902,9 @@ function RunLog({
     note: null,
     startedAt: todayISO(),
   })
+  const printing = canPrint(detail.phase, detail.facts.kind)
   const [work, setWork] = useState({
-    kind: 'design' as WorkKind,
+    kind: hoursKind(detail.phase, detail.facts.kind) as WorkKind,
     hours: '',
     workedOn: todayISO(),
     note: '',
@@ -3832,9 +3930,11 @@ function RunLog({
     <div className="updates" style={{ marginTop: 14 }}>
       {mode === 'none' && (
         <div className="btnrow">
-          <button type="button" className="btn sm" disabled={busy} onClick={() => setMode('run')}>
-            Record a build run
-          </button>
+          {printing && (
+            <button type="button" className="btn sm" disabled={busy} onClick={() => setMode('run')}>
+              Record a build run
+            </button>
+          )}
           <button type="button" className="btn sm" disabled={busy} onClick={() => setMode('work')}>
             Log hours
           </button>
@@ -4235,16 +4335,40 @@ function GateRow({
   item,
   onToggle,
   onNote,
+  onSkip,
 }: {
   item: ResolvedGateItem
   onToggle: (checked: boolean) => void
   onNote: (text: string) => void
+  /** Skip with a reason, or null to take a skip back. */
+  onSkip: (reason: string | null) => void
 }) {
   const id = `g-${item.key}`
+  const [skipping, setSkipping] = useState(false)
+  const [why, setWhy] = useState('')
   // An unticked item is the only thing on this row that matters, so it is
   // the only thing given weight. Ticked items stay legible and quiet --
   // they are evidence, not a to-do list.
   const todo = !item.checked
+  if (item.skipped) {
+    return (
+      <div className="gwrap">
+        <div className="gitem">
+          <span aria-hidden="true" style={{ width: 16, color: 'var(--warn)' }}>
+            ↷
+          </span>
+          <span className="lab">{item.label}</span>
+          <span className="gwho">skipped</span>
+        </div>
+        <div className="hint" style={{ paddingLeft: 24, marginTop: 0, color: 'var(--warn)' }}>
+          Skipped — {item.skipped}{' '}
+          <button type="button" className="linkbtn" style={{ width: 'auto' }} onClick={() => onSkip(null)}>
+            take the skip back
+          </button>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className={`gwrap ${todo ? 'todo' : ''}`}>
       <div className="gitem">
@@ -4262,11 +4386,60 @@ function GateRow({
             <span className="todo-chip">{item.automatic ? 'waiting on' : 'to do'}</span>
           )}
         </label>
-        <span className="gwho">{item.automatic ? item.autoFrom : item.checked ? 'ticked' : ''}</span>
+        <span className="gwho">
+          {todo && !skipping ? (
+            <button
+              type="button"
+              className="linkbtn"
+              style={{ width: 'auto', fontSize: 11 }}
+              aria-label={`Skip ${item.label}`}
+              onClick={() => setSkipping(true)}
+            >
+              skip
+            </button>
+          ) : item.automatic ? (
+            item.autoFrom
+          ) : item.checked ? (
+            'ticked'
+          ) : (
+            ''
+          )}
+        </span>
       </div>
       <div className="hint" style={{ paddingLeft: 24, marginTop: 0 }}>
         {item.why}
       </div>
+      {/* Voltage's rule: a gate is satisfied or skipped with a reason. */}
+      {skipping && (
+        <div className="btnrow" style={{ paddingLeft: 24, marginTop: 6, alignItems: 'flex-end' }}>
+          <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
+            <label className="lbl" htmlFor={`skip-${item.key}`}>
+              Why skip it? (goes on the record)
+            </label>
+            <input
+              id={`skip-${item.key}`}
+              value={why}
+              autoFocus
+              onChange={(e) => setWhy(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            className="btn sm"
+            disabled={!why.trim()}
+            onClick={() => {
+              onSkip(why)
+              setSkipping(false)
+              setWhy('')
+            }}
+          >
+            Skip it
+          </button>
+          <button type="button" className="btn sm ghost" onClick={() => setSkipping(false)}>
+            Cancel
+          </button>
+        </div>
+      )}
       {/* A starred item is one where a bare tick would be a lie waiting to
           happen. The note is the whole value of ticking it. */}
       {item.needsNote && item.checked && !item.automatic && (
@@ -4278,8 +4451,7 @@ function GateRow({
         />
       )}
       {/* An item that cannot be ticked MUST say where to go and change the
-          thing it is reading. Saying only where it reads from is how a
-          project ends up permanently stuck on a checkbox. */}
+          thing it is reading. */}
       {item.automatic && !item.checked && (
         <div className="hint" style={{ paddingLeft: 24, color: 'var(--warn)' }}>
           {item.fix ?? `Clears on its own ${item.autoFrom ?? ''}`.trim()}
@@ -4746,7 +4918,7 @@ function FromTheFiles({
   const groups = groupSliceFiles(detail.slices, detail.runs)
   const [picked, setPicked] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
-  if (groups.length === 0) return null
+  if (groups.length === 0 || !canPrint(detail.phase, detail.facts.kind)) return null
 
   const hrs = (h: number | null) => (h == null ? '—' : `${h} h`)
   const machineOf = (g: FileGroup) => picked[g.first.id] || machineFor(g, ctx.printers)

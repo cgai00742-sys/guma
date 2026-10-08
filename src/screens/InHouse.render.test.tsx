@@ -245,6 +245,8 @@ describe('the whole loop', () => {
       note: null,
     })
 
+    // What it made is recorded at Made, once the printing is done.
+    await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, 'review')
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     await screen.findByText('Hex keychain run')

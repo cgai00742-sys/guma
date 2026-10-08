@@ -71,9 +71,20 @@ const DONE_DEFAULTS: Record<string, boolean> = {
   // expecting the file's hours and grams and found this folded shut.
   actuals: true,
   activity: false,
+  // On a finished project the record IS the page (CG, 7 Oct).
+  sofar: true,
+  program: false,
+}
+
+/** On a live project the stage's work is open; the record of earlier
+ *  stages is one click away rather than in the way. */
+const LIVE_DEFAULTS: Record<string, boolean> = {
+  sofar: false,
+  activity: false,
+  program: false,
 }
 
 export function defaultOpen(scope: FoldScope, id: string): boolean {
-  if (scope === 'live') return true
+  if (scope === 'live') return LIVE_DEFAULTS[id] ?? true
   return DONE_DEFAULTS[id] ?? true
 }

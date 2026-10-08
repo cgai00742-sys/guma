@@ -42,9 +42,12 @@ describe('remembering which sections are open', () => {
 
 describe('what is open before anybody says', () => {
   it('opens everything on a live project', () => {
-    for (const id of ['brief', 'gate', 'money', 'build', 'actuals', 'activity']) {
+    for (const id of ['brief', 'gate', 'money', 'build', 'actuals']) {
       expect(defaultOpen('live', id)).toBe(true)
     }
+    // The record of earlier stages and the activity log wait to be asked for.
+    expect(defaultOpen('live', 'sofar')).toBe(false)
+    expect(defaultOpen('live', 'activity')).toBe(false)
   })
 
   it('opens the money and what it took on a finished one — the rest is a record', () => {
@@ -53,6 +56,7 @@ describe('what is open before anybody says', () => {
     expect(defaultOpen('done', 'build')).toBe(false)
     expect(defaultOpen('done', 'gate')).toBe(false)
     expect(defaultOpen('done', 'activity')).toBe(false)
+    expect(defaultOpen('done', 'sofar')).toBe(true)
   })
 
   it('shows a section nobody has classified rather than hiding it', () => {

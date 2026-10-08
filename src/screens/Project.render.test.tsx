@@ -148,6 +148,19 @@ async function renderProject(jobId: string, ctx: any) {
 
 beforeEach(cleanup)
 
+async function moveTo(
+  data: unknown,
+  ctx: { shop: { id: string }; profile: { id: string } },
+  jobId: string,
+  phase: 'approval' | 'design' | 'scheduled' | 'building' | 'review' | 'delivered',
+) {
+  const d = data as { updateJobPhase: (a: string, b: string, c: string, p: never) => Promise<void> }
+  const ladder = ['approval', 'design', 'scheduled', 'building', 'review', 'delivered'] as const
+  for (const to of ladder.slice(0, ladder.indexOf(phase) + 1)) {
+    await d.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to as never)
+  }
+}
+
 describe('a draft that has not been taken in', () => {
   it('says it is a draft and offers to take it in', async () => {
     const { ctx, jobId } = await seed({ takeIn: false })
@@ -212,8 +225,9 @@ describe('every gate a project can be stuck behind has a control that clears it'
     }
   })
 
-  it('lets the quote status be changed, because the approval gate reads it', async () => {
-    const { ctx, jobId } = await seed({ takeIn: true })
+  it('lets the quote status be changed at Approval, because its gate reads it', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'approval')
     await renderProject(jobId, ctx)
 
     const select = screen.getByLabelText(/^Quote is/) as HTMLSelectElement
@@ -221,13 +235,14 @@ describe('every gate a project can be stuck behind has a control that clears it'
 
     const user = userEvent.setup()
     await user.selectOptions(select, 'sent')
-    await waitFor(() => expect(screen.getByText(/quote sent/i)).toBeDefined())
+    await waitFor(() => expect(screen.getAllByText(/quote sent/i).length).toBeGreaterThan(0))
   })
 })
 
 describe('the money on the project page', () => {
   it('is the shop’s currency everywhere, with no dollar sign anywhere', async () => {
-    const { ctx, jobId } = await seed({ takeIn: true })
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'review')
     await renderProject(jobId, ctx)
     const body = document.body.textContent ?? ''
     expect(body).toContain('€')
@@ -235,11 +250,66 @@ describe('the money on the project page', () => {
   })
 
   it('formats amounts the German way, decimal comma and all', async () => {
-    const { ctx, jobId } = await seed({ takeIn: true })
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'review')
     await renderProject(jobId, ctx)
     // 1.013,30 € before tax on the quoted-vs-actual table. The bug this
     // guards is that same figure rendering as 1,013.30 next to a euro sign.
     expect(document.body.textContent).toMatch(/1\.\d{3},\d{2}/)
+  })
+})
+
+describe('each stage shows only what moves it forward (CG, 7 Oct)', () => {
+  it('Intake: the brief and the quote, then the gate -- nothing about printing', async () => {
+    const { ctx, jobId } = await seed({ takeIn: true })
+    await renderProject(jobId, ctx)
+    expect(screen.getByLabelText(/what they asked for/i)).toBeDefined()
+    expect(screen.getByLabelText(/point of contact/i)).toBeDefined()
+    expect(screen.queryByLabelText(/import a sliced file/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /record a build run/i })).toBeNull()
+    expect(document.querySelector('[data-fold="build"]')).toBeNull()
+    // The gate is the last section on the page.
+    const sections = [...document.querySelectorAll('[data-fold]')].map((e) => e.getAttribute('data-fold'))
+    expect(sections[sections.length - 1]).toBe('gate')
+    // The record is there, folded, before the work.
+    expect(sections.indexOf('sofar')).toBeLessThan(sections.indexOf('brief'))
+    expect((document.querySelector('[data-fold="sofar"]') as HTMLDetailsElement).open).toBe(false)
+  })
+
+  it('Design: earlier stages are history, read-only, filed by stage', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'design')
+    await renderProject(jobId, ctx)
+    expect(document.querySelector('[data-fold="build"]')).not.toBeNull()
+    // The brief is in the record, inside a disabled fieldset.
+    const brief = screen.getByLabelText(/what they asked for/i) as HTMLTextAreaElement
+    expect(brief.closest('fieldset')?.disabled).toBe(true)
+    expect(brief.closest('details.sofar-stage')?.querySelector('summary')?.textContent).toMatch(/Intake/)
+    // No printing before In build.
+    expect(screen.queryByRole('button', { name: /record a build run/i })).toBeNull()
+  })
+
+  it('a gate item can be skipped with a reason, and the record says so', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'design')
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /^skip the client signed off the design$/i }))
+    await user.type(screen.getByLabelText(/why skip it/i), 'Signed off on the phone')
+    await user.click(screen.getByRole('button', { name: /^skip it$/i }))
+    await screen.findByText(/Skipped — Signed off on the phone/)
+    await screen.findByText(/Skipped “The client signed off the design”\. Why: Signed off on the phone/)
+  })
+
+  it('Delivered: the whole project, open to review', async () => {
+    localStorage.clear()
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'delivered')
+    await renderProject(jobId, ctx)
+    expect((document.querySelector('[data-fold="sofar"]') as HTMLDetailsElement).open).toBe(true)
+    const stages = [...document.querySelectorAll('details.sofar-stage > summary h4')].map((e) => e.textContent)
+    expect(stages).toEqual(['Intake', 'Client approval', 'Design', 'Scheduled', 'In build', 'Review'])
+    expect(document.querySelector('[data-fold="gate"]')).toBeNull()
   })
 })
 
@@ -261,29 +331,27 @@ describe('the build sheet at each stage', () => {
     return { ctx, jobId, data, partId }
   }
 
-  it('follows the part, not the stage: a plate printed early can be marked', async () => {
-    // CG printed and checked plates while the project was still early on.
+  it('offers nothing to press before In build — a part is still a plan', async () => {
     const { ctx, jobId } = await withPart('scheduled')
+    await renderProject(jobId, ctx)
+    await screen.findByText('Bearing ring')
+    expect(screen.queryByRole('button', { name: /^printed bearing ring$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^fail bearing ring$/i })).toBeNull()
+  })
+
+  it('offers printed or fail In build, and pass or fail at Review', async () => {
+    const { ctx, jobId, data, partId } = await withPart('building')
     await renderProject(jobId, ctx)
     await screen.findByText('Bearing ring')
     expect(screen.getByRole('button', { name: /^printed bearing ring$/i })).toBeDefined()
     expect(screen.getByRole('button', { name: /^fail bearing ring$/i })).toBeDefined()
-    // Not checked before it exists.
     expect(screen.queryByRole('button', { name: /^pass bearing ring$/i })).toBeNull()
-  })
-
-  it('offers pass or fail once printed, and reprinted once failed', async () => {
-    const { ctx, jobId, data, partId } = await withPart('building')
-    await data.setPartStatus(ctx.shop.id, partId, ctx.profile.id, 'printed', null)
-    await renderProject(jobId, ctx)
-    await screen.findByText('Bearing ring')
-    expect(screen.getByRole('button', { name: /^pass bearing ring$/i })).toBeDefined()
-    expect(screen.getByRole('button', { name: /^fail bearing ring$/i })).toBeDefined()
-    expect(screen.queryByRole('button', { name: /^printed bearing ring$/i })).toBeNull()
     cleanup()
-    await data.setPartStatus(ctx.shop.id, partId, ctx.profile.id, 'reprint', 'Warped')
+    await data.setPartStatus(ctx.shop.id, partId, ctx.profile.id, 'printed', null)
+    await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, 'review')
     await renderProject(jobId, ctx)
-    expect(await screen.findByRole('button', { name: /^reprinted bearing ring$/i })).toBeDefined()
+    expect(await screen.findByRole('button', { name: /^pass bearing ring$/i })).toBeDefined()
+    expect(screen.getByRole('button', { name: /^fail bearing ring$/i })).toBeDefined()
   })
 
   it('puts the reprint reason on the row, and offers to go back to building', async () => {
@@ -308,6 +376,7 @@ describe('when printing has to start', () => {
       neededBy: '2099-01-20',
       deliveryHow: 'Collected in person',
     })
+    await moveTo(data, ctx, jobId, 'scheduled')
     await renderProject(jobId, ctx)
 
     await screen.findByText(/^Start printing by /)
@@ -317,7 +386,8 @@ describe('when printing has to start', () => {
   })
 
   it('asks for a delivery date instead of inventing one', async () => {
-    const { ctx, jobId } = await seed({ takeIn: true })
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'scheduled')
     await renderProject(jobId, ctx)
     await screen.findByText(/Set a delivery date and Guma will say when printing has to start/)
   })
@@ -339,39 +409,32 @@ describe('a long screen folds, and remembers', () => {
   const isOpen = (id: string) =>
     (document.querySelector(`[data-fold="${id}"]`) as HTMLDetailsElement | null)?.open
 
-  it('opens everything while the project is live', async () => {
+  it('opens the stage work while the project is live, and keeps the record folded', async () => {
     localStorage.clear()
-    const { ctx, jobId } = await seed({ takeIn: true })
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    await moveTo(data, ctx, jobId, 'building')
     await renderProject(jobId, ctx)
     expect(isOpen('gate')).toBe(true)
     expect(isOpen('build')).toBe(true)
-    expect(isOpen('activity')).toBe(true)
+    expect(isOpen('sofar')).toBe(false)
   })
 
-  it('folds the working sections once it is delivered, and leaves the money out', async () => {
+  it('opens the record once it is delivered, and keeps the money', async () => {
     localStorage.clear()
     const { ctx, jobId, data } = await seed({ takeIn: true })
-    for (const to of ['approval', 'design', 'scheduled', 'building', 'review', 'delivered'] as const) {
-      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
-    }
+    await moveTo(data, ctx, jobId, 'delivered')
     await renderProject(jobId, ctx)
-    expect(isOpen('build')).toBe(false)
-    expect(isOpen('gate')).toBe(false)
+    expect(isOpen('sofar')).toBe(true)
     expect(isOpen('money')).toBe(true)
   })
 
-  it('remembers a section the person opened, and does not carry it to live projects', async () => {
+  it('remembers a section the person folded, per scope', async () => {
     localStorage.clear()
-    localStorage.setItem('guma.folds', JSON.stringify({ done: { build: true }, live: { gate: false } }))
+    localStorage.setItem('guma.folds', JSON.stringify({ done: { sofar: false }, live: { gate: false } }))
     const { ctx, jobId, data } = await seed({ takeIn: true })
-    for (const to of ['approval', 'design', 'scheduled', 'building', 'review', 'delivered'] as const) {
-      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
-    }
+    await moveTo(data, ctx, jobId, 'delivered')
     await renderProject(jobId, ctx)
-    // Opened by hand on finished projects...
-    expect(isOpen('build')).toBe(true)
-    // ...and the live scope's own answer is untouched by it.
-    expect(isOpen('gate')).toBe(false)
+    expect(isOpen('sofar')).toBe(false)
   })
 })
 
