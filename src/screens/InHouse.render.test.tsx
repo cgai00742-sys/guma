@@ -363,7 +363,8 @@ describe('a master program — BathyTopo', () => {
         </Routes>
       </MemoryRouter>,
     )
-    await user.type(await screen.findByLabelText(/start a series/i), 'BathyTopo')
+    await user.click(await screen.findByRole('button', { name: /^start a series$/i }))
+    await user.type(screen.getByLabelText(/series name/i), 'BathyTopo')
     await user.click(screen.getByRole('button', { name: /^start it$/i }))
     await user.type(await screen.findByLabelText(/start a series inside BathyTopo/i), 'Hawaiian Islands')
     await user.click(screen.getAllByRole('button', { name: /^start it$/i })[0])
@@ -418,5 +419,37 @@ describe('a master program — BathyTopo', () => {
     )
     expect(await screen.findByRole('link', { name: 'Oʻahu' })).toBeDefined()
     expect(screen.getAllByText('Made').length).toBeGreaterThan(0)
+  })
+
+  it('folds each series to a row that opens onto its pieces and the series inside it', async () => {
+    const { ctx, data } = await seedShop()
+    const bathy = await data.createSeries(ctx.shop.id, { name: 'BathyTopo' })
+    await data.createSeries(ctx.shop.id, { name: 'Keychains' })
+    const hi = await data.createSeries(ctx.shop.id, { name: 'Hawaiian Islands', parentId: bathy })
+    await data.createInHouseJob(ctx.shop.id, { title: 'Guam', seriesId: bathy })
+    await data.createInHouseJob(ctx.shop.id, { title: 'Maui', seriesId: hi })
+    const user = userEvent.setup()
+    const { default: Series } = await import('./Series')
+    const { container } = render(
+      <MemoryRouter initialEntries={['/series']}>
+        <Routes>
+          <Route path="/series" element={<Series ctx={ctx} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    // Same page frame as every other screen.
+    await screen.findByRole('heading', { name: 'Series' })
+    expect(container.querySelector('.wrap')).not.toBeNull()
+    // Two series: both folded, nothing inside showing yet.
+    expect(screen.queryByRole('link', { name: 'Guam' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Show BathyTopo' }))
+    expect(screen.getByRole('link', { name: 'Guam' })).toBeDefined()
+    expect(screen.getByLabelText(/add a piece to BathyTopo/i)).toBeDefined()
+    // The series inside it sits within, folded in turn.
+    expect(screen.queryByRole('link', { name: 'Maui' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Show Hawaiian Islands' }))
+    expect(screen.getByRole('link', { name: 'Maui' })).toBeDefined()
+    await user.click(screen.getByRole('button', { name: 'Fold BathyTopo' }))
+    expect(screen.queryByRole('link', { name: 'Guam' })).toBeNull()
   })
 })

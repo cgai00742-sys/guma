@@ -55,14 +55,25 @@ export default function Series({ ctx }: { ctx: ShopContext }) {
     void reload()
   }, [reload])
 
-  if (error) return <div className="attn crit">{error}</div>
-  if (!all || !rows) return <div className="hint">Loading…</div>
+  // The same page frame every other screen uses: a centred column with
+  // the shared gutters. Without it this page ran edge to edge (CG, 9 Oct).
+  const frame = (body: React.ReactNode) => (
+    <div className="wrap" style={{ paddingTop: 20, paddingBottom: 32 }}>
+      {error && (
+        <div className="alert" style={{ marginBottom: 10 }}>
+          <span>{error}</span>
+        </div>
+      )}
+      {body}
+    </div>
+  )
+  if (!all || !rows) return frame(error ? null : <div className="hint">Loading…</div>)
   if (seriesId) {
     const one = all.find((s) => s.id === seriesId)
-    if (!one) return <div className="attn crit">That series is not in this shop.</div>
-    return <OneSeries ctx={ctx} series={one} all={all} rows={rows} onChanged={reload} setError={setError} />
+    if (!one) return frame(<div className="attn crit">That series is not in this shop.</div>)
+    return frame(<OneSeries ctx={ctx} series={one} all={all} rows={rows} onChanged={reload} setError={setError} />)
   }
-  return <AllSeries ctx={ctx} all={all} rows={rows} onChanged={reload} setError={setError} />
+  return frame(<AllSeries ctx={ctx} all={all} rows={rows} onChanged={reload} setError={setError} />)
 }
 
 function Tiles({ t, ctx }: { t: ProgramTotals; ctx: ShopContext }) {
@@ -113,14 +124,29 @@ function AllSeries({
 }) {
   const navigate = useNavigate()
   const [name, setName] = useState('')
+  const [adding, setAdding] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
   const live = all.filter((s) => showArchived || !s.archivedAt)
+  const top = seriesChildren(live, null)
+  // One series is opened for you; with several, they start folded so the
+  // page reads as a list of bodies of work, not a wall of tables.
+  const [open, setOpen] = useState<Set<string>>(() => new Set(top.length === 1 ? [top[0].id] : []))
+  const toggle = (id: string) =>
+    setOpen((cur) => {
+      const next = new Set(cur)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const { money } = makeMoney(ctx.shop.currency, ctx.shop.locale)
+  const totalPieces = new Set(rows.filter((r) => r.facts.seriesId).map((r) => r.jobId)).size
 
   async function create() {
     if (!name.trim()) return
     try {
       const id = await createSeries(ctx.shop.id, { name })
       setName('')
+      setAdding(false)
       await onChanged()
       navigate(`/series/${id}`)
     } catch (e) {
@@ -128,69 +154,251 @@ function AllSeries({
     }
   }
 
+  async function addPiece(seriesId: string, title: string) {
+    try {
+      const id = await createInHouseJob(ctx.shop.id, { title, seriesId })
+      navigate(`/project/${id}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const renderTree = (parent: string | null, depth: number): React.ReactNode =>
-    seriesChildren(live, parent).map((s) => {
-      const t = seriesTotals(rows, all, s.id)
-      return (
-        <div key={s.id}>
-          <Link
-            to={`/series/${s.id}`}
-            className="pane"
-            style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginLeft: depth * 22, marginTop: 8, textDecoration: 'none' }}
-          >
-            <span>
-              <span className="pn">{s.name}</span>
-              {s.archivedAt && <span className="chip" style={{ marginLeft: 8 }}>archived</span>}
-              {s.brief && <div className="pmeta">{s.brief}</div>}
-            </span>
-            <span className="pmeta" style={{ whiteSpace: 'nowrap' }}>
-              {t.projects} piece{t.projects === 1 ? '' : 's'} · {t.done} finished
-            </span>
-          </Link>
-          {renderTree(s.id, depth + 1)}
-        </div>
-      )
-    })
+    seriesChildren(live, parent).map((s) => (
+      <SeriesCard
+        key={s.id}
+        series={s}
+        depth={depth}
+        open={open.has(s.id)}
+        onToggle={() => toggle(s.id)}
+        totals={seriesTotals(rows, all, s.id)}
+        pieces={piecesOf(rows, s.id)}
+        money={money}
+        onAddPiece={(t) => void addPiece(s.id, t)}
+      >
+        {renderTree(s.id, depth + 1)}
+      </SeriesCard>
+    ))
 
   return (
-    <div>
-      <div className="dlg-title" style={{ alignItems: 'baseline' }}>
-        <h3 style={{ fontSize: 18 }}>Series</h3>
-        <span className="pmeta">
-          Your own bodies of work. Each piece is a project with its own stages; the series adds them up.
-        </span>
-      </div>
-      <div className="btnrow" style={{ marginTop: 12, alignItems: 'flex-end' }}>
-        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
-          <label className="lbl" htmlFor="new-series">
-            Start a series
-          </label>
-          <input
-            id="new-series"
-            value={name}
-            placeholder="BathyTopo, Sakman models, Keychains…"
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void create()
+    <>
+      <div className="section-head">
+        <div>
+          <h2>Series</h2>
+          <div
+            style={{
+              fontFamily: 'var(--mono)',
+              fontSize: 11,
+              color: 'var(--txt-3)',
+              marginTop: 3,
             }}
-          />
+          >
+            {live.length} series · {totalPieces} piece
+            {totalPieces === 1 ? '' : 's'} · your own bodies of work, each piece a project with its own stages
+          </div>
         </div>
-        <button type="button" className="btn sm primary" disabled={!name.trim()} onClick={() => void create()}>
-          Start it
+        <button
+          type="button"
+          className="btn primary"
+          style={{ marginLeft: 'auto' }}
+          onClick={() => setAdding((v) => !v)}
+        >
+          {adding ? 'Cancel' : 'Start a series'}
         </button>
       </div>
+
+      {adding && (
+        <div className="pane" style={{ marginBottom: 12 }}>
+          <div className="btnrow" style={{ alignItems: 'flex-end', margin: 0 }}>
+            <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220, maxWidth: 480 }}>
+              <label className="lbl" htmlFor="new-series">
+                Series name
+              </label>
+              <input
+                id="new-series"
+                value={name}
+                autoFocus
+                placeholder="BathyTopo, Sakman models, Keychains…"
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void create()
+                }}
+              />
+            </div>
+            <button type="button" className="btn primary" disabled={!name.trim()} onClick={() => void create()}>
+              Start it
+            </button>
+          </div>
+        </div>
+      )}
+
       {live.length === 0 ? (
-        <div className="hint" style={{ marginTop: 14 }}>
-          No series yet. Start one, then add pieces to it — each piece moves through its own stages.
+        <div className="pane">
+          <div className="hint" style={{ marginTop: 0 }}>
+            No series yet. Start one, then add pieces to it — each piece moves through its own stages.
+          </div>
         </div>
       ) : (
-        <div style={{ marginTop: 10 }}>{renderTree(null, 0)}</div>
+        <div className="serieslist">{renderTree(null, 0)}</div>
       )}
       {all.some((s) => s.archivedAt) && (
-        <button type="button" className="linkbtn" style={{ marginTop: 10 }} onClick={() => setShowArchived((v) => !v)}>
+        <button
+          type="button"
+          className="linkbtn"
+          style={{ marginTop: 10, width: 'auto' }}
+          onClick={() => setShowArchived((v) => !v)}
+        >
           {showArchived ? 'Hide archived series' : 'Show archived series'}
         </button>
       )}
+    </>
+  )
+}
+
+/**
+ * One series, folded to a single row: name, what is in it, what it has
+ * cost. Open it and its pieces are listed with their stage and figures,
+ * with a line to add another -- the series inside it nest below (CG, 9 Oct:
+ * "each series a dropdown ... including what is within it").
+ */
+function SeriesCard({
+  series,
+  depth,
+  open,
+  onToggle,
+  totals,
+  pieces,
+  money,
+  onAddPiece,
+  children,
+}: {
+  series: SeriesRow
+  depth: number
+  open: boolean
+  onToggle: () => void
+  totals: ProgramTotals
+  pieces: JobListRow[]
+  money: (n: number) => string
+  onAddPiece: (title: string) => void
+  children: React.ReactNode
+}) {
+  const [piece, setPiece] = useState('')
+  const inProgress = pieces.filter((r) => r.phase !== 'delivered').length
+  return (
+    <div className={`seriescard ${open ? 'open' : ''}`.trim()} style={depth ? { marginLeft: depth * 22 } : undefined}>
+      <div className="serieshead">
+        <button
+          type="button"
+          className="chevbtn"
+          aria-expanded={open}
+          aria-label={`${open ? 'Fold' : 'Show'} ${series.name}`}
+          onClick={onToggle}
+        >
+          {open ? '▾' : '▸'}
+        </button>
+        <div className="seriesname" onClick={onToggle}>
+          <span className="pn">{series.name}</span>
+          {series.archivedAt && <span className="chip">archived</span>}
+          {series.brief && <span className="pmeta">{series.brief}</span>}
+        </div>
+        <div className="seriesfigs">
+          <span>
+            <b>{totals.projects}</b> piece{totals.projects === 1 ? '' : 's'}
+          </span>
+          <span>
+            <b>{totals.done}</b> finished
+          </span>
+          <span>
+            <b>{money(totals.cost)}</b> so far
+          </span>
+        </div>
+        <Link
+          to={`/series/${series.id}`}
+          className="btn sm"
+          aria-label={`Open ${series.name}`}
+          style={{ textDecoration: 'none' }}
+        >
+          Open
+        </Link>
+      </div>
+      {open && (
+        <div className="seriesbody">
+          {pieces.length === 0 ? (
+            <div className="hint" style={{ marginTop: 0 }}>
+              Nothing filed directly in {series.name} yet.
+            </div>
+          ) : (
+            <div className="sheetwrap" style={{ maxHeight: 'none' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Piece</th>
+                    <th>Stage</th>
+                    <th className="r">Printed</th>
+                    <th className="r">Machine</th>
+                    <th className="r">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pieces.map((r) => (
+                    <tr key={r.jobId}>
+                      <td>
+                        <Link to={`/project/${r.jobId}`} className="pn" style={{ textDecoration: 'none' }}>
+                          {r.title}
+                        </Link>
+                        <span className="pmeta" style={{ marginLeft: 8 }}>
+                          {r.ref}
+                          {r.facts.archivedAt ? ' · archived' : ''}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="chip">{phaseLabel(r.phase, r.facts.kind)}</span>
+                      </td>
+                      <td className="r mono">
+                        {r.facts.materialUnits ? `${Math.round(r.facts.materialUnits)} g` : '—'}
+                      </td>
+                      <td className="r mono">
+                        {r.facts.machineHours ? `${Math.round(r.facts.machineHours * 10) / 10} h` : '—'}
+                      </td>
+                      <td className="r mono">{r.facts.actualCost ? money(r.facts.actualCost) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="btnrow" style={{ marginTop: 10, alignItems: 'flex-end' }}>
+            <div className="fld" style={{ margin: 0, flex: 1, minWidth: 200, maxWidth: 420 }}>
+              <label className="lbl" htmlFor={`add-piece-${series.id}`}>
+                Add a piece to {series.name}
+              </label>
+              <input
+                id={`add-piece-${series.id}`}
+                value={piece}
+                placeholder="Maui, Oʻahu, Viti Levu…"
+                onChange={(e) => setPiece(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && piece.trim()) onAddPiece(piece.trim())
+                }}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={!piece.trim()}
+              onClick={() => onAddPiece(piece.trim())}
+            >
+              Start the piece
+            </button>
+            {inProgress > 0 && (
+              <span className="pmeta" style={{ marginLeft: 'auto' }}>
+                {inProgress} in progress
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+      {children}
     </div>
   )
 }
@@ -213,6 +421,7 @@ function OneSeries({
   const navigate = useNavigate()
   const [piece, setPiece] = useState('')
   const [sub, setSub] = useState('')
+  const [openKids, setOpenKids] = useState<Set<string>>(() => new Set())
   const [editing, setEditing] = useState(false)
   const [draftName, setDraftName] = useState(series.name)
   const [draftBrief, setDraftBrief] = useState(series.brief ?? '')
@@ -271,7 +480,10 @@ function OneSeries({
               disabled={!draftName.trim()}
               onClick={() =>
                 void guard(async () => {
-                  await updateSeries(ctx.shop.id, series.id, { name: draftName, brief: draftBrief })
+                  await updateSeries(ctx.shop.id, series.id, {
+                    name: draftName,
+                    brief: draftBrief,
+                  })
                   setEditing(false)
                 })
               }
@@ -284,27 +496,43 @@ function OneSeries({
           </div>
         </div>
       ) : (
-        <div className="dlg-title" style={{ alignItems: 'baseline' }}>
-          <h3 style={{ fontSize: 18 }}>
-            {series.name}{' '}
-            <button
-              type="button"
-              className="linkbtn"
-              style={{ fontSize: 11, fontWeight: 400 }}
-              onClick={() => {
-                setDraftName(series.name)
-                setDraftBrief(series.brief ?? '')
-                setEditing(true)
+        <div className="section-head">
+          <div>
+            <h2>
+              {series.name}
+              {series.archivedAt && (
+                <span className="chip" style={{ marginLeft: 8 }}>
+                  archived
+                </span>
+              )}
+            </h2>
+            <div
+              style={{
+                fontFamily: 'var(--mono)',
+                fontSize: 11,
+                color: 'var(--txt-3)',
+                marginTop: 3,
               }}
             >
-              edit
-            </button>
-          </h3>
-          <span className="pmeta">{series.brief ?? 'A series of your own work.'}</span>
+              {series.brief ?? 'A series of your own work.'}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn sm"
+            style={{ marginLeft: 'auto' }}
+            onClick={() => {
+              setDraftName(series.name)
+              setDraftBrief(series.brief ?? '')
+              setEditing(true)
+            }}
+          >
+            Edit name
+          </button>
         </div>
       )}
 
-      <div className="pane" style={{ marginTop: 12 }}>
+      <div className="pane">
         <div className="hint" style={{ marginTop: 0, marginBottom: 8 }}>
           Everything in {series.name}
           {kids.length ? ' and the series inside it' : ''}, added up. Each piece keeps its own figures.
@@ -341,10 +569,10 @@ function OneSeries({
                     <Link to={`/project/${r.jobId}`} className="pn" style={{ textDecoration: 'none' }}>
                       {r.title}
                     </Link>
-                    <div className="pmeta">
+                    <span className="pmeta" style={{ marginLeft: 8 }}>
                       {r.ref}
                       {r.facts.archivedAt ? ' · archived' : ''}
-                    </div>
+                    </span>
                   </td>
                   <td>
                     <span className="chip">{phaseLabel(r.phase, r.facts.kind)}</span>
@@ -362,7 +590,7 @@ function OneSeries({
       )}
 
       <div className="btnrow" style={{ marginTop: 12, alignItems: 'flex-end' }}>
-        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
+        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220, maxWidth: 420 }}>
           <label className="lbl" htmlFor="new-piece">
             Add a piece to {series.name}
           </label>
@@ -379,7 +607,10 @@ function OneSeries({
           disabled={!piece.trim()}
           onClick={() =>
             void guard(async () => {
-              const id = await createInHouseJob(ctx.shop.id, { title: piece, seriesId: series.id })
+              const id = await createInHouseJob(ctx.shop.id, {
+                title: piece,
+                seriesId: series.id,
+              })
               setPiece('')
               navigate(`/project/${id}`)
             })
@@ -392,24 +623,44 @@ function OneSeries({
       <div className="sechead" style={{ marginTop: 22 }}>
         <h4>Series inside {series.name}</h4>
       </div>
-      {kids.map((k) => {
-        const t = seriesTotals(rows, all, k.id)
-        return (
-          <Link
-            key={k.id}
-            to={`/series/${k.id}`}
-            className="pane"
-            style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, textDecoration: 'none' }}
-          >
-            <span className="pn">{k.name}</span>
-            <span className="pmeta">
-              {t.projects} piece{t.projects === 1 ? '' : 's'} · {t.done} finished
-            </span>
-          </Link>
-        )
-      })}
+      {kids.length === 0 ? (
+        <div className="hint">None yet — a series can hold others, like BathyTopo › Hawaiian Islands.</div>
+      ) : (
+        <div className="serieslist">
+          {kids.map((k) => (
+            <SeriesCard
+              key={k.id}
+              series={k}
+              depth={0}
+              open={openKids.has(k.id)}
+              onToggle={() =>
+                setOpenKids((cur) => {
+                  const next = new Set(cur)
+                  if (next.has(k.id)) next.delete(k.id)
+                  else next.add(k.id)
+                  return next
+                })
+              }
+              totals={seriesTotals(rows, all, k.id)}
+              pieces={piecesOf(rows, k.id)}
+              money={money}
+              onAddPiece={(title) =>
+                void guard(async () => {
+                  const id = await createInHouseJob(ctx.shop.id, {
+                    title,
+                    seriesId: k.id,
+                  })
+                  navigate(`/project/${id}`)
+                })
+              }
+            >
+              {null}
+            </SeriesCard>
+          ))}
+        </div>
+      )}
       <div className="btnrow" style={{ marginTop: 10, alignItems: 'flex-end' }}>
-        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
+        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220, maxWidth: 420 }}>
           <label className="lbl" htmlFor="new-sub">
             Start a series inside {series.name}
           </label>
@@ -426,7 +677,10 @@ function OneSeries({
           disabled={!sub.trim()}
           onClick={() =>
             void guard(async () => {
-              await createSeries(ctx.shop.id, { name: sub, parentId: series.id })
+              await createSeries(ctx.shop.id, {
+                name: sub,
+                parentId: series.id,
+              })
               setSub('')
             })
           }
@@ -435,28 +689,43 @@ function OneSeries({
         </button>
       </div>
 
-      <div className="btnrow" style={{ marginTop: 22, alignItems: 'center' }}>
-        <label className="lbl" htmlFor="series-parent" style={{ margin: 0 }}>
-          Sits inside
-        </label>
-        <select
-          id="series-parent"
-          value={series.parentId ?? ''}
-          onChange={(e) =>
-            void guard(() => updateSeries(ctx.shop.id, series.id, { parentId: e.target.value || null }))
-          }
-        >
-          <option value="">Nothing — a top-level series</option>
-          {eligibleSeriesParents(all, series.id).map((s) => (
-            <option key={s.id} value={s.id}>
-              {seriesPath(all, s.id)}
-            </option>
-          ))}
-        </select>
+      <div className="sechead" style={{ marginTop: 22 }}>
+        <h4>Where it sits</h4>
+      </div>
+      <div className="btnrow" style={{ alignItems: 'flex-end' }}>
+        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220, maxWidth: 420 }}>
+          <label className="lbl" htmlFor="series-parent">
+            Sits inside
+          </label>
+          <select
+            id="series-parent"
+            value={series.parentId ?? ''}
+            onChange={(e) =>
+              void guard(() =>
+                updateSeries(ctx.shop.id, series.id, {
+                  parentId: e.target.value || null,
+                }),
+              )
+            }
+          >
+            <option value="">Nothing — a top-level series</option>
+            {eligibleSeriesParents(all, series.id).map((s) => (
+              <option key={s.id} value={s.id}>
+                {seriesPath(all, s.id)}
+              </option>
+            ))}
+          </select>
+        </div>
         <button
           type="button"
           className="btn sm ghost"
-          onClick={() => void guard(() => updateSeries(ctx.shop.id, series.id, { archived: !series.archivedAt }))}
+          onClick={() =>
+            void guard(() =>
+              updateSeries(ctx.shop.id, series.id, {
+                archived: !series.archivedAt,
+              }),
+            )
+          }
         >
           {series.archivedAt ? 'Unarchive this series' : 'Archive this series'}
         </button>

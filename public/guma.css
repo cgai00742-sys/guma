@@ -1702,3 +1702,15 @@ fieldset.record[disabled] .btn,
 fieldset.record[disabled] .linkbtn{display:none}
 details.sofar-stage{border:1px solid var(--line);border-radius:var(--radius);padding:0 10px 6px;background:var(--panel-2)}
 details.sofar-stage>summary{cursor:pointer;list-style:none}
+
+/* Series: one card per series, folded to a row, open to its pieces */
+.serieslist{display:flex;flex-direction:column;gap:8px}
+.seriescard{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel-2)}
+.seriescard .seriescard{margin:0 10px 10px}
+.seriescard.open{border-color:var(--line-strong)}
+.serieshead{display:flex;align-items:center;gap:12px;padding:10px 14px}
+.seriesname{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;flex:1;min-width:0;cursor:pointer}
+.seriesname .pmeta{margin:0}
+.seriesfigs{display:flex;gap:16px;font-size:12px;color:var(--txt-3);white-space:nowrap}
+.seriesfigs b{color:var(--txt);font-weight:600}
+.seriesbody{padding:2px 14px 14px 52px}
