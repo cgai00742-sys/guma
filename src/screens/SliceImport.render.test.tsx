@@ -843,22 +843,25 @@ describe("CG's Maui: one G-code uploaded several times, project at Made", () => 
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
 
-    const region = await screen.findByRole('region', { name: /from the sliced files/i })
-    // Open, not folded away.
+    // One place to record a plate: the build sheet's Plates list (CG, 8 Oct).
+    const region = await screen.findByRole('region', { name: /^plates$/i })
     expect(region.closest('details')?.hasAttribute('open')).toBe(true)
     expect(within(region).getAllByText('Maui bathy.gcode')).toHaveLength(1)
     within(region).getByText(/uploaded 3 times — counted once/i)
-    within(region).getByText(/87 g · 2\.05 h/)
+    within(region).getByText(/~87 g/)
+    expect(screen.queryByRole('region', { name: /from the sliced files/i })).toBeNull()
 
-    // One machine in the shop, so nothing to pick.
-    await user.click(within(region).getByRole('button', { name: /record maui bathy\.gcode from the file/i }))
+    // One machine in the shop, so it is already picked.
+    await user.click(within(region).getByRole('button', { name: /this print happened/i }))
+    expect((screen.getByLabelText(/^machine$/i) as HTMLSelectElement).value).toBe(ctx.printers[0].id)
+    await user.click(within(region).getByRole('button', { name: /^record it$/i }))
     await waitFor(() => {
       const a = currentDb.sqlite
         .prepare('select material_units, machine_hours, runs from job_actuals where job_id = ?')
         .get(jobId) as Record<string, number>
       expect(a).toMatchObject({ material_units: 87, machine_hours: 2.05, runs: 1 })
     })
-    await within(region).findByText(/✓ 87 g · 2\.05 h/)
+    await within(region).findByText(/machine hours\s+in this project/i)
 
     // Uploading it yet again, at Done, adds nothing and counts nothing twice.
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile('Maui bathy.gcode'))
@@ -964,14 +967,11 @@ describe('a kept 3MF that was imported with no numbers', () => {
     await renderProject(jobId, ctx)
     await user.click(await screen.findByRole('button', { name: /read it again/i }))
 
-    await waitFor(() =>
-      expect(screen.getByRole('region', { name: /from the sliced files/i }).textContent).toMatch(
-        /212 g · 7\.03 h/,
-      ),
-    )
-    const region = screen.getByRole('region', { name: /from the sliced files/i })
+    await waitFor(() => expect(screen.getByRole('region', { name: /^plates$/i }).textContent).toMatch(/~212 g/))
+    const region = screen.getByRole('region', { name: /^plates$/i })
     expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 1 })
-    await user.click(within(region).getByRole('button', { name: /record sliced_maui_top\.3mf from the file/i }))
+    await user.click(within(region).getByRole('button', { name: /this print happened/i }))
+    await user.click(within(region).getByRole('button', { name: /^record it$/i }))
     await waitFor(() => {
       const a = currentDb.sqlite
         .prepare('select material_units, machine_hours, runs from job_actuals where job_id = ?')

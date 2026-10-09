@@ -606,6 +606,25 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     await screen.findAllByText(/Copy 4 skipped — not printed again; 4 copies now\./)
   })
 
+  it('plates are recorded in one place, all at once if you like', async () => {
+    const { ctx, jobId, d } = await inBuild()
+    await d.importSlice(ctx.shop.id, jobId, ctx.profile.id, {
+      fileName: 'lid.gcode', kind: 'gcode', printerModel: null, printerId: ctx.printers[0].id,
+      materialText: 'PLA', materialId: ctx.materials[0].id, estMinutes: 30, estGrams: 10, notes: [],
+      sections: [{ label: 'Lid', qty: 1, estMinutes: 30, estGrams: 10, material: 'PLA' }],
+    })
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    expect(screen.queryByRole('region', { name: /from the sliced files/i })).toBeNull()
+    await user.click(screen.getByRole('button', { name: /^record all 2$/i }))
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 2 }),
+    )
+    // Each plate added the copies it holds: one Hull of five, one Lid of one.
+    expect(currentDb.sqlite.prepare("select printed_n from job_parts where label = 'Hull'").get()).toEqual({ printed_n: 1 })
+    expect(currentDb.sqlite.prepare("select printed_n from job_parts where label = 'Lid'").get()).toEqual({ printed_n: 1 })
+  })
+
   it('a part cannot be cut below the copies already made', async () => {
     const { ctx, jobId, d, partId, importId } = await inBuild()
     await d.markPlatePrinted(ctx.shop.id, jobId, ctx.profile.id, importId)

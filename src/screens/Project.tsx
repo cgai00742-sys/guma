@@ -1026,7 +1026,12 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             <Variance comparison={comparison} money={money} />
           )}
 
-          <FromTheFiles ctx={ctx} detail={detail} busy={busy} onChanged={reload} setError={setError} />
+          {/* Plates are recorded in one place: the build sheet's Plates list,
+              when it is on this page (CG, 8 Oct). In the record of a past
+              stage, or where the sheet is not shown, this list stands in. */}
+          {(inRecord || !workFor(detail.phase, detail.facts.kind).includes('build')) && (
+            <FromTheFiles ctx={ctx} detail={detail} busy={busy} onChanged={reload} setError={setError} />
+          )}
 
           <RunLog
             ctx={ctx}
@@ -2421,11 +2426,11 @@ function SliceRuns({
     }
   }
 
-  async function remove(importId: string) {
+  async function removeAll(importIds: string[]) {
     setSaving(true)
     setError(null)
     try {
-      await deleteSliceImport(ctx.shop.id, importId)
+      for (const importId of importIds) await deleteSliceImport(ctx.shop.id, importId)
       setRemoving(null)
       await onChanged()
     } catch (e) {
@@ -2437,6 +2442,43 @@ function SliceRuns({
 
   if (detail.slices.length === 0) return null
 
+  const groups = groupSliceFiles(detail.slices, detail.runs)
+  /** Plates with numbers, a machine to put them on, and nothing recorded. */
+  const ready = groups.filter(
+    (g) => !g.recorded && (g.first.estGrams != null || g.first.estMinutes != null) && machineFor(g, ctx.printers) != null,
+  )
+
+  /**
+   * Every plate not recorded yet, from each file's own numbers. This was
+   * "From the sliced files, Record all" further down the page; the two
+   * lists are one now (CG, 8 Oct), so a plate has one place to be recorded.
+   */
+  async function recordAll() {
+    setSaving(true)
+    setError(null)
+    try {
+      for (const g of ready) {
+        await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
+          printerId: machineFor(g, ctx.printers) as string,
+          materialId: g.first.materialId,
+          unitsUsed: g.estGrams ?? 0,
+          hours: g.estHours ?? 0,
+          outcome: 'success',
+          failureReason: null,
+          note: `From ${g.first.fileName}`,
+          startedAt: todayISO(),
+          sliceImportId: g.first.id,
+        })
+        await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, g.first.id)
+      }
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const hrs = (m: number | null) =>
     m == null ? null : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`
 
@@ -2447,7 +2489,7 @@ function SliceRuns({
       // A run needs a machine. The import may not have matched one, in
       // which case the select opens empty and the button stays disabled
       // rather than picking the first printer in the list for you.
-      printerId: s.printerId ?? '',
+      printerId: s.printerId ?? (ctx.printers.length === 1 ? ctx.printers[0].id : ''),
       materialId: s.materialId,
       // Rounded to whole grams and to a quarter hour, because that is the
       // precision the rest of the app stores and a run that reads
@@ -2502,11 +2544,25 @@ function SliceRuns({
           One per sliced file. When a plate comes off the bed, record it: its copies are marked
           printed and the filament comes off the shelf.
         </span>
+        {canPrint(detail.phase, detail.facts.kind) && ready.length > 1 && (
+          <button
+            type="button"
+            className="btn sm primary"
+            style={{ marginLeft: 'auto' }}
+            disabled={busy || saving}
+            onClick={() => void recordAll()}
+          >
+            Record all {ready.length}
+          </button>
+        )}
       </div>
 
-      <div className="platelist">
-      {detail.slices.map((s) => {
-        const runs = detail.runs.filter((r) => r.sliceImportId === s.id)
+      <div className="platelist" role="region" aria-label="Plates">
+      {groups.map((g) => {
+        // One row per FILE: the same file uploaded three times is one plate
+        // (lib/fromFiles.ts), recorded against its first import.
+        const s = g.first
+        const runs = g.runs
         const used = runs.reduce((a, r) => a + (r.unitsUsed ?? 0), 0)
         const hours = runs.reduce((a, r) => a + (r.hours ?? 0), 0)
         const failed = runs.filter((r) => r.outcome !== 'success').length
@@ -2521,6 +2577,7 @@ function SliceRuns({
                   {s.estGrams != null && ` · ~${Math.round(s.estGrams)} g`}
                   {s.estMinutes != null && ` · ~${hrs(s.estMinutes)}`}
                   {` · imported ${s.importedAt.slice(0, 10)}`}
+                  {g.uploads > 1 ? ` · uploaded ${g.uploads} times — counted once` : ''}
                   {s.keptBytes != null ? ` · ${mb(s.keptBytes)} kept` : ''}
                 </span>
                 {s.keptBytes == null && (
@@ -2630,7 +2687,7 @@ function SliceRuns({
                     type="button"
                     className="btn sm danger"
                     disabled={saving}
-                    onClick={() => void remove(s.id)}
+                    onClick={() => void removeAll(g.ids)}
                   >
                     {saving ? 'Removing…' : 'Remove it'}
                   </button>
