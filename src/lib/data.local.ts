@@ -26,7 +26,7 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import Database from '@tauri-apps/plugin-sql'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
-import { copyList, countsOf, movable, moveStates, resizeStates, setStates, statesOf, statusOf } from './copies'
+import { copyList, countsOf, movable, moveStates, queuedCopies, resizeStates, setStates, statesOf, statusOf } from './copies'
 import {
   NeedsSetup,
   asClientKind,
@@ -1547,12 +1547,13 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       to_status: PartStatus | null
       n: number | null
       copies: string | null
+      slice_import_id: string | null
       note: string | null
       actor: string | null
       at: string
     }[]
   >(
-    `select e.id, e.part_id, e.kind, e.from_status, e.to_status, e.n, e.copies, e.note, e.at,
+    `select e.id, e.part_id, e.kind, e.from_status, e.to_status, e.n, e.copies, e.slice_import_id, e.note, e.at,
             p.full_name as actor
        from part_events e
        left join profiles p on p.id = e.actor_id
@@ -1712,6 +1713,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
             toStatus: e.to_status,
             n: e.n == null ? null : Number(e.n),
             copies: parseCopies(e.copies),
+            sliceImportId: e.slice_import_id ?? null,
             note: e.note,
             actor: e.actor,
             at: e.at,
@@ -2677,6 +2679,7 @@ async function writeCopies(
   to: PartStatus,
   moved: number[],
   note: string | null,
+  sliceImportId: string | null = null,
 ) {
   const d = await db()
   const c = countsOf(states)
@@ -2687,9 +2690,9 @@ async function writeCopies(
     [JSON.stringify(states), c.printed, c.passed, c.reprint, statusOf(c), partId, shopId],
   )
   await d.execute(
-    `insert into part_events (part_id, job_id, kind, from_status, to_status, n, copies, note, actor_id)
-     values (?, ?, 'status', ?, ?, ?, ?, ?, ?)`,
-    [partId, before.jobId, before.status, to, moved.length, copyList(moved), note?.trim() || null, actorId],
+    `insert into part_events (part_id, job_id, kind, from_status, to_status, n, copies, note, actor_id, slice_import_id)
+     values (?, ?, 'status', ?, ?, ?, ?, ?, ?, ?)`,
+    [partId, before.jobId, before.status, to, moved.length, copyList(moved), note?.trim() || null, actorId, sliceImportId],
   )
 }
 
@@ -2733,6 +2736,38 @@ export async function setCopyStates(
 }
 
 /**
+ * A failed copy gets a replacement file: back in the queue, to print from
+ * THAT file (CG, 9 Oct). The failure stays in the part's history -- the
+ * copy shows it failed and what it is being reprinted from -- and the event
+ * names the file, so recording that file's plate marks this copy printed
+ * rather than whichever copy is next. Voltage kept a failed part as a
+ * "replaced" record pointing at its replacement; this is the same, per copy.
+ */
+export async function requeueCopyFromFile(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  copy: number,
+  sliceImportId: string,
+  fileName: string,
+): Promise<void> {
+  const before = await readCopies(shopId, partId)
+  if (before.states[copy] !== 'reprint') throw new Error(`Copy ${copy + 1} has not failed, so there is nothing to replace.`)
+  const after = setStates(before.states, [copy], 'pending')
+  await writeCopies(
+    shopId,
+    partId,
+    actorId,
+    before,
+    after,
+    'pending',
+    [copy],
+    `Reprint from ${fileName}`,
+    sliceImportId,
+  )
+}
+
+/**
  * One plate came off the machine: every part on it gains the copies that
  * plate holds -- not all of its copies. A part needing five, on a plate
  * that carries one, is one of five printed (CG, 8 Oct). Returns how many
@@ -2761,15 +2796,30 @@ export async function markPlatePrinted(
       group by s.part_id, p.qty, p.printed_n, p.passed_n, p.reprint_n, p.copy_states`,
     [sliceImportId, jobId, shopId],
   )
+  // Copies queued to print from THIS file (a failed copy's replacement):
+  // those are the ones this plate made.
+  const queued = await d.select<{ part_id: string; copies: string | null; slice_import_id: string | null }[]>(
+    `select part_id, copies, slice_import_id from part_events
+      where job_id = ? and to_status = 'pending' and copies is not null
+      order by at, id`,
+    [jobId],
+  )
   let moved = 0
   for (const r of rows) {
-    const c = countsOf(
-      statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states }),
-    )
-    const n = Math.min(Math.max(1, Number(r.per_plate)), movable(c, 'printed'))
+    const states = statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states })
+    let n = Math.max(1, Number(r.per_plate))
+    const mine = queuedCopies(queued, r.part_id, sliceImportId, states).slice(0, n)
+    if (mine.length) {
+      await setCopyStates(shopId, r.part_id, actorId, mine, 'printed', null)
+      n -= mine.length
+      moved++
+      if (n <= 0) continue
+    }
+    const c = countsOf(mine.length ? setStates(states, mine, 'printed') : states)
+    n = Math.min(n, movable(c, 'printed'))
     if (n <= 0) continue
     await movePartCopies(shopId, r.part_id, actorId, 'printed', n, null)
-    moved++
+    if (!mine.length) moved++
   }
   return moved
 }
@@ -3390,11 +3440,12 @@ export async function importSlice(
        values (?, ?, ?, ?, ?, ?, ?, ?)`,
       [sectionId, importId, partId, label, qty, sec.estMinutes, sec.estGrams, sec.material],
     )
-    // The replacement file is what the part is printed from now.
-    if (target) {
+    // The replacement file is what the part is printed from now -- whether
+    // it holds that part alone or the part among others on a re-sliced plate.
+    if (input.forPartId && partId === input.forPartId) {
       await d.execute('update job_parts set chosen_section_id = ? where id = ? and shop_id = ?', [
         sectionId,
-        target,
+        input.forPartId,
         shopId,
       ])
     }

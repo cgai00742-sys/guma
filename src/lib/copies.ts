@@ -196,3 +196,28 @@ export function resizeStates(states: PartStatus[], qty: number): PartStatus[] {
 export function copyList(zeroBased: number[]): string {
   return zeroBased.map((i) => String(i + 1)).join(',')
 }
+
+/**
+ * The copies of one part waiting to print from one replacement file.
+ *
+ * `queued` is every "back in the queue, from this file" event on the
+ * project, oldest first (part_events.slice_import_id, 0034). A copy belongs
+ * to the file it was most recently queued from -- one copy can fail twice
+ * and get two files -- and only while it is still not printed. 0-based.
+ */
+export function queuedCopies(
+  queued: { part_id: string; copies: string | null; slice_import_id: string | null }[],
+  partId: string,
+  sliceImportId: string,
+  states: PartStatus[],
+): number[] {
+  const latest = new Map<number, string | null>()
+  for (const e of queued) {
+    if (e.part_id !== partId) continue
+    for (const c of String(e.copies ?? '').split(',').map(Number)) if (c > 0) latest.set(c - 1, e.slice_import_id)
+  }
+  return [...latest.entries()]
+    .filter(([i, file]) => file === sliceImportId && states[i] === 'pending')
+    .map(([i]) => i)
+    .sort((a, b) => a - b)
+}

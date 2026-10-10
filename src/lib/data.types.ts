@@ -1113,6 +1113,9 @@ export interface PartEvent {
   n: number | null
   /** Which copies, 1-based, when the event named them. */
   copies: number[] | null
+  /** The sliced file these copies were queued to print from, when a failed
+   *  copy was given a replacement file (0034). */
+  sliceImportId: string | null
   note: string | null
   actor: string | null
   at: string

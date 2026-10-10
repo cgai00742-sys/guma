@@ -694,6 +694,13 @@ dialog.proj-dlg .stepper{margin:10px 0 0}
 .copyform{display:flex;flex-direction:column;gap:6px}
 .copyform .btnrow{margin:0}
 .copywhy{font-size:11px;color:var(--red)}
+.copycard.queued{border-color:color-mix(in srgb, var(--red) 35%, var(--line));border-style:dashed}
+.copypill.queued{color:var(--warn);background:color-mix(in srgb, var(--warn) 15%, transparent)}
+.copytrail{display:flex;flex-direction:column;gap:2px}
+.copyfailed{font-size:11px;color:color-mix(in srgb, var(--red) 75%, var(--txt-3))}
+.copyfile{font-size:11px;color:var(--txt-2);overflow-wrap:anywhere}
+.copyfile b{color:var(--txt);font-weight:600}
+.copybar i.queued{background:transparent;border:1px dashed var(--red)}
 .failacts{display:flex;gap:6px;flex-wrap:wrap}
 .copyfoot{display:flex;justify-content:space-between;gap:12px}
 .copyfoot .linkbtn{width:auto;font-size:11px}

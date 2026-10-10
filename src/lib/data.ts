@@ -684,6 +684,18 @@ export async function setCopyStates(
   return (await backend()).setCopyStates(shopId, partId, actorId, copies, to, note)
 }
 
+/** A failed copy, back in the queue to print from a replacement file. */
+export async function requeueCopyFromFile(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  copy: number,
+  sliceImportId: string,
+  fileName: string,
+): Promise<void> {
+  return (await backend()).requeueCopyFromFile(shopId, partId, actorId, copy, sliceImportId, fileName)
+}
+
 export async function skipCopy(
   shopId: string,
   partId: string,

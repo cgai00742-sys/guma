@@ -1,0 +1,15 @@
+-- Guma: a failed copy's replacement file, linked to that copy.
+--
+-- CG, 9 Oct 2026: "I just uploaded a new file for a failed print but the
+-- system deleted my old failed print and doesn't show my new file as part of
+-- the part occurrences." The copy went back to "not printed" and the file sat
+-- in the plate list with nothing tying it to the copy it was for.
+--
+-- Voltage kept the failed attempt as a permanent "replaced" record pointing
+-- at its replacement (project_parts.replaced_by_part_id). Guma tracks copies
+-- inside one part row, so the link lives on the event that queued the copy
+-- again: this event put copies N of this part back in the queue, to print
+-- from THIS file. The failure event before it stays, so the copy shows both;
+-- and recording this file's plate marks those copies printed, not whichever
+-- copy happens to be next.
+alter table part_events add column slice_import_id text references slice_imports on delete set null;

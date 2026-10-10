@@ -60,6 +60,7 @@ import {
   updatePart,
   choosePartVariant,
   movePartCopies,
+  requeueCopyFromFile,
   setCopyStates,
   skipCopy,
   markPlatePrinted,
@@ -2566,11 +2567,23 @@ function SliceRuns({
         const used = runs.reduce((a, r) => a + (r.unitsUsed ?? 0), 0)
         const hours = runs.reduce((a, r) => a + (r.hours ?? 0), 0)
         const failed = runs.filter((r) => r.outcome !== 'success').length
+        // A failed copy's replacement file says whose it is (CG, 9 Oct):
+        // it is not a new plate of work, it is that copy's second go.
+        const fixes = detail.parts.flatMap((p) => {
+          const cs = new Set<number>()
+          for (const h of p.history) if (h.sliceImportId && g.ids.includes(h.sliceImportId)) (h.copies ?? []).forEach((c) => cs.add(c))
+          return cs.size ? [`${p.label}, copy ${[...cs].sort((a, b) => a - b).join(' & ')}`] : []
+        })
         return (
           <div className="plate" key={s.id}>
             <div className="platehead">
               <div className="platename">
                 <span className="pn">{s.fileName}</span>
+                {fixes.length > 0 && (
+                  <span className="chip" style={{ color: 'var(--warn)' }} title="A replacement file for a failed copy.">
+                    reprint · {fixes.join('; ')}
+                  </span>
+                )}
                 <span className="plmeta">
                   {s.printerName ?? s.printerModel ?? 'machine not matched'}
                   {s.materialName ? ` · ${s.materialName}` : s.materialText ? ` · ${s.materialText}` : ''}
@@ -3542,10 +3555,24 @@ function BuildSheet({
    */
   /** Read a re-sliced file onto this part: same import as any other, so it
    *  becomes the part's slice rather than a duplicate row. */
-  async function importFixed(part: PartRow, file: File): Promise<string> {
+  async function importFixed(
+    part: PartRow,
+    file: File,
+  ): Promise<{ name: string; importId: string; duplicateOf?: string }> {
     const parsed = await parseSliceFile(file)
+    // A re-sliced plate can carry other objects too, but one of them has to
+    // be this part -- otherwise the file is not its fix, and importing it
+    // would quietly add new parts to the build sheet.
+    if (
+      parsed.sections.length > 1 &&
+      !parsed.sections.some((sec) => sec.label.trim().toLowerCase() === part.label.trim().toLowerCase())
+    ) {
+      throw new Error(
+        `${parsed.fileName} has ${parsed.sections.length} objects on it and none is named “${part.label}”, so it is not this part's fix. Slice the part on its own, or keep its name, and try again.`,
+      )
+    }
     const bytes = new Uint8Array(await file.arrayBuffer())
-    await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
+    const r = await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
       file: await packFile(bytes),
       fileName: parsed.fileName,
       kind: parsed.kind,
@@ -3565,7 +3592,7 @@ function BuildSheet({
         material: sec.material,
       })),
     })
-    return parsed.fileName
+    return { name: parsed.fileName, importId: r.importId, duplicateOf: r.duplicateOf ?? undefined }
   }
 
   /**
@@ -3574,12 +3601,19 @@ function BuildSheet({
    * way to substitute a new file").
    */
   async function replaceCopyFile(part: PartRow, copy: number, file: File) {
-    const name = await importFixed(part, file)
-    await setCopyStates(ctx.shop.id, part.id, ctx.profile.id, [copy], 'pending', `New file ${name} — queued to print again.`)
+    const r = await importFixed(part, file)
+    // The same file again is not a fix. Allowed only when it is already a
+    // replacement for this part -- one fixed file for two failed copies.
+    if (r.duplicateOf && !part.history.some((h) => h.sliceImportId === r.importId)) {
+      throw new Error(
+        `${r.name} is already on this project (imported ${r.duplicateOf.slice(0, 10)}) — the same file the copy failed from. To print it again unchanged, set the copy to Not printed; to use a fix, export the re-sliced file and upload that.`,
+      )
+    }
+    await requeueCopyFromFile(ctx.shop.id, part.id, ctx.profile.id, copy, r.importId, r.name)
   }
 
   async function sendBack(part: PartRow) {
-    const fileName = fixedFile ? await importFixed(part, fixedFile) : null
+    const fileName = fixedFile ? (await importFixed(part, fixedFile)).name : null
     await movePartCopies(ctx.shop.id, part.id, ctx.profile.id, 'reprint', n, reprintNote(why, fix, fileName))
     setAct(null)
     setFixedFile(null)
@@ -3773,13 +3807,18 @@ function BuildSheet({
                     <td>
                       {(() => {
                         const c = copiesOf(p)
+                        const fileOfId = (id: string) => detail.slices.find((sl) => sl.id === id)?.fileName ?? null
+                        const states = statesOf(p)
+                        const queued = new Set(
+                          states.map((st, i) => (st === 'pending' && copyStory(p, i, fileOfId).file ? i : -1)).filter((i) => i >= 0),
+                        )
                         return (
                           <div
                             className="copycell"
                             title={copiesOpen === p.id ? 'Hide the copies' : 'Show each copy'}
                             onClick={() => setCopiesOpen(copiesOpen === p.id ? null : p.id)}
                           >
-                            <CopyBar states={statesOf(p)} />
+                            <CopyBar states={states} queued={queued} />
                             <div
                               className="pmeta"
                               data-testid={`copies-${p.id}`}
@@ -3795,6 +3834,7 @@ function BuildSheet({
                               }}
                             >
                               {describeCopies(c)}
+                              {queued.size > 0 && ` · ${queued.size} reprint${queued.size === 1 ? '' : 's'} queued`}
                             </div>
                           </div>
                         )
@@ -3893,6 +3933,7 @@ function BuildSheet({
                             guard(() => setCopyStates(ctx.shop.id, p.id, ctx.profile.id, copies, to, why))
                           }
                           onNewFile={(copy, file) => guard(() => replaceCopyFile(p, copy, file))}
+                          fileName={(id) => detail.slices.find((sl) => sl.id === id)?.fileName ?? null}
                           onSkip={(copy, why) => guard(() => skipCopy(ctx.shop.id, p.id, ctx.profile.id, copy, why))}
                           onClose={() => setCopiesOpen(null)}
                         />
@@ -4076,7 +4117,7 @@ function BuildSheet({
 
       {detail.parts.length > 0 && (
         <div className="sheetsum">
-          <span>One box per copy: amber = printed · green = passed · red = going back</span>
+          <span>One box per copy: amber = printed · green = passed · red = going back · dashed = reprint queued</span>
           <span style={{ marginLeft: 'auto' }}>
             {detail.facts.parts} part{detail.facts.parts === 1 ? '' : 's'} ·{' '}
             {detail.parts.reduce((n, p) => n + p.qty, 0)} copies
@@ -5991,14 +6032,18 @@ const COPY_MOVE_LABEL: Record<PartStatus, string> = {
  * and copy 3 is always the third box. Past a dozen copies the boxes stop
  * helping and the line below carries it alone.
  */
-function CopyBar({ states }: { states: PartStatus[] }) {
+function CopyBar({ states, queued }: { states: PartStatus[]; queued?: Set<number> }) {
   if (states.length > 12) return null
   const cls: Record<PartStatus, string> = { pending: '', printed: 'on', passed: 'ok', reprint: 'fail' }
   return (
     <span className="copybar" aria-hidden="true">
-      {states.map((st, i) => (
-        <i key={i} className={cls[st]} title={`Copy ${i + 1}: ${COPY_MOVE_LABEL[st]}`} />
-      ))}
+      {states.map((st, i) =>
+        queued?.has(i) ? (
+          <i key={i} className="queued" title={`Copy ${i + 1}: reprint queued`} />
+        ) : (
+          <i key={i} className={cls[st]} title={`Copy ${i + 1}: ${COPY_MOVE_LABEL[st]}`} />
+        ),
+      )}
     </span>
   )
 }
@@ -6021,6 +6066,32 @@ function copyReason(part: PartRow, copy: number): string | null {
     (h) => h.kind === 'status' && h.toStatus === 'reprint' && (h.copies ?? []).includes(copy + 1),
   )
   return ev?.note?.trim() || null
+}
+
+/**
+ * One copy's story, from the part's history: every time it failed, and the
+ * file it is being reprinted from. A failed copy given a new file used to
+ * read just "Not printed" -- the failure gone from the card, the file
+ * nowhere near it (CG, 9 Oct). Voltage kept a failed part as a permanent
+ * record beside its replacement; this keeps it beside the copy.
+ */
+export function copyStory(
+  part: PartRow,
+  copy: number,
+  fileName: (sliceImportId: string) => string | null,
+): { fails: { note: string | null; at: string }[]; file: string | null } {
+  const evs = [...part.history]
+    .reverse()
+    .filter((h) => h.kind === 'status' && (h.copies ?? []).includes(copy + 1))
+  let file: string | null = null
+  const fails: { note: string | null; at: string }[] = []
+  for (const h of evs) {
+    if (h.toStatus === 'reprint') {
+      fails.push({ note: h.note?.trim() || null, at: h.at })
+      file = null
+    } else if (h.sliceImportId) file = fileName(h.sliceImportId) ?? 'a file since removed'
+  }
+  return { fails, file }
 }
 
 const COPY_SHORT: Record<PartStatus, string> = {
@@ -6047,6 +6118,7 @@ function EachCopy({
   onNewFile,
   onSkip,
   onClose,
+  fileName = () => null,
 }: {
   part: PartRow
   options: PartStatus[]
@@ -6055,6 +6127,7 @@ function EachCopy({
   onNewFile: (copy: number, file: File) => Promise<void>
   onSkip: (copy: number, why: string | null) => Promise<void>
   onClose: () => void
+  fileName?: (sliceImportId: string) => string | null
 }) {
   const states = statesOf(part)
   const [failing, setFailing] = useState<number | null>(null)
@@ -6065,12 +6138,34 @@ function EachCopy({
   return (
     <div className="eachcopy" data-testid={`each-copy-${part.id}`}>
       <div className="copygrid">
-        {states.map((st, i) => (
-          <div key={i} className={`copycard ${st}`}>
+        {states.map((st, i) => {
+          const story = copyStory(part, i, fileName)
+          const queued = st === 'pending' && !!story.file
+          // The failures already behind this copy. A copy that is failed
+          // right now shows its newest reason below, with its ways forward.
+          const past = st === 'reprint' ? story.fails.slice(0, -1) : story.fails
+          return (
+          <div key={i} className={`copycard ${st}${queued ? ' queued' : ''}`}>
             <div className="copyhead">
               <span className="copyno">Copy {i + 1}</span>
-              <span className={`copypill ${st}`}>{COPY_SHORT[st]}</span>
+              <span className={`copypill ${queued ? 'queued' : st}`}>{queued ? 'Reprint queued' : COPY_SHORT[st]}</span>
             </div>
+            {past.length > 0 && (
+              <div className="copytrail">
+                {past.slice(-2).map((f, k) => (
+                  <div key={k} className="copyfailed">
+                    ✕ Failed{past.length > 1 ? ` (attempt ${past.length - Math.min(2, past.length) + k + 1})` : ''}
+                    {f.note ? ` — ${f.note}` : ''}
+                  </div>
+                ))}
+                {past.length > 2 && <div className="copyfailed">+{past.length - 2} earlier</div>}
+              </div>
+            )}
+            {story.file && st !== 'reprint' && (
+              <div className="copyfile">
+                ↻ {st === 'pending' ? 'Reprinting from' : 'Reprinted from'} <b>{story.file}</b>
+              </div>
+            )}
             {editable && (
               <div className="seg" role="group" aria-label={`Copy ${i + 1} of ${part.label}`}>
                 {(options.includes(st) ? options : [...options, st]).map((o) => (
@@ -6188,7 +6283,8 @@ function EachCopy({
               </>
             )}
           </div>
-        ))}
+          )
+        })}
       </div>
       <div className="copyfoot">
         {editable && made.length > 0 && (

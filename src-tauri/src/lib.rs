@@ -206,6 +206,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0033_actuals_per_run_power.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 34,
+      description: "a failed copy's replacement file, linked to that copy",
+      sql: include_str!("../migrations/0034_copy_reprint_file.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

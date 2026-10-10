@@ -578,6 +578,23 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     expect(currentDb.sqlite.prepare("select status from job_parts where label = 'Hull'").get()).toEqual({ status: 'pending' })
   })
 
+  it('the file a copy failed from is not taken as its fix (CG, 9 Oct)', async () => {
+    const { ctx, jobId, d, partId } = await inBuild()
+    await d.setCopyStates(ctx.shop.id, partId, ctx.profile.id, [0], 'reprint', 'Spaghetti')
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /each copy of hull/i }))
+    const same = new File(
+      ['; printing object Hull id:0 copy 0\n; total filament used [g] = 20\n; estimated printing time (normal mode) = 1h 0m 0s\n'],
+      'hull.gcode',
+      { type: 'text/plain' },
+    )
+    await user.upload(screen.getByLabelText(/new file for copy 1 of hull/i), same)
+    expect(await screen.findByText(/the same file the copy failed from/)).toBeDefined()
+    const st = JSON.parse((currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Hull'").get() as { copy_states: string }).copy_states)
+    expect(st[0]).toBe('reprint')
+  })
+
   it('a failed copy can be skipped, or given a new file and queued again (CG, 8 Oct)', async () => {
     const { ctx, jobId, d, partId } = await inBuild()
     await d.movePartCopies(ctx.shop.id, partId, ctx.profile.id, 'printed', 5, null)
@@ -597,6 +614,12 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     await user.upload(screen.getByLabelText(/new file for copy 2 of hull/i), gcode)
     await waitFor(() => expect(states()).toEqual(['printed', 'pending', 'printed', 'reprint', 'printed']))
     expect(currentDb.sqlite.prepare("select count(*) as n from slice_imports where file_name = 'hull-fixed.gcode'").get()).toEqual({ n: 1 })
+    // The failure stays on the copy, beside the file it is reprinting from,
+    // and the plate says whose fix it is (CG, 9 Oct).
+    const card2 = (await screen.findByText('Reprint queued')).closest('.copycard') as HTMLElement
+    expect(within(card2).getByText(/Failed — Warped corner/)).toBeDefined()
+    expect(within(card2).getByText('hull-fixed.gcode')).toBeDefined()
+    expect(screen.getByText(/reprint · Hull, copy 2/)).toBeDefined()
 
     // Copy 4: skipped -- the part needs four now, and it is on the record.
     await user.click(screen.getAllByRole('button', { name: /^skip$/i })[0])

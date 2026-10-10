@@ -60,6 +60,7 @@ function builder(table: string) {
     eq(c: string, v: unknown) { q.filters.push([c, v]); return b },
     in() { return b },
     or() { return b },
+    not() { return b },
     order() { return b },
     limit() { return b },
     like() { return b },
@@ -92,6 +93,22 @@ describe('hosted markPlatePrinted', () => {
     await expect(S.markPlatePrinted('s', 'j', 'a', 'imp')).resolves.toBe(1)
     expect(tables.job_parts[0]).toMatchObject({ printed_n: 1, status: 'printed' })
     expect(tables.part_events).toHaveLength(1)
+  })
+})
+
+describe('hosted replacement file for a failed copy', () => {
+  it('links the file to the copy and recording it prints that copy', async () => {
+    const part = { id: 'p1', shop_id: 's', job_id: 'j', qty: 3, status: 'reprint', printed_n: 0, passed_n: 0, reprint_n: 1, copy_states: '["pending","reprint","pending"]' }
+    tables.job_parts = [part]
+    const S = await import('./data.supabase')
+    await S.requeueCopyFromFile('s', 'p1', 'a', 1, 'fix', 'hull v2.gcode')
+    expect(JSON.parse(part.copy_states)).toEqual(['pending', 'pending', 'pending'])
+    expect(tables.part_events.at(-1)).toMatchObject({ to_status: 'pending', copies: '2', slice_import_id: 'fix' })
+
+    const embed = { ...part, shop_id: 's' }
+    tables.slice_sections = [{ import_id: 'fix', part_id: 'p1', qty: 1, slice_imports: { job_id: 'j' }, job_parts: embed }]
+    await S.markPlatePrinted('s', 'j', 'a', 'fix')
+    expect(JSON.parse(part.copy_states)).toEqual(['pending', 'printed', 'pending'])
   })
 })
 

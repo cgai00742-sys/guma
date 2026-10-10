@@ -106,6 +106,70 @@ describe('marking a plate printed', () => {
   })
 })
 
+describe('a failed copy given a replacement file (CG, 9 Oct)', () => {
+  const file = (fileName: string, sections: { label: string; qty: number }[]) => ({
+    fileName,
+    kind: 'gcode' as const,
+    printerModel: 'Prusa XL',
+    printerId: 'printer-1',
+    materialText: 'PETG',
+    materialId: 'material-1',
+    estMinutes: 20,
+    estGrams: 9,
+    notes: [],
+    sections: sections.map((x) => ({ ...x, estMinutes: 20, estGrams: 9, material: 'PETG' })),
+  })
+  const states = () =>
+    JSON.parse((currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Hull'").get() as any).copy_states)
+
+  it('keeps the failure, links the file to that copy, and recording the file prints that copy', async () => {
+    const L = await import('./data.local')
+    const partId = await L.addPart(SHOP, JOB, ACTOR, { label: 'Hull', qty: 3, note: null })
+    await L.setCopyStates(SHOP, partId, ACTOR, [1], 'reprint', 'Warped corner')
+    const fix = await L.importSlice(SHOP, JOB, ACTOR, { ...file('hull v2.gcode', [{ label: 'Hull fixed', qty: 1 }]), forPartId: partId })
+    expect(fix).toMatchObject({ partsAdded: 0, partsMatched: 1 })
+    await L.requeueCopyFromFile(SHOP, partId, ACTOR, 1, fix.importId, 'hull v2.gcode')
+    expect(states()).toEqual(['pending', 'pending', 'pending'])
+
+    // The failure is still on record, and the requeue names the file.
+    const evs = currentDb.sqlite
+      .prepare("select to_status, copies, note, slice_import_id from part_events where part_id = ? and kind = 'status' order by id")
+      .all(partId) as any[]
+    expect(evs.find((e) => e.to_status === 'reprint')).toMatchObject({ copies: '2', note: 'Warped corner' })
+    expect(evs.at(-1)).toMatchObject({ to_status: 'pending', copies: '2', slice_import_id: fix.importId })
+    const detail = await L.loadProjectDetail(SHOP, JOB)
+    const hull = detail.parts.find((x) => x.id === partId)!
+    expect(hull.history.find((h) => h.sliceImportId === fix.importId)?.copies).toEqual([2])
+    // The part prints from the fix now.
+    expect(hull.chosenSectionId).toBe(hull.variants.find((v) => v.fileName === 'hull v2.gcode')?.sectionId)
+
+    // The fix plate came off: copy 2 is printed -- not copy 1, the next in line.
+    await L.markPlatePrinted(SHOP, JOB, ACTOR, fix.importId)
+    expect(states()).toEqual(['pending', 'printed', 'pending'])
+  })
+
+  it('only a failed copy can be given a replacement', async () => {
+    const L = await import('./data.local')
+    const partId = await L.addPart(SHOP, JOB, ACTOR, { label: 'Hull', qty: 2, note: null })
+    const fix = await L.importSlice(SHOP, JOB, ACTOR, { ...file('hull v2.gcode', [{ label: 'Hull', qty: 1 }]), forPartId: partId })
+    await expect(L.requeueCopyFromFile(SHOP, partId, ACTOR, 0, fix.importId, 'hull v2.gcode')).rejects.toThrow(/has not failed/)
+  })
+
+  it('a re-sliced plate with the part among others points the part at it without adding parts', async () => {
+    const L = await import('./data.local')
+    const partId = await L.addPart(SHOP, JOB, ACTOR, { label: 'Hull', qty: 1, note: null })
+    await L.addPart(SHOP, JOB, ACTOR, { label: 'Lid', qty: 1, note: null })
+    const fix = await L.importSlice(SHOP, JOB, ACTOR, {
+      ...file('plate 3 v2.gcode', [{ label: 'Hull', qty: 1 }, { label: 'Lid', qty: 1 }]),
+      forPartId: partId,
+    })
+    expect(fix).toMatchObject({ partsAdded: 0, partsMatched: 2 })
+    const detail = await L.loadProjectDetail(SHOP, JOB)
+    const hull = detail.parts.find((x) => x.id === partId)!
+    expect(hull.chosenSectionId).toBe(hull.variants.find((v) => v.fileName === 'plate 3 v2.gcode')?.sectionId)
+  })
+})
+
 describe('the quote that counts, beside the newest version', () => {
   beforeEach(() => {
     currentDb.sqlite.exec(`

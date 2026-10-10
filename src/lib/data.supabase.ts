@@ -13,7 +13,7 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
-import { copyList, countsOf, movable, moveStates, resizeStates, setStates, statesOf, statusOf } from './copies'
+import { copyList, countsOf, movable, moveStates, queuedCopies, resizeStates, setStates, statesOf, statusOf } from './copies'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
@@ -1181,7 +1181,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .order('sort'),
     supabase
       .from('part_events')
-      .select('id, part_id, kind, from_status, to_status, n, copies, note, at, profiles ( full_name )')
+      .select('id, part_id, kind, from_status, to_status, n, copies, slice_import_id, note, at, profiles ( full_name )')
       .eq('job_id', jobId)
       .order('at', { ascending: false }),
     listSliceImports(shopId, jobId),
@@ -1342,6 +1342,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
             toStatus: e.to_status ?? null,
             n: e.n == null ? null : Number(e.n),
             copies: e.copies ? String(e.copies).split(',').map(Number).filter((x: number) => x > 0) : null,
+            sliceImportId: e.slice_import_id ?? null,
             note: e.note ?? null,
             actor: e.profiles?.full_name ?? null,
             at: e.at,
@@ -2069,6 +2070,7 @@ async function writeCopies(
   to: PartStatus,
   moved: number[],
   note: string | null,
+  sliceImportId: string | null = null,
 ) {
   const c = countsOf(states)
   const { error } = await supabase
@@ -2094,6 +2096,7 @@ async function writeCopies(
     copies: copyList(moved),
     note: note?.trim() || null,
     actor_id: actorId,
+    slice_import_id: sliceImportId,
   })
   if (evErr) throw evErr
 }
@@ -2129,6 +2132,30 @@ export async function setCopyStates(
   await writeCopies(shopId, partId, actorId, before, setStates(before.states, changed, to), to, changed, note)
 }
 
+/** See data.local.ts's requeueCopyFromFile. */
+export async function requeueCopyFromFile(
+  shopId: string,
+  partId: string,
+  actorId: string | null,
+  copy: number,
+  sliceImportId: string,
+  fileName: string,
+): Promise<void> {
+  const before = await readCopies(shopId, partId)
+  if (before.states[copy] !== 'reprint') throw new Error(`Copy ${copy + 1} has not failed, so there is nothing to replace.`)
+  await writeCopies(
+    shopId,
+    partId,
+    actorId,
+    before,
+    setStates(before.states, [copy], 'pending'),
+    'pending',
+    [copy],
+    `Reprint from ${fileName}`,
+    sliceImportId,
+  )
+}
+
 /** See data.local.ts's markPlatePrinted. */
 export async function markPlatePrinted(
   shopId: string,
@@ -2157,15 +2184,32 @@ export async function markPlatePrinted(
     if (prev) prev.perPlate += add
     else byPart.set(r.part_id, { perPlate: add, p: r.job_parts })
   }
+  // Copies queued to print from THIS file go first: see data.local.ts.
+  const { data: queued, error: qErr } = await supabase
+    .from('part_events')
+    .select('part_id, copies, slice_import_id')
+    .eq('job_id', jobId)
+    .eq('to_status', 'pending')
+    .not('copies', 'is', null)
+    .order('at')
+    .order('id')
+  if (qErr) throw qErr
   let moved = 0
   for (const [partId, { perPlate, p }] of byPart) {
-    const c = countsOf(
-      statesOf({ qty: Number(p.qty), printedN: Number(p.printed_n), passedN: Number(p.passed_n), reprintN: Number(p.reprint_n), copyStates: p.copy_states }),
-    )
-    const n = Math.min(perPlate, movable(c, 'printed'))
+    const states = statesOf({ qty: Number(p.qty), printedN: Number(p.printed_n), passedN: Number(p.passed_n), reprintN: Number(p.reprint_n), copyStates: p.copy_states })
+    let n = perPlate
+    const mine = queuedCopies((queued ?? []) as any[], partId, sliceImportId, states).slice(0, n)
+    if (mine.length) {
+      await setCopyStates(shopId, partId, actorId, mine, 'printed', null)
+      n -= mine.length
+      moved++
+      if (n <= 0) continue
+    }
+    const c = countsOf(mine.length ? setStates(states, mine, 'printed') : states)
+    n = Math.min(n, movable(c, 'printed'))
     if (n <= 0) continue
     await movePartCopies(shopId, partId, actorId, 'printed', n, null)
-    moved++
+    if (!mine.length) moved++
   }
   return moved
 }
@@ -2745,11 +2789,12 @@ export async function importSlice(
       .select('id')
       .single()
     if (secErr) throw secErr
-    if (target) {
+    // See data.local.ts: the replacement is what the part prints from now.
+    if (input.forPartId && partId === input.forPartId) {
       const { error: chErr } = await supabase
         .from('job_parts')
         .update({ chosen_section_id: secRow.id })
-        .eq('id', target)
+        .eq('id', input.forPartId)
         .eq('shop_id', shopId)
       if (chErr) throw chErr
     }
