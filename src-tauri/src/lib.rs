@@ -212,6 +212,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0034_copy_reprint_file.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 35,
+      description: "printed copies kept as spares when a part needs fewer",
+      sql: include_str!("../migrations/0035_part_spares.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

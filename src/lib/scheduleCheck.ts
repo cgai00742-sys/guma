@@ -105,3 +105,27 @@ export function materialCheck(
     allSetAside: lines.length > 0 && lines.every((l) => l.setAside),
   }
 }
+
+/**
+ * What this project should still hold once its build sheet needs less (CG,
+ * 12 Oct: fewer copies in In build, "release the excess"). Each spool's
+ * hold comes down to what the sheet now needs, failure allowance included
+ * -- the same figure "Set aside" used -- and never goes UP here: needing
+ * more is a decision about stock, made at the spool check, not a side
+ * effect of an edit. Spools the sheet no longer prices (a part with no
+ * numbers) are left alone. Null when nothing would change.
+ */
+export function trimHolds(
+  lines: Pick<MaterialNeed, 'materialId' | 'name' | 'unit' | 'needWithFailures'>[],
+  mine: { materialId: string; held: number }[],
+): { holds: { materialId: string; units: number }[]; released: { name: string; unit: string; units: number }[] } | null {
+  const released: { name: string; unit: string; units: number }[] = []
+  const holds = mine.map((h) => {
+    const line = lines.find((l) => l.materialId === h.materialId)
+    if (!line) return { materialId: h.materialId, units: h.held }
+    const units = Math.min(h.held, line.needWithFailures)
+    if (units < h.held) released.push({ name: line.name, unit: line.unit, units: Math.round(h.held - units) })
+    return { materialId: h.materialId, units }
+  })
+  return released.length ? { holds, released } : null
+}

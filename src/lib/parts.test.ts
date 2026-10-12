@@ -12,7 +12,7 @@ function part(status: PartRow['status'], history: PartRow['history'] = []): Part
     sort: 0,
     history,
     variants: [],
-    chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0, copyStates: [],
+    chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0, copyStates: [], spareN: 0,
   }
 }
 

@@ -170,6 +170,86 @@ describe('a failed copy given a replacement file (CG, 9 Oct)', () => {
   })
 })
 
+describe('several parts to fewer copies at once (CG, 12 Oct)', () => {
+  const row = (label: string) =>
+    currentDb.sqlite.prepare('select qty, copy_states, spare_n, printed_n, reprint_n, status from job_parts where label = ?').get(label) as any
+
+  it('drops what is not printed, keeps what is as spares, and says so once for the batch', async () => {
+    const L = await import('./data.local')
+    const lucha = await L.addPart(SHOP, JOB, ACTOR, { label: 'Lucha', qty: 5, note: null })
+    const tagas = await L.addPart(SHOP, JOB, ACTOR, { label: 'Tagas', qty: 5, note: null })
+    const ghan = await L.addPart(SHOP, JOB, ACTOR, { label: 'Ghan', qty: 5, note: null })
+    await L.movePartCopies(SHOP, tagas, ACTOR, 'printed', 5, null)
+    await L.movePartCopies(SHOP, ghan, ACTOR, 'printed', 3, null)
+
+    const out = await L.setPartsCopies(
+      SHOP,
+      JOB,
+      ACTOR,
+      [
+        { partId: lucha, qty: 4 },
+        { partId: tagas, qty: 4 },
+        { partId: ghan, qty: 4 },
+      ],
+      'Club only needs four',
+    )
+    expect(out.map((x) => [x.label, x.from, x.to, x.toSpare])).toEqual([
+      ['Lucha', 5, 4, 0],
+      ['Tagas', 5, 4, 1],
+      ['Ghan', 5, 4, 0],
+    ])
+    expect(row('Lucha')).toMatchObject({ qty: 4, spare_n: 0, status: 'pending' })
+    // Five printed, four owed: done, with one spare -- not refused.
+    expect(row('Tagas')).toMatchObject({ qty: 4, spare_n: 1, printed_n: 4, status: 'printed' })
+    expect(JSON.parse(row('Ghan').copy_states)).toEqual(['printed', 'printed', 'printed', 'pending'])
+
+    const job = currentDb.sqlite.prepare("select body from job_events where kind = 'edit' order by rowid desc limit 1").get() as any
+    expect(job.body).toBe('Copies changed on 3 parts: Lucha 5 → 4, Tagas 5 → 4, Ghan 5 → 4. Why: Club only needs four')
+    const note = currentDb.sqlite.prepare("select note from part_events where part_id = ? and kind = 'note' order by id desc").get(tagas) as any
+    expect(note.note).toBe('"Tagas" copies: 5 → 4 — 1 printed copy kept as a spare. Why: Club only needs four')
+
+    // Back up to five: the spare is counted again, as printed.
+    await L.setPartsCopies(SHOP, JOB, ACTOR, [{ partId: tagas, qty: 5 }], null)
+    expect(row('Tagas')).toMatchObject({ qty: 5, spare_n: 0, printed_n: 5 })
+  })
+
+  it('checks every part before writing any', async () => {
+    const L = await import('./data.local')
+    const a = await L.addPart(SHOP, JOB, ACTOR, { label: 'Lucha', qty: 5, note: null })
+    await expect(
+      L.setPartsCopies(SHOP, JOB, ACTOR, [{ partId: a, qty: 4 }, { partId: a, qty: 0 }], null),
+    ).rejects.toThrow(/at least one/)
+    expect(row('Lucha').qty).toBe(5)
+  })
+
+  it('a failed copy that is no longer owed goes, and the history stays on the right copies', async () => {
+    const L = await import('./data.local')
+    const p = await L.addPart(SHOP, JOB, ACTOR, { label: 'Lucha', qty: 5, note: null })
+    await L.setCopyStates(SHOP, p, ACTOR, [0, 1, 3, 4], 'printed', null)
+    await L.setCopyStates(SHOP, p, ACTOR, [2], 'reprint', 'Warped')
+    await L.setCopyStates(SHOP, p, ACTOR, [4], 'reprint', 'Layer shift')
+    // Five owed, copies 3 and 5 failed; now four: the last failed copy goes.
+    await L.setPartsCopies(SHOP, JOB, ACTOR, [{ partId: p, qty: 4 }], null)
+    expect(JSON.parse(row('Lucha').copy_states)).toEqual(['printed', 'printed', 'reprint', 'printed'])
+    const detail = await L.loadProjectDetail(SHOP, JOB)
+    const lucha = detail.parts.find((x) => x.id === p)!
+    // Copy 3's reason is still copy 3's; copy 5's left with copy 5.
+    expect(lucha.history.find((h) => h.note === 'Warped')?.copies).toEqual([3])
+    expect(lucha.history.find((h) => h.note === 'Layer shift')?.copies).toBeNull()
+  })
+
+  it('skipping a copy keeps the later copies with their own history (found 12 Oct)', async () => {
+    const L = await import('./data.local')
+    const p = await L.addPart(SHOP, JOB, ACTOR, { label: 'Lucha', qty: 4, note: null })
+    await L.setCopyStates(SHOP, p, ACTOR, [1], 'reprint', 'Spaghetti')
+    await L.setCopyStates(SHOP, p, ACTOR, [3], 'reprint', 'Warped')
+    await L.skipCopy(SHOP, p, ACTOR, 1, null)
+    const lucha = (await L.loadProjectDetail(SHOP, JOB)).parts.find((x) => x.id === p)!
+    // What was copy 4 is copy 3 now, and its reason went with it.
+    expect(lucha.history.find((h) => h.note === 'Warped')?.copies).toEqual([3])
+  })
+})
+
 describe('the quote that counts, beside the newest version', () => {
   beforeEach(() => {
     currentDb.sqlite.exec(`

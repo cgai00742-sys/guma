@@ -32,6 +32,7 @@ function part(status: PartRow['status'], minutes: number | null): PartRow {
     note: null,
     sort: 0,
     history: [],
+    spareN: 0,
     variants: minutes == null ? [] : [variant(minutes)],
     chosenSectionId: null,
     printedN: status === 'printed' ? 1 : 0,

@@ -648,11 +648,17 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     expect(currentDb.sqlite.prepare("select printed_n from job_parts where label = 'Lid'").get()).toEqual({ printed_n: 1 })
   })
 
-  it('a part cannot be cut below the copies already made', async () => {
+  it('a part cut below the copies already made keeps the extras as spares (CG, 12 Oct; was refused)', async () => {
     const { ctx, jobId, d, partId, importId } = await inBuild()
     await d.markPlatePrinted(ctx.shop.id, jobId, ctx.profile.id, importId)
     await d.movePartCopies(ctx.shop.id, partId, ctx.profile.id, 'printed', 2, null)
-    await expect(d.updatePart(ctx.shop.id, partId, { label: 'Hull', qty: 2 }, ctx.profile.id)).rejects.toThrow(/cannot be fewer than 3/)
+    await d.updatePart(ctx.shop.id, partId, { label: 'Hull', qty: 2 }, ctx.profile.id)
+    expect(currentDb.sqlite.prepare("select qty, printed_n, spare_n, status from job_parts where label = 'Hull'").get()).toEqual({
+      qty: 2,
+      printed_n: 2,
+      spare_n: 1,
+      status: 'printed',
+    })
   })
 })
 
@@ -808,5 +814,79 @@ describe('a project can always be got rid of', () => {
 
     expect(screen.getByRole('button', { name: /^delete$/i })).toBeDefined()
     await expect(data.loadProjectDetail(ctx.shop.id, jobId)).resolves.toBeTruthy()
+  })
+
+  it('several parts to four copies at once: preview, spares, the spool hold and the price (CG, 12 Oct)', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    const d = data as any
+    const q = (await d.loadProjectDetail(ctx.shop.id, jobId)).quote
+    await d.setQuoteStatus(ctx.shop.id, q.id, ctx.profile.id, 'accepted')
+    await moveTo(data, ctx, jobId, 'building')
+    const bracket = await d.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Bracket', qty: 6, note: null })
+    await d.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Cap', qty: 6, note: null })
+    await d.movePartCopies(ctx.shop.id, bracket, ctx.profile.id, 'printed', 5, null)
+    // Set aside for the twelve quoted at 62 g each.
+    await d.setStockHolds(ctx.shop.id, jobId, ctx.profile.id, [{ materialId: ctx.materials[0].id, units: 744 }])
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+
+    // The sheet matches the quote: no price note yet.
+    expect(screen.queryByTestId('sheet-price-build')).toBeNull()
+
+    await user.click(screen.getByRole('checkbox', { name: 'Pick Bracket' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Pick Cap' }))
+    const bar = screen.getByRole('region', { name: /set copies on the picked parts/i })
+    await user.type(within(bar).getByLabelText(/set copies to/i), '4')
+
+    // Before anything is written: what happens to each part, the price, the spool.
+    expect(within(bar).getByText('1 unprinted copy dropped · 1 printed copy kept as spare')).toBeDefined()
+    expect(within(bar).getByText('2 unprinted copies dropped')).toBeDefined()
+    expect(within(bar).getByText(/will price at/)).toBeDefined()
+    expect(within(bar).getByText(/goes back on the shelf/)).toBeDefined()
+    expect(currentDb.sqlite.prepare("select qty from job_parts where label = 'Cap'").get()).toEqual({ qty: 6 })
+
+    await user.type(within(bar).getByLabelText(/why/i), 'The club only needs four')
+    await user.click(within(bar).getByRole('button', { name: 'Set 2 parts to 4' }))
+
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare("select qty, spare_n, printed_n, status from job_parts where label = 'Bracket'").get()).toEqual({
+        qty: 4,
+        spare_n: 1,
+        printed_n: 4,
+        status: 'printed',
+      }),
+    )
+    expect(currentDb.sqlite.prepare("select qty from job_parts where label = 'Cap'").get()).toEqual({ qty: 4 })
+    // The hold came down with the sheet, and no further than it needs.
+    const held = (currentDb.sqlite.prepare('select units from stock_holds where job_id = ?').get(jobId) as { units: number }).units
+    expect(held).toBeLessThan(744)
+    expect(held).toBeGreaterThanOrEqual(8 * 62)
+    // The price says what changed and offers the revision; the agreed price stands.
+    const note = await screen.findByTestId('sheet-price-build')
+    expect(note.textContent).toMatch(/8 copies against 12 quoted/)
+    expect(within(note).getByRole('link', { name: /revise the quote to match/i })).toBeDefined()
+    expect(screen.getByText(/4 of 4 printed · 1 spare/)).toBeDefined()
+    expect(await screen.findByText(/2 parts set to 4 copies · 1 printed copy kept as spare/)).toBeDefined()
+  })
+
+  it('a revision made in In build can be accepted from In build (CG, 12 Oct)', async () => {
+    const { ctx, jobId, data } = await seed({ takeIn: true })
+    const d = data as any
+    const q = (await d.loadProjectDetail(ctx.shop.id, jobId)).quote
+    await d.setQuoteStatus(ctx.shop.id, q.id, ctx.profile.id, 'accepted')
+    await moveTo(data, ctx, jobId, 'building')
+    currentDb.sqlite
+      .prepare(
+        `insert into quotes (id, shop_id, job_id, version, status, total, design_billing, quantity)
+         values ('rev2', ?, ?, 2, 'draft', 900, 'hourly', 8)`,
+      )
+      .run(ctx.shop.id, jobId)
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    const banner = await screen.findByTestId('pending-revision')
+    expect(banner.textContent).toMatch(/not sent yet/)
+    await user.click(within(banner).getByRole('button', { name: /client accepted it/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare("select status from quotes where id = 'rev2'").get()).toEqual({ status: 'accepted' }))
+    await waitFor(() => expect(screen.queryByTestId('pending-revision')).toBeNull())
   })
 })

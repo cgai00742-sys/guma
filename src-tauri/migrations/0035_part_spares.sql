@@ -1,0 +1,13 @@
+-- Guma: printed copies kept as spares when a part needs fewer.
+--
+-- CG, 12 Oct 2026: "reduce the number of parts needed down to 4 for some of
+-- the parts", in In build, with the extras kept as spares. Until now a part
+-- could not drop below what was already printed, so five printed and four
+-- needed was a dead end.
+--
+-- A spare is a copy that EXISTS but is no longer owed: out of qty and out
+-- of copy_states, so "4 of 4 printed", gates, handover and closeout count
+-- what is owed; never out of the cost, because the runs that made it are
+-- recorded and actuals read the runs. Raising the count again takes the
+-- spares back first, as printed.
+alter table job_parts add column spare_n integer not null default 0 check (spare_n >= 0);

@@ -13,7 +13,7 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
-import { copyList, countsOf, movable, moveStates, queuedCopies, resizeStates, setStates, statesOf, statusOf } from './copies'
+import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, queuedCopies, renumberCopies, setStates, statesOf, statusOf } from './copies'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
@@ -69,6 +69,8 @@ export type {
   PartVariant,
   RelatedProject,
   PartInput,
+  PartCopiesChange,
+  PartCopiesResult,
   SliceImportInput,
   SliceImportResult,
   SliceImportRow,
@@ -126,6 +128,8 @@ import type {
   StockEntry,
   SellBranch,
   PartInput,
+  PartCopiesChange,
+  PartCopiesResult,
   PartStatus,
   QuoteStatus,
   SliceImportInput,
@@ -1176,7 +1180,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .order('worked_on', { ascending: false }),
     supabase
       .from('job_parts')
-      .select('id, label, qty, status, note, sort, chosen_section_id, printed_n, passed_n, reprint_n, copy_states')
+      .select('id, label, qty, status, note, sort, chosen_section_id, printed_n, passed_n, reprint_n, copy_states, spare_n')
       .eq('job_id', jobId)
       .order('sort'),
     supabase
@@ -1312,6 +1316,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
           reprintN: Number(x.reprint_n ?? 0),
           copyStates: x.copy_states,
         }),
+        spareN: Number(x.spare_n ?? 0),
         note: x.note ?? null,
         sort: Number(x.sort ?? 0),
         chosenSectionId: x.chosen_section_id ?? null,
@@ -2248,41 +2253,18 @@ export async function updatePart(
   const qty = Math.floor(Number(input.qty))
   if (!Number.isFinite(qty) || qty < 1) throw new Error('A part needs at least one copy.')
   const note = input.note?.trim() || null
-  const { data: before, error: readErr } = await supabase
-    .from('job_parts')
-    .select('job_id, label, qty, note, printed_n, passed_n, reprint_n, copy_states')
-    .eq('id', partId)
-    .eq('shop_id', shopId)
-    .single()
-  if (readErr) throw readErr
-  const states = resizeStates(
-    statesOf({
-      qty: Number(before.qty),
-      printedN: Number(before.printed_n),
-      passedN: Number(before.passed_n),
-      reprintN: Number(before.reprint_n),
-      copyStates: before.copy_states,
-    }),
-    qty,
-  )
-  const c = countsOf(states)
+  const before = await readPartForCopies(shopId, partId)
   const { error } = await supabase
     .from('job_parts')
-    .update({
-      label,
-      qty,
-      note,
-      copy_states: JSON.stringify(states),
-      printed_n: c.printed,
-      passed_n: c.passed,
-      reprint_n: c.reprint,
-      status: statusOf(c),
-      updated_at: new Date().toISOString(),
-    })
+    .update({ label, note, updated_at: new Date().toISOString() })
     .eq('id', partId)
     .eq('shop_id', shopId)
   if (error) throw error
-  const said = describePartEdit(before, { label, qty, note })
+  const said = describePartEdit(before, { label, qty: before.qty, note })
+  if (qty !== before.qty) {
+    const r = await applyCopyCount(shopId, { ...before, label }, qty)
+    said.push(describeCopiesChange(label, before.qty, r, qty))
+  }
   if (said.length > 0) {
     const body = said.join(' ')
     const { error: pErr } = await supabase
@@ -2294,6 +2276,115 @@ export async function updatePart(
       .insert({ job_id: before.job_id, actor_id: actorId, kind: 'edit', body })
     if (jErr) throw jErr
   }
+}
+
+/** See data.local.ts. */
+async function readPartForCopies(shopId: string, partId: string) {
+  const { data: p, error } = await supabase
+    .from('job_parts')
+    .select('id, job_id, label, qty, note, printed_n, passed_n, reprint_n, copy_states, spare_n')
+    .eq('id', partId)
+    .eq('shop_id', shopId)
+    .single()
+  if (error) throw error
+  if (!p) throw new Error('That part is not in this shop.')
+  return { ...(p as any), qty: Number(p.qty), spare_n: Number(p.spare_n ?? 0) } as {
+    id: string
+    job_id: string
+    label: string
+    qty: number
+    note: string | null
+    printed_n: number
+    passed_n: number
+    reprint_n: number
+    copy_states: string | null
+    spare_n: number
+  }
+}
+
+/** See data.local.ts's applyCopyCount. */
+async function applyCopyCount(shopId: string, p: Awaited<ReturnType<typeof readPartForCopies>>, qty: number) {
+  const r = changeCopies(
+    statesOf({
+      qty: p.qty,
+      printedN: Number(p.printed_n),
+      passedN: Number(p.passed_n),
+      reprintN: Number(p.reprint_n),
+      copyStates: p.copy_states,
+    }),
+    p.spare_n,
+    qty,
+  )
+  const c = countsOf(r.states)
+  const { error } = await supabase
+    .from('job_parts')
+    .update({
+      qty,
+      copy_states: JSON.stringify(r.states),
+      printed_n: c.printed,
+      passed_n: c.passed,
+      reprint_n: c.reprint,
+      status: statusOf(c),
+      spare_n: r.spare,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', p.id)
+    .eq('shop_id', shopId)
+  if (error) throw error
+  await renumberPartEvents(p.id, r.removed)
+  return r
+}
+
+/** See data.local.ts's renumberPartEvents. */
+async function renumberPartEvents(partId: string, removed: number[]) {
+  if (removed.length === 0) return
+  const { data, error } = await supabase.from('part_events').select('id, copies').eq('part_id', partId).not('copies', 'is', null)
+  if (error) throw error
+  for (const e of (data ?? []) as { id: number; copies: string | null }[]) {
+    const next = renumberCopies(e.copies, removed)
+    if (next === e.copies) continue
+    const { error: uErr } = await supabase.from('part_events').update({ copies: next }).eq('id', e.id)
+    if (uErr) throw uErr
+  }
+}
+
+/** See data.local.ts's setPartsCopies. */
+export async function setPartsCopies(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  changes: PartCopiesChange[],
+  reason: string | null,
+): Promise<PartCopiesResult[]> {
+  const parts = []
+  for (const ch of changes) {
+    const qty = Math.floor(Number(ch.qty))
+    if (!Number.isFinite(qty) || qty < 1) throw new Error('A part needs at least one copy.')
+    const p = await readPartForCopies(shopId, ch.partId)
+    if (p.job_id !== jobId) throw new Error(`"${p.label}" is not on this project.`)
+    if (p.qty !== qty) parts.push({ p, qty })
+  }
+  if (parts.length === 0) return []
+  const why = reason?.trim() || null
+  const out: PartCopiesResult[] = []
+  for (const { p, qty } of parts) {
+    const r = await applyCopyCount(shopId, p, qty)
+    const line = describeCopiesChange(p.label, p.qty, r, qty)
+    const { error } = await supabase
+      .from('part_events')
+      .insert({ part_id: p.id, job_id: jobId, kind: 'note', note: why ? `${line} Why: ${why}` : line, actor_id: actorId })
+    if (error) throw error
+    out.push({ partId: p.id, label: p.label, from: p.qty, to: qty, toSpare: r.toSpare, fromSpare: r.fromSpare, dropped: r.dropped })
+  }
+  const head =
+    out.length === 1
+      ? describeCopiesChange(out[0].label, out[0].from, out[0], out[0].to)
+      : `Copies changed on ${out.length} parts: ${out.map((x) => `${x.label} ${x.from} → ${x.to}`).join(', ')}.`
+  const { error: jErr } = await supabase
+    .from('job_events')
+    .insert({ job_id: jobId, actor_id: actorId, kind: 'edit', body: why ? `${head} Why: ${why}` : head })
+  if (jErr) throw jErr
+  return out
 }
 
 export async function deletePart(
@@ -3186,6 +3277,7 @@ export async function skipCopy(
     .eq('id', partId)
     .eq('shop_id', shopId)
   if (error) throw error
+  await renumberPartEvents(partId, [copy])
   const body = `Copy ${copy + 1} skipped — not printed again; ${states.length} cop${states.length === 1 ? 'y' : 'ies'} now.${note?.trim() ? ` Why: ${note.trim()}` : ''}`
   const { error: pErr } = await supabase
     .from('part_events')

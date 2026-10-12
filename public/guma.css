@@ -1721,3 +1721,13 @@ details.sofar-stage>summary{cursor:pointer;list-style:none}
 .seriesfigs{display:flex;gap:16px;font-size:12px;color:var(--txt-3);white-space:nowrap}
 .seriesfigs b{color:var(--txt);font-weight:600}
 .seriesbody{padding:2px 14px 14px 52px}
+
+/* Build sheet: tick parts, set their copies once (CG, 12 Oct) */
+th.pick,td.pick{width:28px;padding-right:0}
+td.pick input,th.pick input{margin:0;cursor:pointer}
+.copiesbar{border:1px solid color-mix(in srgb, var(--ember) 45%, var(--line));border-radius:var(--radius);background:var(--panel-2);padding:10px 12px;margin:10px 0}
+.copiesbarhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.copieslist{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:3px}
+.copieslist li{display:grid;grid-template-columns:minmax(140px,1.2fr) 70px 2fr;gap:10px;align-items:baseline;font-size:12px}
+.copieslist li.same{opacity:.55}
+.copieslist .pmeta{margin:0}

@@ -12,7 +12,7 @@ const variant = (o: Partial<PartVariant> = {}): PartVariant => ({
 })
 let n = 0
 const part = (label: string, qty: number, variants: PartVariant[] = []): PartRow => ({
-  id: `p${++n}`, label, qty, status: 'pending', note: null, sort: n, history: [], variants, chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0, copyStates: [],
+  id: `p${++n}`, label, qty, status: 'pending', note: null, sort: n, history: [], variants, chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0, copyStates: [], spareN: 0,
 })
 
 describe('the build sheet, read back as quote lines (CG, 8 Oct)', () => {

@@ -6,7 +6,7 @@ import type { PartRow } from '../data.types'
 
 it('five copies of a 6 h part are scheduled as 30 h', () => {
   const p: PartRow = { id: 'p', label: 'Hull', qty: 5, status: 'pending', note: null, sort: 0, history: [],
-    printedN: 0, passedN: 0, reprintN: 0, copyStates: [], chosenSectionId: null,
+    printedN: 0, passedN: 0, reprintN: 0, copyStates: [], spareN: 0, chosenSectionId: null,
     variants: [{ sectionId: 's', importId: 'i', fileName: 'test-plate.gcode', printerModel: null, printerId: null,
       printerName: null, estMinutes: 360, estGrams: 100, material: null, importedAt: '2026-09-01', plateParts: 1,
       sectionQty: 1, materialId: null }] }

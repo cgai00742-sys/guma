@@ -221,3 +221,96 @@ export function queuedCopies(
     .map(([i]) => i)
     .sort((a, b) => a - b)
 }
+
+/**
+ * A part's copies set to a new count (CG, 12 Oct: "reduce the number of
+ * parts needed down to 4").
+ *
+ * Fewer copies drop, in this order, so nothing made is thrown away and
+ * nothing owed is forgotten:
+ *   1. not printed yet, from the last copy back -- nothing was spent;
+ *   2. failed and waiting to go again -- that reprint is no longer needed
+ *      (the failure stays in the part's history);
+ *   3. printed, then passed -- these exist, so they are kept as SPARES:
+ *      out of the count, never out of the cost (their runs are recorded).
+ * More copies take spares back first, as printed, then add not printed.
+ *
+ * `removed` is the 0-based copies that left, in the old numbering, so the
+ * history keyed by copy number can be renumbered (renumberCopies).
+ */
+export function changeCopies(
+  states: PartStatus[],
+  spare: number,
+  qty: number,
+): { states: PartStatus[]; spare: number; removed: number[]; toSpare: number; fromSpare: number; dropped: { pending: number; reprint: number } } {
+  if (!Number.isInteger(qty) || qty < 1) throw new Error('A part needs at least one copy.')
+  const have = Math.max(0, Math.floor(spare || 0))
+  if (qty >= states.length) {
+    const add = qty - states.length
+    const fromSpare = Math.min(have, add)
+    return {
+      states: [...states, ...Array<PartStatus>(fromSpare).fill('printed'), ...Array<PartStatus>(add - fromSpare).fill('pending')],
+      spare: have - fromSpare,
+      removed: [],
+      toSpare: 0,
+      fromSpare,
+      dropped: { pending: 0, reprint: 0 },
+    }
+  }
+  let k = states.length - qty
+  const removed: number[] = []
+  const dropped = { pending: 0, reprint: 0 }
+  let toSpare = 0
+  for (const kind of ['pending', 'reprint', 'printed', 'passed'] as PartStatus[]) {
+    for (let i = states.length - 1; i >= 0 && k > 0; i--) {
+      if (states[i] !== kind || removed.includes(i)) continue
+      removed.push(i)
+      k--
+      if (kind === 'pending') dropped.pending++
+      else if (kind === 'reprint') dropped.reprint++
+      else toSpare++
+    }
+  }
+  removed.sort((a, b) => a - b)
+  return {
+    states: states.filter((_, i) => !removed.includes(i)),
+    spare: have + toSpare,
+    removed,
+    toSpare,
+    fromSpare: 0,
+    dropped,
+  }
+}
+
+/**
+ * A history entry's copy numbers ("2,4", 1-based) after copies left the
+ * part: the ones that left are dropped, the rest move down to their new
+ * numbers. Null when none are left. Without this, removing copy 2 made
+ * copy 3's failure show on what had been copy 4 -- and a replacement file
+ * queued for copy 4 would mark copy 5 printed.
+ */
+export function renumberCopies(copies: string | null, removed: number[]): string | null {
+  if (!copies || removed.length === 0) return copies
+  const gone = new Set(removed.map((i) => i + 1))
+  const out = copies
+    .split(',')
+    .map((x) => Number(x.trim()))
+    .filter((c) => Number.isInteger(c) && c > 0 && !gone.has(c))
+    .map((c) => c - [...gone].filter((g) => g < c).length)
+  return out.length ? out.join(',') : null
+}
+
+/** "“Lucha” copies: 5 → 4 — 1 printed copy kept as a spare." */
+export function describeCopiesChange(
+  label: string,
+  from: number,
+  r: { toSpare: number; fromSpare: number; dropped: { pending: number; reprint: number } },
+  to: number,
+): string {
+  const bits: string[] = []
+  const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`
+  if (r.toSpare) bits.push(`${n(r.toSpare, 'printed copy', 'printed copies')} kept as ${r.toSpare === 1 ? 'a spare' : 'spares'}`)
+  if (r.dropped.reprint) bits.push(`${n(r.dropped.reprint, 'failed copy', 'failed copies')} no longer reprinted`)
+  if (r.fromSpare) bits.push(`${n(r.fromSpare, 'spare', 'spares')} counted again`)
+  return `"${label}" copies: ${from} → ${to}${bits.length ? ` — ${bits.join('; ')}` : ''}.`
+}

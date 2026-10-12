@@ -1043,6 +1043,8 @@ export interface PartRow {
   /** Each copy's state, copy 1 first (0032_copy_states.sql). Always the
    *  length of qty -- read from the counts when never split out. */
   copyStates: PartStatus[]
+  /** Printed copies no longer owed -- kept, not counted (0035_part_spares). */
+  spareN: number
   note: string | null
   sort: number
   /** Newest first. Empty until something has happened to this part. */
@@ -1119,6 +1121,23 @@ export interface PartEvent {
   note: string | null
   actor: string | null
   at: string
+}
+
+/** One part's new copy count, for setPartsCopies. */
+export interface PartCopiesChange {
+  partId: string
+  qty: number
+}
+
+/** What setPartsCopies did to one part, for the screen to say. */
+export interface PartCopiesResult {
+  partId: string
+  label: string
+  from: number
+  to: number
+  toSpare: number
+  fromSpare: number
+  dropped: { pending: number; reprint: number }
 }
 
 export interface PartInput {

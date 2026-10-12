@@ -112,6 +112,23 @@ describe('hosted replacement file for a failed copy', () => {
   })
 })
 
+describe('hosted setPartsCopies', () => {
+  it('keeps a printed extra as a spare and renumbers the history', async () => {
+    const part = { id: 'p1', shop_id: 's', job_id: 'j', label: 'Tagas', qty: 5, note: null, status: 'printed', printed_n: 4, passed_n: 0, reprint_n: 1, spare_n: 0, copy_states: '["printed","reprint","printed","printed","printed"]' }
+    tables.job_parts = [part]
+    tables.part_events = [{ id: 7, part_id: 'p1', copies: '2', to_status: 'reprint', note: 'Warped' }, { id: 8, part_id: 'p1', copies: '5', to_status: 'printed' }]
+    const S = await import('./data.supabase')
+    const out = await S.setPartsCopies('s', 'j', 'a', [{ partId: 'p1', qty: 3 }], 'Only three')
+    // The failed copy goes first, then one printed copy becomes a spare.
+    expect(out[0]).toMatchObject({ from: 5, to: 3, toSpare: 1, dropped: { pending: 0, reprint: 1 } })
+    expect(part).toMatchObject({ qty: 3, spare_n: 1, printed_n: 3, reprint_n: 0 })
+    expect(JSON.parse(part.copy_states)).toEqual(['printed', 'printed', 'printed'])
+    expect(tables.part_events.find((e) => e.id === 7)?.copies).toBeNull()
+    expect(tables.part_events.find((e) => e.id === 8)?.copies).toBeNull()
+    expect(tables.job_events.at(-1)?.body).toMatch(/"Tagas" copies: 5 → 3 — 1 printed copy kept as a spare; 1 failed copy no longer reprinted\. Why: Only three/)
+  })
+})
+
 describe('hosted facts read the quote that counts', () => {
   const quotes = [
     { id: 'q1', version: 1, status: 'accepted', total: 1000 },

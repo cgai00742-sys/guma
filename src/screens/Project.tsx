@@ -62,6 +62,7 @@ import {
   movePartCopies,
   requeueCopyFromFile,
   setCopyStates,
+  setPartsCopies,
   skipCopy,
   markPlatePrinted,
   deletePrintRun,
@@ -156,9 +157,9 @@ import { buildComparison, compareToQuote, priceProjectQuote, type Comparison } f
 import type { PricedQuote, RateSet } from '../lib/pricing'
 import { sheetVsQuote } from '../lib/sheetVsQuote'
 import type { StockHoldRow } from '../lib/data.types'
-import { materialCheck } from '../lib/scheduleCheck'
+import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
-import { copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
+import { changeCopies, copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
 import { splitJobCost, unitCostFrom } from '../lib/selling'
 
 const DELIVERY_METHODS = [
@@ -657,6 +658,14 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                   />
                 )}
               </div>
+              {/* A revision made after the client accepted -- from In build,
+                  say, when copies changed (CG, 12 Oct). The price that
+                  counts stays the accepted one until they accept this; the
+                  status control lives in Approval, so without this the
+                  revision could never be agreed from here. */}
+              {mm === 'payments' && !inRecord && (
+                <PendingRevision detail={detail} money={money} busy={busy} onMark={(st) => void markQuote(st)} />
+              )}
               <div className="btnrow" style={{ marginTop: 12, alignItems: 'center' }}>
                 {mm === 'approve' && (
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
@@ -892,6 +901,17 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           busy={busy}
           onChanged={reload}
           setError={setError}
+          whatIf={(parts) => {
+            const d2 = { ...detail, parts }
+            return {
+              price: sheetPriceOf(d2, { rateCard: ctx.rateCard, shop: ctx.shop, materials: ctx.materials, printers: ctx.printers }),
+              release: trimHolds(
+                schedulePlan(d2, stock, rates.failurePct, holds).material.lines,
+                holds.filter((h) => h.jobId === detail.jobId),
+              ),
+            }
+          }}
+          onQuoteStatus={(st) => void markQuote(st)}
         />
       </details>
 
@@ -3499,6 +3519,8 @@ function BuildSheet({
   busy,
   onChanged,
   setError,
+  whatIf,
+  onQuoteStatus,
 }: {
   ctx: ShopContext
   detail: ProjectDetail
@@ -3506,6 +3528,11 @@ function BuildSheet({
   busy: boolean
   onChanged: () => Promise<void>
   setError: (m: string | null) => void
+  /** What the price and the spool hold become with these parts instead --
+   *  worked out where the quote, stock and holds are (the Project page). */
+  whatIf?: (parts: PartRow[]) => WhatIf
+  /** Set the newest quote's status -- for a revision made while building. */
+  onQuoteStatus?: (status: QuoteStatus) => void
 }) {
   const [label, setLabel] = useState('')
   const [qty, setQty] = useState('1')
@@ -3540,6 +3567,15 @@ function BuildSheet({
   const [editId, setEditId] = useState<string | null>(null)
   const [removeId, setRemoveId] = useState<string | null>(null)
   const [removeWhy, setRemoveWhy] = useState('')
+  /**
+   * Parts ticked for one copy count (CG, 12 Oct: "reduce the number of
+   * parts needed down to 4 for some of the parts"). Tick, type the count,
+   * see what it does to each part, the price and the spool, then save once.
+   */
+  const [picked, setPicked] = useState<Set<string>>(() => new Set())
+  const [setTo, setSetTo] = useState('')
+  const [bulkWhy, setBulkWhy] = useState('')
+  const [bulkSaid, setBulkSaid] = useState<string | null>(null)
   /** The sliced file a part was imported from, if any. */
   const fileOf = (partId: string) =>
     detail.slices.find((sl) => sl.sections.some((sec) => sec.partId === partId))?.fileName ?? null
@@ -3749,10 +3785,64 @@ function BuildSheet({
           penalised: the gate items that read this step aside when it is empty.
         </div>
       ) : (
+        <>
+        {picked.size > 0 && (
+          <CopiesBar
+            parts={detail.parts}
+            picked={picked}
+            setTo={setTo}
+            onSetTo={setSetTo}
+            why={bulkWhy}
+            onWhy={setBulkWhy}
+            whyNeeded={locked}
+            whatIf={whatIf}
+            money={makeMoney(ctx.shop.currency, ctx.shop.locale).money}
+            busy={busy || saving}
+            onClear={() => {
+              setPicked(new Set())
+              setSetTo('')
+              setBulkWhy('')
+            }}
+            onSave={(changes, release) =>
+              guard(async () => {
+                const out = await setPartsCopies(ctx.shop.id, detail.jobId, ctx.profile.id, changes, bulkWhy)
+                // The spool hold follows the sheet down, never up (lib/scheduleCheck.ts trimHolds).
+                if (release) await setStockHolds(ctx.shop.id, detail.jobId, ctx.profile.id, release.holds)
+                const spares = out.reduce((a, x) => a + x.toSpare, 0)
+                setBulkSaid(
+                  `${out.length} part${out.length === 1 ? '' : 's'} set to ${changes[0]?.qty} cop${changes[0]?.qty === 1 ? 'y' : 'ies'}` +
+                    (spares ? ` · ${spares} printed cop${spares === 1 ? 'y' : 'ies'} kept as spare${spares === 1 ? '' : 's'}` : '') +
+                    (release ? ` · ${release.released.map((r) => `${r.units.toLocaleString()}${r.unit} ${r.name}`).join(', ')} back on the shelf` : '') +
+                    '.',
+                )
+                setPicked(new Set())
+                setSetTo('')
+                setBulkWhy('')
+              })
+            }
+          />
+        )}
+        {bulkSaid && picked.size === 0 && (
+          <div className="hint" role="status" style={{ color: 'var(--ok)', marginTop: 8 }}>
+            {bulkSaid}
+          </div>
+        )}
         <div className="sheetwrap" style={{ maxHeight: 'none' }}>
           <table>
             <thead>
               <tr>
+                <th className="pick">
+                  <input
+                    type="checkbox"
+                    aria-label="Pick every part"
+                    checked={picked.size > 0 && picked.size === detail.parts.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = picked.size > 0 && picked.size < detail.parts.length
+                    }}
+                    disabled={busy || saving}
+                    onChange={(e) => setPicked(e.target.checked ? new Set(detail.parts.map((x) => x.id)) : new Set())}
+                  />
+                </th>
                 <th className="chev" aria-label="Show copies" />
                 <th>Part</th>
                 <th style={{ width: 190 }}>Copies</th>
@@ -3768,6 +3858,22 @@ function BuildSheet({
                       landed > 0 && i >= detail.parts.length - landed ? 'landed' : ''
                     }`.trim()}
                   >
+                    <td className="pick">
+                      <input
+                        type="checkbox"
+                        aria-label={`Pick ${p.label}`}
+                        checked={picked.has(p.id)}
+                        disabled={busy || saving}
+                        onChange={(e) =>
+                          setPicked((cur) => {
+                            const next = new Set(cur)
+                            if (e.target.checked) next.add(p.id)
+                            else next.delete(p.id)
+                            return next
+                          })
+                        }
+                      />
+                    </td>
                     <td className="chev">
                       {/* The whole point of the row is its copies, so opening
                           them is a big target at the start of the row, not a
@@ -3834,6 +3940,7 @@ function BuildSheet({
                               }}
                             >
                               {describeCopies(c)}
+                              {p.spareN > 0 && ` · ${p.spareN} spare${p.spareN === 1 ? '' : 's'}`}
                               {queued.size > 0 && ` · ${queued.size} reprint${queued.size === 1 ? '' : 's'} queued`}
                             </div>
                           </div>
@@ -3924,7 +4031,7 @@ function BuildSheet({
                   </tr>
                   {copiesOpen === p.id && (
                     <tr className="copiesrow">
-                      <td colSpan={5}>
+                      <td colSpan={6}>
                         <EachCopy
                           part={p}
                           options={copyOptions(detail.phase, detail.facts.kind)}
@@ -3942,7 +4049,7 @@ function BuildSheet({
                   )}
                   {removeId === p.id && (
                     <tr>
-                      <td colSpan={5} style={{ background: 'var(--panel-3)' }}>
+                      <td colSpan={6} style={{ background: 'var(--panel-3)' }}>
                         <div className="attn crit" style={{ margin: 0 }}>
                           <b>
                             Remove “{p.label}” ×{p.qty} from the build sheet?
@@ -3992,7 +4099,7 @@ function BuildSheet({
                   )}
                   {editId === p.id && (
                     <tr>
-                      <td colSpan={5} style={{ background: 'var(--panel-3)' }}>
+                      <td colSpan={6} style={{ background: 'var(--panel-3)' }}>
                         <PartEditor
                           part={p}
                           busy={busy || saving}
@@ -4009,7 +4116,7 @@ function BuildSheet({
                   )}
                   {act?.partId === p.id && act.to === 'reprint' && (
                     <tr>
-                      <td colSpan={5} style={{ background: 'var(--panel-3)' }}>
+                      <td colSpan={6} style={{ background: 'var(--panel-3)' }}>
                         {movable(copiesOf(p), 'reprint') > 1 && (
                           <div className="fld" style={{ margin: '0 0 6px', maxWidth: 220 }}>
                             <label className="lbl" htmlFor={`fail-n-${p.id}`}>
@@ -4084,7 +4191,7 @@ function BuildSheet({
                   )}
                   {openId === p.id && (
                     <tr>
-                      <td colSpan={5} style={{ background: 'var(--panel-2)' }}>
+                      <td colSpan={6} style={{ background: 'var(--panel-2)' }}>
                         {p.history.map((h) => (
                           <div key={h.id} className="histitem">
                             <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt-3)' }}>
@@ -4113,7 +4220,48 @@ function BuildSheet({
             </tbody>
           </table>
         </div>
+        </>
       )}
+
+      {/* Once building, Estimated build is gone from the page -- so a build
+          sheet that no longer matches the agreed quote says so here, with
+          the same one-click revision (CG, 12 Oct: fewer copies in In build
+          should reach the price, without changing it behind the client). */}
+      {(() => {
+        const at = phaseIndex(detail.phase)
+        if (!whatIf || at < phaseIndex('building') || at > phaseIndex('review')) return null
+        const { money } = makeMoney(ctx.shop.currency, ctx.shop.locale)
+        const q = detail.quote
+        const hasPending =
+          !!q && (q.status === 'draft' || q.status === 'sent') && detail.facts.quoteStatus === 'accepted'
+        const pending =
+          onQuoteStatus && detail.phase === 'building' && hasPending ? (
+            <PendingRevision detail={detail} money={money} busy={busy || saving} onMark={onQuoteStatus} />
+          ) : null
+        const pr = whatIf(detail.parts).price
+        if (!pr || !pr.changed) return pending
+        const d = pr.sheet - pr.quoted
+        return (
+          <>
+          <div className="attn warn" data-testid="sheet-price-build" style={{ marginTop: 10 }}>
+            <span>
+              <strong>The build sheet now prices at {money(pr.sheet)}</strong> — {pr.sheetCopies} copies against{' '}
+              {pr.quotedCopies} quoted at {money(pr.quoted)}
+              {Math.abs(d) >= 0.005 ? ` (${d < 0 ? '−' : '+'}${money(Math.abs(d))})` : ''}.{' '}
+              {detail.facts.quoteStatus === 'accepted'
+                ? 'The client agreed to the quoted price; it stands until they accept a revision.'
+                : 'The quote stays as sent until you revise it.'}
+            </span>
+            {!pending && (
+              <Link to={`/intake?revise=${detail.jobId}&from=sheet`} className="btn sm" style={{ textDecoration: 'none' }}>
+                Revise the quote to match
+              </Link>
+            )}
+          </div>
+          {pending}
+          </>
+        )
+      })()}
 
       {detail.parts.length > 0 && (
         <div className="sheetsum">
@@ -6301,6 +6449,225 @@ function EachCopy({
           close ▴
         </button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * A revision made after the client accepted -- from In build, say, when
+ * copies changed (CG, 12 Oct). The price that counts stays the accepted one
+ * until they accept this. Quote status is otherwise set only in Approval,
+ * so without this a revision made later could never be agreed.
+ */
+function PendingRevision({
+  detail,
+  money,
+  busy,
+  onMark,
+}: {
+  detail: ProjectDetail
+  money: (n: number) => string
+  busy: boolean
+  onMark: (status: QuoteStatus) => void
+}) {
+  const q = detail.quote
+  if (!q || (q.status !== 'draft' && q.status !== 'sent') || detail.facts.quoteStatus !== 'accepted') return null
+  return (
+    <div className="attn warn" data-testid="pending-revision" style={{ marginTop: 12 }}>
+      <span>
+        <strong>
+          A revised quote{q.total != null ? ` at ${money(q.total)}` : ''} is {q.status === 'sent' ? 'with the client' : 'not sent yet'}
+        </strong>
+        . Until they accept it, the price that counts is the one they agreed
+        {detail.facts.quoteTotal != null ? `: ${money(detail.facts.quoteTotal)}` : ''}.
+      </span>
+      <span className="btnrow" style={{ margin: 0 }}>
+        <Link to={`/quote/${q.id}/print`} className="btn sm" style={{ textDecoration: 'none' }}>
+          See it
+        </Link>
+        {q.status === 'draft' && (
+          <button type="button" className="btn sm" disabled={busy} onClick={() => onMark('sent')}>
+            Mark it sent
+          </button>
+        )}
+        <button type="button" className="btn sm primary" disabled={busy} onClick={() => onMark('accepted')}>
+          Client accepted it
+        </button>
+        <button type="button" className="btn sm ghost" disabled={busy} onClick={() => onMark('declined')}>
+          Declined
+        </button>
+      </span>
+    </div>
+  )
+}
+
+/** What the price and the spool hold become with a different build sheet. */
+export interface WhatIf {
+  price: { quoted: number; sheet: number; changed: boolean; quotedCopies: number; sheetCopies: number } | null
+  release: ReturnType<typeof trimHolds>
+}
+
+/**
+ * The build sheet priced at the quote's own frozen rates -- the same two
+ * figures Estimated build shows: as quoted, and with the sheet's copies.
+ * Null without a priced quote (the shop's own work has none).
+ */
+function sheetPriceOf(
+  detail: ProjectDetail,
+  pctx: Parameters<typeof priceProjectQuote>[1],
+): WhatIf['price'] {
+  const q = detail.quoteInputs
+  if (!q) return null
+  const asQuoted = priceProjectQuote(detail, pctx)
+  if (!asQuoted) return null
+  const sheet = sheetVsQuote(q.builds ?? [], q.quantity, detail.parts)
+  const asBuilt = sheet.changed
+    ? (priceProjectQuote(detail, pctx, { builds: sheet.builds, quantity: sheet.quantity }) ?? asQuoted)
+    : asQuoted
+  return {
+    quoted: asQuoted.priced.total,
+    sheet: asBuilt.priced.total,
+    changed: sheet.changed,
+    quotedCopies: sheet.quotedCopies,
+    sheetCopies: sheet.sheetCopies,
+  }
+}
+
+/** What one part's new count does to it, in a few words. */
+function copiesChangeWords(p: PartRow, n: number): string {
+  if (p.qty === n) return `already ${n}`
+  const r = changeCopies(statesOf(p), p.spareN, n)
+  const bits: string[] = []
+  const k = (x: number, one: string, many: string) => `${x} ${x === 1 ? one : many}`
+  if (r.dropped.pending) bits.push(`${k(r.dropped.pending, 'unprinted copy', 'unprinted copies')} dropped`)
+  if (r.dropped.reprint) bits.push(`${k(r.dropped.reprint, 'failed copy', 'failed copies')} not reprinted`)
+  if (r.toSpare) bits.push(`${k(r.toSpare, 'printed copy', 'printed copies')} kept as spare${r.toSpare === 1 ? '' : 's'}`)
+  if (r.fromSpare) bits.push(`${k(r.fromSpare, 'spare', 'spares')} counted again`)
+  const added = n - p.qty - r.fromSpare
+  if (added > 0) bits.push(`${k(added, 'copy', 'copies')} to print`)
+  return bits.join(' · ')
+}
+
+/**
+ * Ticked parts to one copy count (CG, 12 Oct). Nothing is written until
+ * Save, and before it the bar says what will happen: to each part (which
+ * copies go, which printed ones are kept as spares), to the price against
+ * what the client agreed, and to the material set aside on the spool.
+ */
+function CopiesBar({
+  parts,
+  picked,
+  setTo,
+  onSetTo,
+  why,
+  onWhy,
+  whyNeeded,
+  whatIf,
+  money,
+  busy,
+  onClear,
+  onSave,
+}: {
+  parts: PartRow[]
+  picked: Set<string>
+  setTo: string
+  onSetTo: (v: string) => void
+  why: string
+  onWhy: (v: string) => void
+  whyNeeded: boolean
+  whatIf?: (parts: PartRow[]) => WhatIf
+  money: (n: number) => string
+  busy: boolean
+  onClear: () => void
+  onSave: (changes: { partId: string; qty: number }[], release: WhatIf['release']) => Promise<void>
+}) {
+  const chosen = parts.filter((p) => picked.has(p.id))
+  const n = Math.floor(Number(setTo))
+  const valid = setTo.trim() !== '' && Number.isInteger(n) && n >= 1 && n <= 9999
+  const changing = valid ? chosen.filter((p) => p.qty !== n) : []
+  const now = whatIf?.(parts) ?? null
+  const next = valid && whatIf ? whatIf(parts.map((p) => (picked.has(p.id) ? { ...p, qty: n } : p))) : null
+  const price = next?.price
+  const priceMoves = !!price && !!now?.price && Math.abs(price.sheet - now.price.sheet) >= 0.005
+  return (
+    <div className="copiesbar" role="region" aria-label="Set copies on the picked parts">
+      <div className="copiesbarhead">
+        <b>
+          {chosen.length} part{chosen.length === 1 ? '' : 's'} picked
+        </b>
+        <label className="lbl" htmlFor="set-copies-to" style={{ margin: 0 }}>
+          Set copies to
+        </label>
+        <input
+          id="set-copies-to"
+          type="number"
+          min={1}
+          value={setTo}
+          autoFocus
+          style={{ width: 64 }}
+          onChange={(e) => onSetTo(e.target.value)}
+        />
+        <button type="button" className="linkbtn" style={{ width: 'auto', marginLeft: 'auto' }} onClick={onClear}>
+          clear
+        </button>
+      </div>
+      {valid && (
+        <>
+          <ul className="copieslist">
+            {chosen.map((p) => (
+              <li key={p.id} className={p.qty === n ? 'same' : ''}>
+                <span className="pn">{p.label}</span>
+                <span className="mono">
+                  {p.qty} → {n}
+                </span>
+                <span className="pmeta">{copiesChangeWords(p, n)}</span>
+              </li>
+            ))}
+          </ul>
+          {price && priceMoves && (
+            <div className="hint" style={{ marginTop: 6 }}>
+              The build sheet will price at <b>{money(price.sheet)}</b> against {money(price.quoted)} agreed (
+              {price.sheet < price.quoted ? '−' : '+'}
+              {money(Math.abs(price.sheet - price.quoted))}). The agreed price stays until you revise the quote —
+              the link appears under the build sheet.
+            </div>
+          )}
+          {next?.release && (
+            <div className="hint" style={{ marginTop: 4 }}>
+              {next.release.released.map((r) => `${r.units.toLocaleString()}${r.unit} ${r.name}`).join(', ')} set aside for
+              this project goes back on the shelf.
+            </div>
+          )}
+          <div className="btnrow" style={{ marginTop: 8, alignItems: 'flex-end' }}>
+            <div className="fld" style={{ margin: 0, flex: 1, minWidth: 200, maxWidth: 420 }}>
+              <label className="lbl" htmlFor="set-copies-why">
+                Why{whyNeeded ? '' : ' (optional)'}
+              </label>
+              <input
+                id="set-copies-why"
+                value={why}
+                placeholder="The club only needs four of each"
+                onChange={(e) => onWhy(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={busy || changing.length === 0 || (whyNeeded && !why.trim())}
+              onClick={() =>
+                void onSave(
+                  changing.map((p) => ({ partId: p.id, qty: n })),
+                  next?.release ?? null,
+                )
+              }
+            >
+              {changing.length === 0
+                ? 'Nothing to change'
+                : `Set ${changing.length} part${changing.length === 1 ? '' : 's'} to ${n}`}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }

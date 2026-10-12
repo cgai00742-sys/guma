@@ -72,6 +72,8 @@ import type {
   RunOutcome,
   PartRow,
   PartInput,
+  PartCopiesChange,
+  PartCopiesResult,
   QuoteBuildRow,
   SliceImportInput,
   SliceImportResult,
@@ -161,6 +163,8 @@ export type {
   RunOutcome,
   PartRow,
   PartInput,
+  PartCopiesChange,
+  PartCopiesResult,
   PartStatus,
   QuoteInputsRow,
   PrintRunRow,
@@ -682,6 +686,17 @@ export async function setCopyStates(
   note: string | null,
 ): Promise<void> {
   return (await backend()).setCopyStates(shopId, partId, actorId, copies, to, note)
+}
+
+/** Several parts to new copy counts at once; extras kept as spares. */
+export async function setPartsCopies(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  changes: PartCopiesChange[],
+  reason: string | null,
+): Promise<PartCopiesResult[]> {
+  return (await backend()).setPartsCopies(shopId, jobId, actorId, changes, reason)
 }
 
 /** A failed copy, back in the queue to print from a replacement file. */
