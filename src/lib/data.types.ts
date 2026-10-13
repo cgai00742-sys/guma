@@ -13,6 +13,7 @@
  */
 import type { MaterialRef, PrinterRef, RateSet } from './pricing'
 import { osCurrency, osLocale } from './locale'
+import type { ProgressPoint } from './gcodeWalk'
 
 export interface Shop {
   id: string
@@ -1118,6 +1119,9 @@ export interface PartEvent {
   /** The sliced file these copies were queued to print from, when a failed
    *  copy was given a replacement file (0034). */
   sliceImportId: string | null
+  /** The recorded print that moved these copies (0036), so removing the
+   *  print can offer to put them back. */
+  runId: string | null
   note: string | null
   actor: string | null
   at: string
@@ -1194,6 +1198,9 @@ export interface SliceImportRow {
    *  Read from slice_files without dragging the bytes along: every screen
    *  wants to say whether the file is there, and none of them want it. */
   keptBytes: number | null
+  /** Progress marks read from the moves (lib/gcodeWalk.ts, 0036). Null for
+   *  files imported before, or with no G-code in them. */
+  progress: ProgressPoint[] | null
 }
 
 export interface SliceSectionInput {
@@ -1229,6 +1236,8 @@ export interface SliceImportInput {
    *  object it is linked to this part whatever the slicer called it, and
    *  becomes the slice the part is printed from -- no duplicate row. */
   forPartId?: string | null
+  /** Progress marks read from the moves, kept with the import. */
+  progress?: ProgressPoint[] | null
 }
 
 /** What an import did, so the screen can say it rather than guess. */

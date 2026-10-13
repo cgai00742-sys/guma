@@ -13,7 +13,8 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
-import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, queuedCopies, renumberCopies, setStates, statesOf, statusOf } from './copies'
+import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, renumberCopies, setStates, statesOf, statusOf } from './copies'
+import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
@@ -1185,7 +1186,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       .order('sort'),
     supabase
       .from('part_events')
-      .select('id, part_id, kind, from_status, to_status, n, copies, slice_import_id, note, at, profiles ( full_name )')
+      .select('id, part_id, kind, from_status, to_status, n, copies, slice_import_id, run_id, note, at, profiles ( full_name )')
       .eq('job_id', jobId)
       .order('at', { ascending: false }),
     listSliceImports(shopId, jobId),
@@ -1348,6 +1349,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
             n: e.n == null ? null : Number(e.n),
             copies: e.copies ? String(e.copies).split(',').map(Number).filter((x: number) => x > 0) : null,
             sliceImportId: e.slice_import_id ?? null,
+            runId: e.run_id ?? null,
             note: e.note ?? null,
             actor: e.profiles?.full_name ?? null,
             at: e.at,
@@ -1934,8 +1936,93 @@ export async function recordPrintRun(
   return data.id as string
 }
 
-export async function deletePrintRun(shopId: string, runId: string): Promise<void> {
+/** See data.local.ts's deletePrintRun. */
+export async function deletePrintRun(shopId: string, runId: string, undoCopies = false): Promise<number> {
+  let undone = 0
+  if (undoCopies) {
+    const { data: run, error: rErr } = await supabase
+      .from('print_runs')
+      .select('job_id, slice_import_id')
+      .eq('id', runId)
+      .eq('shop_id', shopId)
+      .maybeSingle()
+    if (rErr) throw rErr
+    if (run) {
+      const { data: evs, error: eErr } = await supabase
+        .from('part_events')
+        .select('id, part_id, to_status, copies')
+        .eq('run_id', runId)
+        .eq('kind', 'status')
+        .not('copies', 'is', null)
+        .order('id')
+      if (eErr) throw eErr
+      for (const ev of (evs ?? []) as { id: number; part_id: string; to_status: PartStatus; copies: string | null }[]) {
+        const now = await readCopies(shopId, ev.part_id)
+        const back = parseCopyList(ev.copies).map((c) => c - 1).filter((i) => now.states[i] === ev.to_status)
+        if (!back.length) continue
+        const requeue = await queuedBefore(ev, (run.slice_import_id as string | null) ?? null)
+        const again = back.filter((c) => requeue.includes(c))
+        const plain = back.filter((c) => !requeue.includes(c))
+        const why = 'The print that marked this was removed from What it took.'
+        if (plain.length) await setCopyStates(shopId, ev.part_id, null, plain, 'pending', why)
+        if (again.length) await setCopyStates(shopId, ev.part_id, null, again, 'pending', why, null, run.slice_import_id as string)
+        undone += back.length
+        // See data.local.ts: a print fully undone is kept as a note.
+        if (back.length === parseCopyList(ev.copies).length) {
+          const { data: full, error: fErr } = await supabase.from('part_events').select('note, to_status').eq('id', ev.id).maybeSingle()
+          if (fErr) throw fErr
+          const { error: uErr } = await supabase
+            .from('part_events')
+            .update({
+              kind: 'note',
+              note: `Undone (print removed): ${(full?.note as string | null) ?? (full?.to_status as string) ?? ''}`,
+              from_status: null,
+              to_status: null,
+            })
+            .eq('id', ev.id)
+          if (uErr) throw uErr
+        }
+      }
+    }
+  }
   const { error } = await supabase.from('print_runs').delete().eq('id', runId).eq('shop_id', shopId)
+  if (error) throw error
+  return undone
+}
+
+function parseCopyList(v: string | null): number[] {
+  return String(v ?? '')
+    .split(',')
+    .map((x) => Number(x.trim()))
+    .filter((x) => Number.isInteger(x) && x > 0)
+}
+
+/** See data.local.ts's queuedBefore. */
+async function queuedBefore(ev: { id: number; part_id: string }, file: string | null): Promise<number[]> {
+  if (!file) return []
+  const { data, error } = await supabase
+    .from('part_events')
+    .select('id, copies, slice_import_id')
+    .eq('part_id', ev.part_id)
+    .eq('to_status', 'pending')
+    .not('copies', 'is', null)
+    .lt('id', ev.id)
+    .order('at')
+    .order('id')
+  if (error) throw error
+  const latest = new Map<number, string | null>()
+  for (const e of (data ?? []) as { copies: string | null; slice_import_id: string | null }[])
+    for (const c of parseCopyList(e.copies)) latest.set(c - 1, e.slice_import_id)
+  return [...latest.entries()].filter(([, f]) => f === file).map(([i]) => i)
+}
+
+/** See data.local.ts's setSliceProgress. */
+export async function setSliceProgress(shopId: string, importId: string, progress: ProgressPoint[]): Promise<void> {
+  const { error } = await supabase
+    .from('slice_imports')
+    .update({ progress: encodeProgress(progress) })
+    .eq('id', importId)
+    .eq('shop_id', shopId)
   if (error) throw error
 }
 
@@ -2076,6 +2163,7 @@ async function writeCopies(
   moved: number[],
   note: string | null,
   sliceImportId: string | null = null,
+  runId: string | null = null,
 ) {
   const c = countsOf(states)
   const { error } = await supabase
@@ -2102,6 +2190,7 @@ async function writeCopies(
     note: note?.trim() || null,
     actor_id: actorId,
     slice_import_id: sliceImportId,
+    run_id: runId,
   })
   if (evErr) throw evErr
 }
@@ -2129,12 +2218,14 @@ export async function setCopyStates(
   copies: number[],
   to: PartStatus,
   note: string | null,
+  runId: string | null = null,
+  sliceImportId: string | null = null,
 ): Promise<void> {
   if (to === 'reprint' && !(note ?? '').trim()) throw new Error('Say what went wrong before sending a copy back.')
   const before = await readCopies(shopId, partId)
   const changed = copies.filter((i) => before.states[i] !== to)
   if (changed.length === 0) return
-  await writeCopies(shopId, partId, actorId, before, setStates(before.states, changed, to), to, changed, note)
+  await writeCopies(shopId, partId, actorId, before, setStates(before.states, changed, to), to, changed, note, sliceImportId, runId)
 }
 
 /** See data.local.ts's requeueCopyFromFile. */
@@ -2167,6 +2258,32 @@ export async function markPlatePrinted(
   jobId: string,
   actorId: string | null,
   sliceImportId: string,
+  runId: string | null = null,
+): Promise<number> {
+  return movePlate(shopId, jobId, actorId, sliceImportId, runId, 'printed', null)
+}
+
+/** See data.local.ts's markPlateFailed. */
+export async function markPlateFailed(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+  runId: string | null,
+  reason: string | null,
+): Promise<number> {
+  return movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', reason?.trim() || 'The plate failed.')
+}
+
+/** See data.local.ts's movePlate. */
+async function movePlate(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+  runId: string | null,
+  to: 'printed' | 'reprint',
+  note: string | null,
 ): Promise<number> {
   const { data, error } = await supabase
     .from('slice_sections')
@@ -2189,7 +2306,6 @@ export async function markPlatePrinted(
     if (prev) prev.perPlate += add
     else byPart.set(r.part_id, { perPlate: add, p: r.job_parts })
   }
-  // Copies queued to print from THIS file go first: see data.local.ts.
   const { data: queued, error: qErr } = await supabase
     .from('part_events')
     .select('part_id, copies, slice_import_id')
@@ -2202,19 +2318,15 @@ export async function markPlatePrinted(
   let moved = 0
   for (const [partId, { perPlate, p }] of byPart) {
     const states = statesOf({ qty: Number(p.qty), printedN: Number(p.printed_n), passedN: Number(p.passed_n), reprintN: Number(p.reprint_n), copyStates: p.copy_states })
-    let n = perPlate
-    const mine = queuedCopies((queued ?? []) as any[], partId, sliceImportId, states).slice(0, n)
-    if (mine.length) {
-      await setCopyStates(shopId, partId, actorId, mine, 'printed', null)
-      n -= mine.length
-      moved++
-      if (n <= 0) continue
-    }
-    const c = countsOf(mine.length ? setStates(states, mine, 'printed') : states)
-    n = Math.min(n, movable(c, 'printed'))
-    if (n <= 0) continue
-    await movePartCopies(shopId, partId, actorId, 'printed', n, null)
-    if (!mine.length) moved++
+    const pick = plateCopies(
+      states,
+      queuedCopies((queued ?? []) as any[], partId, sliceImportId, states),
+      perPlate,
+      to === 'printed' ? ['reprint', 'pending'] : ['pending'],
+    )
+    if (!pick.length) continue
+    await setCopyStates(shopId, partId, actorId, pick, to, note, runId)
+    moved++
   }
   return moved
 }
@@ -2774,6 +2886,14 @@ export async function importSlice(
     ),
   )
   if (dup) {
+    if (input.progress?.length) {
+      const { error } = await supabase
+        .from('slice_imports')
+        .update({ progress: encodeProgress(input.progress) })
+        .eq('id', dup.id)
+        .is('progress', null)
+      if (error) throw error
+    }
     const kept = Array.isArray(dup.slice_files) ? dup.slice_files.length > 0 : !!dup.slice_files
     if (input.file && !kept) {
       const { error } = await supabase.from('slice_files').insert({
@@ -2804,6 +2924,7 @@ export async function importSlice(
       // jsonb would be the native choice, but the desktop stores JSON text
       // and both backends must mean the same thing on the way back out.
       notes: JSON.stringify(input.notes ?? []),
+      progress: encodeProgress(input.progress),
     })
     .select('id')
     .single()
@@ -2902,7 +3023,7 @@ export async function listSliceImports(
     .from('slice_imports')
     .select(
       `id, file_name, kind, printer_model, printer_id, material_text, material_id,
-       est_minutes, est_grams, notes, imported_at,
+       est_minutes, est_grams, notes, imported_at, progress,
        printers ( name ), materials ( name ),
        slice_files ( byte_size ),
        slice_sections ( id, part_id, label, qty, est_minutes, est_grams, material )`,
@@ -2942,6 +3063,7 @@ export async function listSliceImports(
       estGrams: r.est_grams == null ? null : Number(r.est_grams),
       notes: parseNotes(r.notes as string | null),
       importedAt: r.imported_at as string,
+      progress: decodeProgress(r.progress as string | null),
       keptBytes:
         (r.slice_files as { byte_size: number }[] | null)?.[0]?.byte_size == null
           ? null

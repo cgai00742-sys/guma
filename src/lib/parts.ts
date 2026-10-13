@@ -185,7 +185,9 @@ export interface FailureTally {
 export function failureTally(parts: PartRow[], runs: PrintRunRow[]): FailureTally | null {
   const sentBack = parts.reduce((a, p) => a + reprintCount(p), 0)
   const partsAffected = parts.filter((p) => reprintCount(p) > 0).length
-  const failed = runs.filter((r) => r.outcome === 'failed')
+  // A plate stopped part way burned its filament and its hours just the same
+  // (CG, 13 Oct: a ghost print cancelled at 15 hours).
+  const failed = runs.filter((r) => r.outcome === 'failed' || r.outcome === 'cancelled')
   if (sentBack === 0 && failed.length === 0) return null
   const counts = new Map<string, number>()
   const reasons = [

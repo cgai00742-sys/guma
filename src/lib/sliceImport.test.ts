@@ -489,3 +489,47 @@ G28
     expect(f.notes.join(' ')).toMatch(/no print time or filament/i)
   })
 })
+
+describe('each object measured from the moves, not split by copies (CG, 13 Oct)', () => {
+  // A big hull and a small lid on one plate. Split by copies they would be
+  // 50 g each; the moves say 40 g of extrusion went into the hull.
+  const plate = [
+    'M83',
+    'M73 P0 R60',
+    'G1 Z0.2',
+    '; printing object Hull id:0 copy 0',
+    'G1 X1 Y1 E400',
+    '; stop printing object Hull id:0 copy 0',
+    '; printing object Lid id:1 copy 0',
+    'G1 X2 Y2 E100',
+    '; stop printing object Lid id:1 copy 0',
+    'M73 P50 R30',
+    '; printing object Hull id:0 copy 0',
+    'G1 X3 Y3 E300',
+    '; stop printing object Hull id:0 copy 0',
+    'M73 P100 R0',
+    '; filament used [g] = 100.00',
+    '; total filament used [g] = 100.00',
+    '; estimated printing time (normal mode) = 1h 0m 0s',
+    '; filament_type = PLA',
+  ].join('\n')
+
+  it('gives each object its own grams and minutes, adding up to the plate', async () => {
+    const f = await parseSliceFile(gcodeFile('hull and lid.gcode', plate))
+    const by = Object.fromEntries(f.sections.map((s) => [s.label, s]))
+    // 700 : 100 mm of filament -> 87.5 g and 12.5 g of the slicer's 100 g.
+    expect(by.Hull.estGrams).toBe(87.5)
+    expect(by.Lid.estGrams).toBe(12.5)
+    // First 30 minutes shared 400 : 100, the last 30 all hull.
+    expect(by.Hull.estMinutes).toBe(54)
+    expect(by.Lid.estMinutes).toBe(6)
+    expect(f.notes).toContain('Time and filament for each object measured from the moves in the file.')
+    expect(f.progress?.map((p) => p.pct)).toEqual([0, 50, 100])
+  })
+
+  it('falls back to the split, and says so, when the moves do not name every object', async () => {
+    const f = await parseSliceFile(gcodeFile('unlabelled.gcode', plate.replace(/; (stop )?printing object.*\n/g, '')))
+    expect(f.notes.some((n) => /measured from the moves/.test(n))).toBe(false)
+    expect(f.progress).not.toBeNull()
+  })
+})

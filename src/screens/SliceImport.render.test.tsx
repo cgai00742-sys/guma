@@ -618,7 +618,7 @@ describe('a plate is one print, and the whole plate comes off it', () => {
     })
   })
 
-  it('leaves the parts alone when the plate failed', async () => {
+  it('a failed plate marks the copies it was printing failed, and removing it puts them back (CG, 13 Oct)', async () => {
     const { ctx, jobId, data } = await seedShop()
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
@@ -630,17 +630,78 @@ describe('a plate is one print, and the whole plate comes off it', () => {
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
-    // The offer goes away: a failed plate produced nothing to check.
-    expect(screen.queryByLabelText(/mark the 2 parts on this plate/i)).toBeNull()
+    // Was: a failed plate left the parts alone. Now its copies fail with it,
+    // so the reprint workflow starts on the build sheet.
+    const offer = await screen.findByLabelText(/mark the copies this plate was printing as failed/i)
+    expect((offer as HTMLInputElement).checked).toBe(true)
     await user.type(await screen.findByLabelText(/what went wrong/i), 'Clog')
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
 
     await waitFor(() => {
-      const n = currentDb.sqlite
-        .prepare("select count(*) as n from job_parts where status = 'pending'")
-        .get() as { n: number }
+      const n = currentDb.sqlite.prepare("select count(*) as n from job_parts where status = 'reprint'").get() as { n: number }
       expect(n.n).toBe(2)
     })
+    const ev = currentDb.sqlite
+      .prepare("select note, run_id from part_events where to_status = 'reprint' order by id desc")
+      .get() as { note: string; run_id: string | null }
+    expect(ev.note).toBe('Clog')
+    expect(ev.run_id).not.toBeNull()
+
+    // Removing that print from What it took offers -- ticked -- to put the copies back.
+    await user.click(await screen.findByRole('button', { name: /remove the print of/i }))
+    const dlg = await screen.findByRole('alertdialog', { name: /remove this print/i })
+    expect(within(dlg).getByText(/marked \d+ cop(y|ies) failed on the build sheet/)).toBeDefined()
+    await user.click(within(dlg).getByRole('button', { name: /remove it/i }))
+    await waitFor(() => {
+      const n = currentDb.sqlite.prepare("select count(*) as n from job_parts where status = 'pending'").get() as { n: number }
+      expect(n.n).toBe(2)
+    })
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 0 })
+  })
+})
+
+describe('a print stopped part way, costed from where it got to (CG, 13 Oct)', () => {
+  it('reads the plate progress: machine time and when filament stopped are two figures', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    // The Maui plate: 16h 26m, 354.92 g -- points read from the real file.
+    await (data as any).importSlice(ctx.shop.id, jobId, ctx.profile.id, {
+      fileName: 'Maui_BATHY_3x.bgcode', kind: 'gcode', printerModel: 'Prusa XL', printerId: ctx.printers[0].id,
+      materialText: 'PLA', materialId: ctx.materials[0].id, estMinutes: 986, estGrams: 354.92, notes: [],
+      sections: [{ label: 'Maui BATHY 3x', qty: 1, estMinutes: 986, estGrams: 354.92, material: 'PLA' }],
+      progress: [
+        { min: 0, pct: 0, grams: 0, z: 0 },
+        { min: 300, pct: 30, grams: 189.92, z: 13.773 },
+        { min: 540, pct: 54, grams: 270, z: 29.5 },
+        { min: 900, pct: 91, grams: 334.16, z: 39.615 },
+        { min: 985, pct: 100, grams: 354.92, z: 40.315 },
+      ],
+    })
+    await renderProject(jobId, ctx)
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'cancelled')
+    await user.type(screen.getByLabelText(/machine ran for/i), '15h')
+    expect((await screen.findByTestId('stopped-at')).textContent).toMatch(/By 15h 0m the plate was 91% through, at layer 39.62 of 40.31 mm, and the printer had pushed 334 g/)
+    // Ghost printing from 9h: only what left the spool by then is charged.
+    await user.type(screen.getByLabelText(/filament stopped at/i), '9')
+    expect(screen.getByTestId('stopped-at').textContent).toMatch(/Filament stopped at 9h 0m: 270 g left the spool — the last 6h 0m moved nothing/)
+    expect((screen.getByLabelText(/g off the spool/i) as HTMLInputElement).value).toBe('270')
+    expect((screen.getByLabelText(/machine hours/i) as HTMLInputElement).value).toBe('15')
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select units_used, hours, outcome, note from print_runs').get()).toEqual({
+        units_used: 270,
+        hours: 15,
+        outcome: 'cancelled',
+        note: 'From Maui_BATHY_3x.bgcode — stopped at 15h 0m of 16h 26m (91%, layer 39.62 mm); filament stopped at 9h 0m — ghost print after.',
+      }),
+    )
+    // And the copy it was printing is failed, with the reason.
+    expect(currentDb.sqlite.prepare("select status from job_parts where label = 'Maui BATHY 3x'").get()).toEqual({ status: 'reprint' })
   })
 })
 
@@ -1104,5 +1165,46 @@ describe('failing one part of a plate, and swapping in its fixed file', () => {
     // Both prints are in the cost: the failed plate's filament was really used.
     const a = currentDb.sqlite.prepare('select runs, material_units from job_actuals where job_id = ?').get(jobId)
     expect(a).toEqual({ runs: 2, material_units: 87 + 31 })
+  })
+})
+
+describe('a plate imported before Guma read the moves (CG, 13 Oct)', () => {
+  it('reads the kept file once, saves its progress, and then costs the stop from it -- in Working', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const { packFile } = await import('../lib/sliceFile')
+    const gcode = [
+      'M83',
+      'M73 P0 R100',
+      'G1 Z0.2',
+      'G1 X1 Y1 E5000',
+      'M73 P40 R60',
+      'G1 Z5',
+      'G1 X2 Y2 E1000',
+      'M73 P100 R0',
+      '; total filament used [g] = 72.00',
+      '; estimated printing time (normal mode) = 1h 40m 0s',
+    ].join('\n')
+    const kept = await packFile(new TextEncoder().encode(gcode))
+    currentDb.sqlite
+      .prepare(
+        `insert into slice_imports (id, shop_id, job_id, file_name, kind, printer_id, material_id, est_minutes, est_grams, notes)
+         values ('old', ?, ?, 'lid.gcode', 'gcode', ?, ?, 100, 72, '[]')`,
+      )
+      .run(ctx.shop.id, jobId, ctx.printers[0].id, ctx.materials[0].id)
+    currentDb.sqlite
+      .prepare('insert into slice_files (import_id, byte_size, stored_size, encoding, content) values (?, ?, ?, ?, ?)')
+      .run('old', kept!.byteSize, kept!.storedSize, kept!.encoding, kept!.content)
+
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    const region = screen.getByRole('region', { name: /^plates$/i })
+    await user.click(await within(region).findByRole('button', { name: /this print happened/i }))
+    await user.selectOptions(within(region).getByLabelText(/how it went/i), 'failed')
+    await user.click(within(region).getByRole('button', { name: /read the file to see where it stopped/i }))
+    await user.type(await within(region).findByLabelText(/machine ran for/i), '40m')
+    // 5000 of 6000 mm by minute 40, scaled to the slicer's 72 g: 60 g. A
+    // straight line would have said 28.8 g.
+    expect(within(region).getByTestId('stopped-at').textContent).toMatch(/40% through, at layer 0.20 of 5.00 mm, and the printer had pushed 60 g/)
+    expect(currentDb.sqlite.prepare("select progress is not null as kept from slice_imports where id = 'old'").get()).toEqual({ kept: 1 })
   })
 })

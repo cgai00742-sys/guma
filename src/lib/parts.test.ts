@@ -17,7 +17,7 @@ function part(status: PartRow['status'], history: PartRow['history'] = []): Part
 }
 
 function ev(toStatus: PartRow['status'], note: string | null, id = 1): PartRow['history'][number] {
-  return { id, kind: 'status', fromStatus: null, toStatus, n: null, copies: null, sliceImportId: null, note, actor: 'CG', at: '2026-09-27' }
+  return { id, kind: 'status', fromStatus: null, toStatus, n: null, copies: null, sliceImportId: null, runId: null, note, actor: 'CG', at: '2026-09-27' }
 }
 
 describe('what a stage lets you do', () => {
@@ -193,5 +193,11 @@ describe('failureTally', () => {
     expect(failureTally(parts, runs)).toEqual({
       sentBack: 2, partsAffected: 1, failedRuns: 1, unitsLost: 40, hoursLost: 1.5, repeatReason: 'warped',
     })
+  })
+
+  it('counts a plate stopped part way as lost too (CG, 13 Oct: ghost print cancelled at 15 h)', async () => {
+    const { failureTally } = await import('./parts')
+    const runs = [{ outcome: 'cancelled', unitsUsed: 270, hours: 15, failureReason: 'Ghost printing' }] as never
+    expect(failureTally([] as never, runs)).toMatchObject({ failedRuns: 1, unitsLost: 270, hoursLost: 15 })
   })
 })

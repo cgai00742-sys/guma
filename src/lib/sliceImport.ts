@@ -23,6 +23,8 @@
  *    the note on job_actuals in the migration that lands with this.
  */
 
+import { bgcodeText, walkGcode, type GcodeWalk, type ProgressPoint } from './gcodeWalk'
+
 export type SliceKind = '3mf' | '3mf-model' | 'gcode'
 
 /** One distinct object on the plate, with how many copies of it. */
@@ -56,6 +58,11 @@ export interface SliceFile {
   /** Things the reader should know: plates combined, labels missing, and so
    *  on. Shown to the person, not swallowed. */
   notes: string[]
+  /** The slicer's progress marks with filament and layer by then, read from
+   *  the moves (lib/gcodeWalk.ts). Null when the file has no G-code in it,
+   *  or more than one plate. Kept with the import, so a print stopped part
+   *  way can be costed from where it actually got to. */
+  progress: ProgressPoint[] | null
 }
 
 /**
@@ -272,6 +279,7 @@ function cleanLabel(n: string): string {
   return (
     String(n)
       .replace(/_id_\d+_copy_\d+$/i, '') // Klipper EXCLUDE_OBJECT suffixes
+      .replace(/\s+id:\d+\s+copy\s+\d+$/i, '') // PrusaSlicer "printing object" comments
       .replace(/\.(stl|3mf|step|stp|obj)$/i, '')
       .replace(/_/g, ' ')
       .replace(/\s+/g, ' ')
@@ -323,6 +331,61 @@ function spread(
   }
 }
 
+/**
+ * Each object's grams and minutes as MEASURED from the moves, in place of
+ * the plate total split by copies (CG, 13 Oct: "per-part numbers"). Only
+ * when every section is found among the objects the moves name -- a plate
+ * half measured and half split would add up to nothing in particular.
+ * Scaled so the sections add up to the slicer's own plate totals: the
+ * slicer counts purge and wipe outside any object, and its time includes
+ * heating; both are shared out by each object's share. True when applied.
+ */
+function applyMeasured(
+  sections: SliceSection[],
+  walk: GcodeWalk | null,
+  plateGrams: number | null,
+  plateMinutes: number | null,
+): boolean {
+  if (!walk || !sections.length) return false
+  const by = new Map<string, { grams: number; minutes: number }>()
+  for (const [name, v] of Object.entries(walk.objects)) {
+    const k = cleanLabel(name).toLowerCase()
+    const cur = by.get(k) ?? { grams: 0, minutes: 0 }
+    cur.grams += v.grams
+    cur.minutes += v.minutes
+    by.set(k, cur)
+  }
+  if (!sections.every((sec) => by.has(sec.label.toLowerCase()))) return false
+  const mine = sections.map((sec) => by.get(sec.label.toLowerCase())!)
+  const sumG = mine.reduce((a, m) => a + m.grams, 0)
+  const sumM = mine.reduce((a, m) => a + m.minutes, 0)
+  if (sumG <= 0) return false
+  const gScale = plateGrams ? plateGrams / sumG : 1
+  const mScale = plateMinutes && sumM > 0 ? plateMinutes / sumM : 1
+  sections.forEach((sec, i) => {
+    sec.estGrams = Math.round(mine[i].grams * gScale * 10) / 10
+    sec.estMinutes = sumM > 0 ? Math.round(mine[i].minutes * mScale) : sec.estMinutes
+    const types = Object.keys(sec.materialsBreakdown ?? {})
+    if (types.length === 1) sec.materialsBreakdown = { [types[0]]: sec.estGrams }
+  })
+  return true
+}
+
+const MEASURED_NOTE = 'Time and filament for each object measured from the moves in the file.'
+const splitNote = (n: number) =>
+  'Time and filament are slicer estimates' + (n > 1 ? ', split across sections by quantity.' : '.')
+
+/** Walk G-code text, or give up quietly: a file the walk cannot read still
+ *  imports with its header numbers, exactly as before. */
+async function tryWalk(chunks: AsyncIterable<string> | Iterable<string>): Promise<GcodeWalk | null> {
+  try {
+    const w = await walkGcode(chunks)
+    return w.progress.length || Object.keys(w.objects).length ? w : null
+  } catch {
+    return null
+  }
+}
+
 function pack(
   kind: SliceKind,
   fileName: string,
@@ -332,6 +395,7 @@ function pack(
   material: string | null,
   notes: string[],
   printerModel?: string | null,
+  progress: ProgressPoint[] | null = null,
 ): SliceFile {
   const model = printerModel || modelFromFileName(fileName) || null
   return {
@@ -348,6 +412,7 @@ function pack(
       material,
     },
     notes,
+    progress: progress && progress.length ? progress : null,
   }
 }
 
@@ -399,6 +464,14 @@ async function plateGcodeTotals(z: { names: string[]; read: (n: string) => Promi
     if (t.grams != null) grams = (grams ?? 0) + t.grams
   }
   return { minutes, grams, found: names.length }
+}
+
+async function walkZipGcode(
+  z: { read: (n: string) => Promise<Uint8Array | null> },
+  name: string,
+): Promise<GcodeWalk | null> {
+  const raw = await z.read(name)
+  return raw ? tryWalk([decode(raw)]) : null
 }
 
 // ---------- 3MF (Bambu / Orca sliced project; plain 3MF fallback) ----------
@@ -487,10 +560,11 @@ async function parse3mf(buf: ArrayBuffer, fileName: string): Promise<SliceFile> 
     if (totalMinutes == null && !grams)
       notes.push(NO_NUMBERS_NOTE)
     spread(sections, totalMinutes, grams || null, material, typeGrams)
-    notes.push(
-      'Time and filament are slicer estimates' +
-        (sections.length > 1 ? ', split across sections by quantity.' : '.'),
-    )
+    // One plate's G-code inside: walk it. Several plates are printed one
+    // after another, so a single progress line would describe none of them.
+    const plateNames = z.names.filter((n) => /\.gcode$/i.test(n))
+    const walk = plateNames.length === 1 ? await walkZipGcode(z, plateNames[0]) : null
+    notes.push(applyMeasured(sections, walk, grams || null, totalMinutes) ? MEASURED_NOTE : splitNote(sections.length))
     return pack(
       '3mf',
       fileName,
@@ -500,6 +574,7 @@ async function parse3mf(buf: ArrayBuffer, fileName: string): Promise<SliceFile> 
       material,
       notes,
       printerModel,
+      walk?.progress ?? null,
     )
   }
 
@@ -519,9 +594,12 @@ async function parse3mf(buf: ArrayBuffer, fileName: string): Promise<SliceFile> 
   if (g.minutes != null || g.grams != null) {
     const sections = aggregate(names)
     spread(sections, g.minutes, g.grams, null, {})
+    const gnames = z.names.filter((n) => /\.gcode$/i.test(n))
+    const walk = gnames.length === 1 ? await walkZipGcode(z, gnames[0]) : null
+    const measured = applyMeasured(sections, walk, g.grams, g.minutes)
     return pack('3mf', fileName, sections, g.minutes, g.grams, null, [
-      'Time and filament read from the G-code inside this 3MF — slicer estimates.',
-    ], null)
+      measured ? MEASURED_NOTE : 'Time and filament read from the G-code inside this 3MF — slicer estimates.',
+    ], null, walk?.progress ?? null)
   }
   return pack('3mf-model', fileName, aggregate(names), null, null, null, [
     "This 3MF isn't sliced — section names imported, but no time or filament estimates. " +
@@ -531,7 +609,7 @@ async function parse3mf(buf: ArrayBuffer, fileName: string): Promise<SliceFile> 
 
 // ---------- G-code (PrusaSlicer and friends) ----------
 
-function parseGcode(src: string, fileName: string): SliceFile {
+async function parseGcode(src: string, fileName: string): Promise<SliceFile> {
   const notes: string[] = []
   const names: string[] = []
 
@@ -616,14 +694,16 @@ function parseGcode(src: string, fileName: string): SliceFile {
   } else if (grams && material) typeGrams[material] = grams
 
   spread(sections, estMinutes, grams || null, material, typeGrams)
-  if (sections.length > 1)
+  const walk = await tryWalk([src])
+  if (applyMeasured(sections, walk, grams || null, estMinutes)) notes.push(MEASURED_NOTE)
+  else if (sections.length > 1)
     notes.push('Time and filament are slicer estimates, split across sections by quantity.')
 
   const pm =
     src.match(/;\s*printer_model\s*=\s*(.+)/) ?? src.match(/;\s*printer_settings_id\s*=\s*(.+)/)
   let model = pm ? pm[1].trim() : null
   if (model && /^(mk|xl|mini)/i.test(model)) model = `Prusa ${model}` // MK4 -> Prusa MK4
-  return pack('gcode', fileName, sections, estMinutes, grams || null, material, notes, model)
+  return pack('gcode', fileName, sections, estMinutes, grams || null, material, notes, model, walk?.progress ?? null)
 }
 
 // ---------- binary G-code (PrusaSlicer .bgcode) ----------
@@ -757,11 +837,19 @@ async function parseBgcode(buf: ArrayBuffer, fileName: string): Promise<SliceFil
   const material = Object.keys(typeGrams).join(', ') || types.filter(Boolean)[0] || null
 
   spread(sections, estMinutes, grams, material, typeGrams)
-  notes.push(
-    'Time and filament are slicer estimates' +
-      (sections.length > 1 ? ', split across sections by quantity.' : '.'),
+  const walk = await tryWalk(bgcodeText(u8, inflateZlib))
+  notes.push(applyMeasured(sections, walk, grams, estMinutes) ? MEASURED_NOTE : splitNote(sections.length))
+  return pack(
+    'gcode',
+    fileName,
+    sections,
+    estMinutes,
+    grams,
+    material,
+    notes,
+    prusaModel(printer.printer_model),
+    walk?.progress ?? null,
   )
-  return pack('gcode', fileName, sections, estMinutes, grams, material, notes, prusaModel(printer.printer_model))
 }
 
 // ---------- entry point ----------

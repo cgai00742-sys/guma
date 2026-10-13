@@ -63,7 +63,9 @@ import {
   requeueCopyFromFile,
   setCopyStates,
   setPartsCopies,
+  setSliceProgress,
   skipCopy,
+  markPlateFailed,
   markPlatePrinted,
   deletePrintRun,
   deleteWorkEntry,
@@ -156,7 +158,8 @@ import {
 import { buildComparison, compareToQuote, priceProjectQuote, type Comparison } from '../lib/actuals'
 import type { PricedQuote, RateSet } from '../lib/pricing'
 import { sheetVsQuote } from '../lib/sheetVsQuote'
-import type { StockHoldRow } from '../lib/data.types'
+import { fmtMinutes, parseDuration, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
+import type { SliceImportRow, StockHoldRow } from '../lib/data.types'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
 import { changeCopies, copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
@@ -2025,6 +2028,7 @@ function SliceImport({
         estMinutes: read.totals.estMinutes,
         estGrams: read.totals.estGrams,
         notes: read.notes,
+        progress: read.progress,
         sections: read.sections.map((sec) => ({
           label: sec.label,
           qty: sec.qty,
@@ -2042,7 +2046,7 @@ function SliceImport({
         const grams = read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)
         const hours =
           read.totals.estMinutes == null ? 0 : Math.round((read.totals.estMinutes / 60) * 100) / 100
-        await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
+        const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
           printerId,
           materialId: materialId || null,
           unitsUsed: materialId ? grams : 0,
@@ -2055,7 +2059,7 @@ function SliceImport({
         })
         // The plate came off: each part on it gains the copies the plate
         // holds -- one plate of a part that needs five is one of five.
-        const marked = await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId)
+        const marked = await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId)
         const machine = ctx.printerRows.find((p) => p.id === printerId)?.name ?? 'the machine'
         recorded =
           `Recorded as printed on ${machine}: ${hrs(read.totals.estMinutes) ?? '0h'}` +
@@ -2076,7 +2080,7 @@ function SliceImport({
           kept ? ', file kept' : ''
         }. ` +
           (recorded ??
-            'It is listed under “Sliced files” below; record it as printed when it comes off the ' +
+            'It is listed under “Plates” below; record it when it comes off the ' +
               'machine and the filament comes off the shelf.'),
       )
       onImported(res.partsAdded + res.partsMatched)
@@ -2430,6 +2434,7 @@ function SliceRuns({
         estMinutes: parsed.totals.estMinutes,
         estGrams: parsed.totals.estGrams,
         notes: parsed.notes,
+        progress: parsed.progress,
         sections: parsed.sections.map((sec) => ({
           label: sec.label,
           qty: sec.qty,
@@ -2479,7 +2484,7 @@ function SliceRuns({
     setError(null)
     try {
       for (const g of ready) {
-        await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
+        const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
           printerId: machineFor(g, ctx.printers) as string,
           materialId: g.first.materialId,
           unitsUsed: g.estGrams ?? 0,
@@ -2490,7 +2495,7 @@ function SliceRuns({
           startedAt: todayISO(),
           sliceImportId: g.first.id,
         })
-        await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, g.first.id)
+        await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, g.first.id, runId)
       }
       await onChanged()
     } catch (e) {
@@ -2539,11 +2544,23 @@ function SliceRuns({
     setSaving(true)
     setError(null)
     try {
-      await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, form)
-      // The plate came off, so every object on it came off. Only on a
-      // successful run: a failed plate produced nothing to check.
-      if (markParts && form.outcome === 'success' && form.sliceImportId) {
-        await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, form.sliceImportId)
+      const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, form)
+      // The plate came off, so every object on it came off -- or it failed,
+      // and every copy it was printing failed with it, so the reprint
+      // workflow starts on the build sheet (CG, 13 Oct). Either way the
+      // copies remember this print, so removing it can put them back.
+      if (markParts && form.sliceImportId) {
+        if (form.outcome === 'success')
+          await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, form.sliceImportId, runId)
+        else
+          await markPlateFailed(
+            ctx.shop.id,
+            detail.jobId,
+            ctx.profile.id,
+            form.sliceImportId,
+            runId,
+            form.failureReason || (form.outcome === 'cancelled' ? 'Cancelled part way.' : 'The plate failed.'),
+          )
       }
       setOpenId(null)
       setForm(null)
@@ -2854,6 +2871,30 @@ function SliceRuns({
                       }
                     />
                   </div>
+                )}
+                {form.outcome !== 'success' && (
+                  <StoppedPrint
+                    ctx={ctx}
+                    slice={s}
+                    unit={unit}
+                    onApply={(hours, units, note) =>
+                      setForm((f) => f && { ...f, hours, unitsUsed: units, note })
+                    }
+                  />
+                )}
+                {form.outcome !== 'success' && pendingPartsOf(s.id).length > 0 && (
+                  <label
+                    className="hint"
+                    style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={markParts}
+                      onChange={(e) => setMarkParts(e.target.checked)}
+                    />
+                    Mark the copies this plate was printing as failed — the reason goes with them, and
+                    each gets New file / Skip / Not printed on the build sheet
+                  </label>
                 )}
                 {form.outcome === 'success' && pendingPartsOf(s.id).length > 0 && (
                   <label
@@ -3619,6 +3660,7 @@ function BuildSheet({
       estMinutes: parsed.totals.estMinutes,
       estGrams: parsed.totals.estGrams,
       notes: parsed.notes,
+      progress: parsed.progress,
       forPartId: part.id,
       sections: parsed.sections.map((sec) => ({
         label: sec.label,
@@ -3767,7 +3809,7 @@ function BuildSheet({
             tally.sentBack > 0 &&
               `${tally.sentBack} send-back${tally.sentBack === 1 ? '' : 's'} across ${tally.partsAffected} part${tally.partsAffected === 1 ? '' : 's'}`,
             tally.failedRuns > 0 &&
-              `${tally.failedRuns} failed plate${tally.failedRuns === 1 ? '' : 's'} (${tally.unitsLost} g, ${tally.hoursLost} h lost)`,
+              `${tally.failedRuns} failed or stopped plate${tally.failedRuns === 1 ? '' : 's'} (${tally.unitsLost} g, ${tally.hoursLost} h lost)`,
           ]
             .filter(Boolean)
             .join(' · ')}
@@ -4378,6 +4420,10 @@ function RunLog({
   setError: (m: string | null) => void
 }) {
   const [mode, setMode] = useState<'none' | 'run' | 'work'>('none')
+  /** The print being removed, and whether its copies go back (CG, 13 Oct:
+   *  "remove something from What it took … flag or auto edit upstream"). */
+  const [removingRun, setRemovingRun] = useState<string | null>(null)
+  const [undoCopies, setUndoCopies] = useState(true)
   const [saving, setSaving] = useState(false)
 
   const [run, setRun] = useState<PrintRunInput>({
@@ -4665,14 +4711,61 @@ function RunLog({
               <button
                 type="button"
                 className="linkbtn"
-                style={{ marginLeft: 'auto', fontSize: 11 }}
+                style={{ marginLeft: 'auto', fontSize: 11, width: 'auto', marginTop: 0 }}
                 disabled={saving}
+                aria-label={`Remove the print of ${r.startedAt?.slice(0, 10) ?? 'unknown date'}`}
                 title="Remove this run. Its material goes back on the shelf."
-                onClick={() => void guard(() => deletePrintRun(ctx.shop.id, r.id))}
+                onClick={() => {
+                  setRemovingRun(removingRun === r.id ? null : r.id)
+                  setUndoCopies(true)
+                }}
               >
                 remove
               </button>
               {r.failureReason && <div className="histnote">{r.failureReason}</div>}
+              {r.note && r.note !== r.failureReason && <div className="histnote">{r.note}</div>}
+              {removingRun === r.id &&
+                (() => {
+                  const marked = runMarks(detail.parts, r.id)
+                  const n = marked.reduce((a, m) => a + m.copies.length, 0)
+                  return (
+                    <div className="attn crit" role="alertdialog" aria-label="Remove this print" style={{ marginTop: 6, width: '100%' }}>
+                      <div>
+                        <b>Remove this print?</b> Its {r.unitsUsed ?? 0}
+                        {r.unit ?? 'g'} go back on the shelf and its {r.hours ?? 0}h come off the project.
+                      </div>
+                      {n > 0 && (
+                        <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginTop: 6, fontSize: 12 }}>
+                          <input type="checkbox" checked={undoCopies} onChange={(e) => setUndoCopies(e.target.checked)} />
+                          <span>
+                            It marked {n} cop{n === 1 ? 'y' : 'ies'}{' '}
+                            {r.outcome === 'success' ? 'printed' : 'failed'} on the build sheet —{' '}
+                            {marked.map((m) => `${m.label} ${m.copies.map((c) => `#${c}`).join(', ')}`).join('; ')}. Set{' '}
+                            {n === 1 ? 'it' : 'them'} back to not printed.
+                          </span>
+                        </label>
+                      )}
+                      <div className="btnrow" style={{ marginTop: 8 }}>
+                        <button
+                          type="button"
+                          className="btn sm danger"
+                          disabled={saving}
+                          onClick={() =>
+                            void guard(async () => {
+                              await deletePrintRun(ctx.shop.id, r.id, n > 0 && undoCopies)
+                              setRemovingRun(null)
+                            })
+                          }
+                        >
+                          Remove it
+                        </button>
+                        <button type="button" className="btn sm" onClick={() => setRemovingRun(null)}>
+                          Keep it
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })()}
             </div>
           ))}
           {detail.work.map((w) => (
@@ -4688,7 +4781,7 @@ function RunLog({
               <button
                 type="button"
                 className="linkbtn"
-                style={{ marginLeft: 'auto', fontSize: 11 }}
+                style={{ marginLeft: 'auto', fontSize: 11, width: 'auto', marginTop: 0 }}
                 disabled={saving}
                 onClick={() => void guard(() => deleteWorkEntry(ctx.shop.id, w.id))}
               >
@@ -6497,6 +6590,179 @@ function PendingRevision({
           Declined
         </button>
       </span>
+    </div>
+  )
+}
+
+/**
+ * The copies one recorded print moved that are still where it put them --
+ * what removing it would put back. 1-based, per part.
+ */
+function runMarks(parts: PartRow[], runId: string): { label: string; copies: number[] }[] {
+  const out: { label: string; copies: number[] }[] = []
+  for (const p of parts) {
+    const states = statesOf(p)
+    const copies = new Set<number>()
+    for (const h of p.history)
+      if (h.runId === runId && h.kind === 'status' && h.toStatus)
+        for (const c of h.copies ?? []) if (states[c - 1] === h.toStatus) copies.add(c)
+    if (copies.size) out.push({ label: p.label, copies: [...copies].sort((a, b) => a - b) })
+  }
+  return out
+}
+
+/**
+ * A print that stopped part way, costed from where it actually got to (CG,
+ * 13 Oct: a 16h 26m Maui plate stopped at 15 hours, after ghost printing).
+ *
+ * Two times, because they are two facts. How long the MACHINE ran is its
+ * hours. When FILAMENT stopped coming out -- a clog, a tangle, a run-out --
+ * is what left the spool: the printer kept moving after that and pushed
+ * nothing. Grams are read from the file's own moves at that time (lib/
+ * gcodeWalk.ts), not prorated: five hours into the Maui plate is 190 g by
+ * the file and 108 g by a straight line. Everything stays editable -- a
+ * weighed figure beats both.
+ */
+function StoppedPrint({
+  ctx,
+  slice,
+  unit,
+  onApply,
+}: {
+  ctx: ShopContext
+  slice: SliceImportRow
+  unit: string
+  onApply: (hours: number, units: number, note: string) => void
+}) {
+  const [ran, setRan] = useState('')
+  const [flow, setFlow] = useState('')
+  const [progress, setProgress] = useState<ProgressPoint[] | null>(slice.progress)
+  const [reading, setReading] = useState(false)
+  const [readErr, setReadErr] = useState<string | null>(null)
+
+  /** A kept file imported before Guma read the moves: read them now, once. */
+  async function readMoves() {
+    setReading(true)
+    setReadErr(null)
+    try {
+      const row = await sliceFileContent(ctx.shop.id, slice.id)
+      if (!row) throw new Error('That file was not kept.')
+      const bytes = await unpackFile(row.content)
+      const parsed = await parseSliceFile(new File([bytes as unknown as BlobPart], slice.fileName))
+      if (!parsed.progress) throw new Error('No progress marks in this file — enter the grams by hand, or weigh it.')
+      await setSliceProgress(ctx.shop.id, slice.id, parsed.progress)
+      setProgress(parsed.progress)
+    } catch (e) {
+      setReadErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setReading(false)
+    }
+  }
+
+  const total = slice.estMinutes
+  const ranMin = parseDuration(ran)
+  const flowMin = parseDuration(flow)
+  const at = progress && ranMin != null ? progressAt(progress, ranMin, slice.estGrams) : null
+  const flowAt = progress && flowMin != null && ranMin != null && flowMin < ranMin ? progressAt(progress, flowMin, slice.estGrams) : null
+  const layerTop = progress?.length ? progress[progress.length - 1].z : null
+
+  function apply(r: string, f: string) {
+    const rm = parseDuration(r)
+    if (rm == null || !progress) return
+    const fm = parseDuration(f)
+    const a = progressAt(progress, rm, slice.estGrams)
+    if (!a) return
+    const b = fm != null && fm < rm ? progressAt(progress, fm, slice.estGrams) : null
+    const used = b ?? a
+    const note =
+      `From ${slice.fileName} — stopped at ${fmtMinutes(rm)}` +
+      (total ? ` of ${fmtMinutes(total)}` : '') +
+      ` (${a.pct}%, layer ${a.z.toFixed(2)} mm)` +
+      (b && fm != null ? `; filament stopped at ${fmtMinutes(fm)} — ghost print after` : '') +
+      '.'
+    onApply(Math.round((rm / 60) * 100) / 100, Math.round(used.grams), note)
+  }
+
+  return (
+    <div className="stoppedprint" role="group" aria-label="Where the print stopped">
+      {!progress ? (
+        slice.keptBytes != null ? (
+          <div className="btnrow" style={{ margin: 0, alignItems: 'center' }}>
+            <button type="button" className="btn sm" disabled={reading} onClick={() => void readMoves()}>
+              {reading ? 'Reading the moves…' : 'Read the file to see where it stopped'}
+            </button>
+            <span className="hint" style={{ margin: 0 }}>
+              Imported before Guma read the moves — a few seconds, once.
+            </span>
+          </div>
+        ) : (
+          <div className="hint" style={{ margin: 0 }}>
+            This file was not kept, so Guma cannot read where the print got to — enter the grams by hand,
+            or weigh the spool before and after.
+          </div>
+        )
+      ) : (
+        <>
+          <div className="grid3" style={{ marginTop: 0 }}>
+            <div className="fld" style={{ margin: 0 }}>
+              <label className="lbl" htmlFor={`sp-ran-${slice.id}`}>
+                Machine ran for{total ? ` (of ${fmtMinutes(total)})` : ''}
+              </label>
+              <input
+                id={`sp-ran-${slice.id}`}
+                value={ran}
+                placeholder="15h, 15:30, 15.5"
+                onChange={(e) => {
+                  setRan(e.target.value)
+                  apply(e.target.value, flow)
+                }}
+              />
+            </div>
+            <div className="fld" style={{ margin: 0 }}>
+              <label className="lbl" htmlFor={`sp-flow-${slice.id}`}>
+                Filament stopped at (if earlier)
+              </label>
+              <input
+                id={`sp-flow-${slice.id}`}
+                value={flow}
+                placeholder="ghost printing from…"
+                onChange={(e) => {
+                  setFlow(e.target.value)
+                  apply(ran, e.target.value)
+                }}
+              />
+            </div>
+          </div>
+          {at && ranMin != null && (
+            <div className="hint" data-testid="stopped-at" style={{ marginTop: 6 }}>
+              By {fmtMinutes(ranMin)} the plate was <b>{at.pct}%</b> through, at layer {at.z.toFixed(2)}
+              {layerTop ? ` of ${layerTop.toFixed(2)}` : ''} mm, and the printer had pushed{' '}
+              <b>
+                {Math.round(at.grams)} {unit}
+              </b>
+              .
+              {flowAt && flowMin != null ? (
+                <>
+                  {' '}
+                  Filament stopped at {fmtMinutes(flowMin)}: <b>{Math.round(flowAt.grams)} {unit}</b> left the
+                  spool — the last {fmtMinutes(ranMin - flowMin)} moved nothing.
+                </>
+              ) : null}{' '}
+              Filled in above; a weighed figure is better still.
+            </div>
+          )}
+          {parseDuration(flow) != null && ranMin != null && (parseDuration(flow) as number) >= ranMin && (
+            <div className="hint" style={{ marginTop: 4, color: 'var(--warn)' }}>
+              Filament can only have stopped before the machine did.
+            </div>
+          )}
+        </>
+      )}
+      {readErr && (
+        <div className="hint" role="alert" style={{ color: 'var(--red)', marginTop: 4 }}>
+          {readErr}
+        </div>
+      )}
     </div>
   )
 }

@@ -116,6 +116,7 @@ export {
   validateRevision,
   sameSliceFile,
 } from './data.types'
+import type { ProgressPoint } from './gcodeWalk'
 export type {
   QuoteBuildRow,
   SeriesRow,
@@ -439,8 +440,15 @@ export async function recordPrintRun(
   return (await backend()).recordPrintRun(shopId, jobId, actorId, input)
 }
 
-export async function deletePrintRun(shopId: string, runId: string): Promise<void> {
-  return (await backend()).deletePrintRun(shopId, runId)
+/** Remove a recorded print. With undoCopies, the copies it marked printed
+ *  or failed go back to not printed first (CG, 13 Oct). Returns how many. */
+export async function deletePrintRun(shopId: string, runId: string, undoCopies = false): Promise<number> {
+  return (await backend()).deletePrintRun(shopId, runId, undoCopies)
+}
+
+/** Save the progress read later from a kept file. */
+export async function setSliceProgress(shopId: string, importId: string, progress: ProgressPoint[]): Promise<void> {
+  return (await backend()).setSliceProgress(shopId, importId, progress)
 }
 
 export async function logWork(
@@ -673,8 +681,21 @@ export async function markPlatePrinted(
   jobId: string,
   actorId: string | null,
   sliceImportId: string,
+  runId: string | null = null,
 ): Promise<number> {
-  return (await backend()).markPlatePrinted(shopId, jobId, actorId, sliceImportId)
+  return (await backend()).markPlatePrinted(shopId, jobId, actorId, sliceImportId, runId)
+}
+
+/** A failed plate: its copies marked failed with the reason, stamped with the print. */
+export async function markPlateFailed(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+  runId: string | null,
+  reason: string | null,
+): Promise<number> {
+  return (await backend()).markPlateFailed(shopId, jobId, actorId, sliceImportId, runId, reason)
 }
 
 export async function setCopyStates(

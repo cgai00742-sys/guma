@@ -250,6 +250,102 @@ describe('several parts to fewer copies at once (CG, 12 Oct)', () => {
   })
 })
 
+describe('the build sheet, the plates and What it took, linked (CG, 13 Oct)', () => {
+  const plateFile = (fileName: string, label: string, qty = 1) => ({
+    fileName,
+    kind: 'gcode' as const,
+    printerModel: 'Prusa XL',
+    printerId: 'printer-1',
+    materialText: 'PLA',
+    materialId: 'material-1',
+    estMinutes: 120,
+    estGrams: 50,
+    notes: [],
+    sections: [{ label, qty, estMinutes: 120, estGrams: 50, material: 'PLA' }],
+    progress: [
+      { min: 0, pct: 0, grams: 0, z: 0 },
+      { min: 120, pct: 100, grams: 50, z: 12 },
+    ],
+  })
+  const run = (sliceImportId: string, outcome: 'success' | 'failed' = 'success') => ({
+    printerId: 'printer-1',
+    materialId: 'material-1',
+    unitsUsed: 50,
+    hours: 2,
+    outcome,
+    failureReason: outcome === 'failed' ? 'Spaghetti at layer 40' : null,
+    note: null,
+    startedAt: '2026-10-13',
+    sliceImportId,
+  })
+  const states = () =>
+    JSON.parse((currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Maui'").get() as any).copy_states)
+
+  it('a plate recorded, then removed with undo: its copies go back; without undo they stay', async () => {
+    const L = await import('./data.local')
+    const imp = await L.importSlice(SHOP, JOB, ACTOR, plateFile('maui.bgcode', 'Maui', 2))
+    const partId = (currentDb.sqlite.prepare("select id from job_parts where label = 'Maui'").get() as any).id
+    await L.updatePart(SHOP, partId, { label: 'Maui', qty: 4, note: null }, ACTOR)
+    const r1 = await L.recordPrintRun(SHOP, JOB, ACTOR, run(imp.importId))
+    await L.markPlatePrinted(SHOP, JOB, ACTOR, imp.importId, r1)
+    const r2 = await L.recordPrintRun(SHOP, JOB, ACTOR, run(imp.importId))
+    await L.markPlatePrinted(SHOP, JOB, ACTOR, imp.importId, r2)
+    expect(states()).toEqual(['printed', 'printed', 'printed', 'printed'])
+
+    // The second print removed, its two copies put back.
+    await expect(L.deletePrintRun(SHOP, r2, true)).resolves.toBe(2)
+    expect(states()).toEqual(['printed', 'printed', 'pending', 'pending'])
+    // The first removed WITHOUT undo: the copies stay, the run goes.
+    await expect(L.deletePrintRun(SHOP, r1, false)).resolves.toBe(0)
+    expect(states()).toEqual(['printed', 'printed', 'pending', 'pending'])
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 0 })
+  })
+
+  it('a failed plate marks its copies failed with the reason; removing it puts them back', async () => {
+    const L = await import('./data.local')
+    const imp = await L.importSlice(SHOP, JOB, ACTOR, plateFile('maui.bgcode', 'Maui'))
+    const r = await L.recordPrintRun(SHOP, JOB, ACTOR, run(imp.importId, 'failed'))
+    await L.markPlateFailed(SHOP, JOB, ACTOR, imp.importId, r, 'Spaghetti at layer 40')
+    expect(states()).toEqual(['reprint'])
+    const detail = await L.loadProjectDetail(SHOP, JOB)
+    const ev = detail.parts[0].history.find((h) => h.toStatus === 'reprint')!
+    expect(ev).toMatchObject({ note: 'Spaghetti at layer 40', runId: r, copies: [1] })
+    await L.deletePrintRun(SHOP, r, true)
+    expect(states()).toEqual(['pending'])
+    // What it recorded did not happen as recorded: kept as a note, no longer
+    // a failure on the copy, in the tally or in "sent back N times".
+    const after = (await L.loadProjectDetail(SHOP, JOB)).parts[0]
+    expect(after.history.some((h) => h.kind === 'status' && h.toStatus === 'reprint')).toBe(false)
+    expect(after.history.some((h) => h.kind === 'note' && h.note === 'Undone (print removed): Spaghetti at layer 40')).toBe(true)
+    expect(currentDb.sqlite.prepare('select reprints_ever from job_parts_summary').get()).toEqual({ reprints_ever: 0 })
+  })
+
+  it('a copy reprinted from a fixed file goes back to waiting for that file', async () => {
+    const L = await import('./data.local')
+    await L.importSlice(SHOP, JOB, ACTOR, plateFile('maui.bgcode', 'Maui'))
+    const partId = (currentDb.sqlite.prepare("select id from job_parts where label = 'Maui'").get() as any).id
+    await L.setCopyStates(SHOP, partId, ACTOR, [0], 'reprint', 'Warped')
+    const fix = await L.importSlice(SHOP, JOB, ACTOR, { ...plateFile('maui v2.bgcode', 'Maui'), forPartId: partId })
+    await L.requeueCopyFromFile(SHOP, partId, ACTOR, 0, fix.importId, 'maui v2.bgcode')
+    const r = await L.recordPrintRun(SHOP, JOB, ACTOR, run(fix.importId))
+    await L.markPlatePrinted(SHOP, JOB, ACTOR, fix.importId, r)
+    expect(states()).toEqual(['printed'])
+    await L.deletePrintRun(SHOP, r, true)
+    expect(states()).toEqual(['pending'])
+    const last = (await L.loadProjectDetail(SHOP, JOB)).parts[0].history[0]
+    expect(last).toMatchObject({ toStatus: 'pending', sliceImportId: fix.importId, copies: [1] })
+  })
+
+  it('keeps the progress read from the moves with the import', async () => {
+    const L = await import('./data.local')
+    const imp = await L.importSlice(SHOP, JOB, ACTOR, plateFile('maui.bgcode', 'Maui'))
+    const [row] = await L.listSliceImports(SHOP, JOB)
+    expect(row.progress).toEqual(plateFile('x', 'y').progress)
+    await L.setSliceProgress(SHOP, imp.importId, [{ min: 0, pct: 0, grams: 0, z: 0 }])
+    expect((await L.listSliceImports(SHOP, JOB))[0].progress).toHaveLength(1)
+  })
+})
+
 describe('the quote that counts, beside the newest version', () => {
   beforeEach(() => {
     currentDb.sqlite.exec(`

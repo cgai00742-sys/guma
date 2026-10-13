@@ -489,6 +489,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           estMinutes: f.parsed.totals.estMinutes,
           estGrams: f.parsed.totals.estGrams,
           notes: f.parsed.notes,
+          progress: f.parsed.progress,
           sections: f.parsed.sections.map((sec) => ({
             label: sec.label,
             qty: sec.qty,

@@ -314,3 +314,25 @@ export function describeCopiesChange(
   if (r.fromSpare) bits.push(`${n(r.fromSpare, 'spare', 'spares')} counted again`)
   return `"${label}" copies: ${from} → ${to}${bits.length ? ` — ${bits.join('; ')}` : ''}.`
 }
+
+/**
+ * Which copies one plate made, given the copies it is allowed to touch
+ * (CG, 13 Oct). Copies queued to print from this very file come first --
+ * they are the reason the plate ran -- then the rest in copy order, up to
+ * as many as the plate holds. 0-based. `from` is in order of preference.
+ */
+export function plateCopies(
+  states: PartStatus[],
+  queuedForFile: number[],
+  perPlate: number,
+  from: PartStatus[] = ['pending'],
+): number[] {
+  const out = queuedForFile.filter((i) => from.includes(states[i])).slice(0, perPlate)
+  // In the order given: a printed plate takes copies going back (a reprint)
+  // before untouched ones, as marking a part printed always has.
+  for (const kind of from)
+    for (let i = 0; i < states.length && out.length < perPlate; i++) {
+      if (!out.includes(i) && states[i] === kind) out.push(i)
+    }
+  return out.sort((a, b) => a - b)
+}

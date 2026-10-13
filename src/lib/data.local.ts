@@ -26,7 +26,8 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import Database from '@tauri-apps/plugin-sql'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
-import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, queuedCopies, renumberCopies, setStates, statesOf, statusOf } from './copies'
+import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, renumberCopies, setStates, statesOf, statusOf } from './copies'
+import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 import {
   NeedsSetup,
   asClientKind,
@@ -1551,12 +1552,13 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
       n: number | null
       copies: string | null
       slice_import_id: string | null
+      run_id: string | null
       note: string | null
       actor: string | null
       at: string
     }[]
   >(
-    `select e.id, e.part_id, e.kind, e.from_status, e.to_status, e.n, e.copies, e.slice_import_id, e.note, e.at,
+    `select e.id, e.part_id, e.kind, e.from_status, e.to_status, e.n, e.copies, e.slice_import_id, e.run_id, e.note, e.at,
             p.full_name as actor
        from part_events e
        left join profiles p on p.id = e.actor_id
@@ -1718,6 +1720,7 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
             n: e.n == null ? null : Number(e.n),
             copies: parseCopies(e.copies),
             sliceImportId: e.slice_import_id ?? null,
+            runId: e.run_id ?? null,
             note: e.note,
             actor: e.actor,
             at: e.at,
@@ -2536,9 +2539,83 @@ export async function recordPrintRun(
 /** Delete a run. The trigger puts its material back on the shelf. Same
  *  reasoning as deleting a material purchase: this is the shop's own cost
  *  book, and a mistyped run skews every figure downstream of it. */
-export async function deletePrintRun(shopId: string, runId: string): Promise<void> {
+export async function deletePrintRun(shopId: string, runId: string, undoCopies = false): Promise<number> {
   const d = await db()
+  let undone = 0
+  if (undoCopies) {
+    const [run] = await d.select<{ job_id: string; slice_import_id: string | null }[]>(
+      'select job_id, slice_import_id from print_runs where id = ? and shop_id = ?',
+      [runId, shopId],
+    )
+    if (run) {
+      const evs = await d.select<{ id: number; part_id: string; to_status: PartStatus; copies: string | null }[]>(
+        `select id, part_id, to_status, copies from part_events
+          where run_id = ? and kind = 'status' and copies is not null order by id`,
+        [runId],
+      )
+      for (const ev of evs) {
+        const back = await copiesStillFrom(ev)
+        if (!back.length) continue
+        // A copy this print came off as a reprint from a fixed file goes
+        // back to waiting for that file, not to plain "not printed".
+        const requeue = await queuedBefore(ev, run.slice_import_id)
+        const again = back.filter((c) => requeue.includes(c))
+        const plain = back.filter((c) => !requeue.includes(c))
+        const why = 'The print that marked this was removed from What it took.'
+        if (plain.length) await setCopyStates(shopId, ev.part_id, null, plain, 'pending', why)
+        if (again.length) await setCopyStates(shopId, ev.part_id, null, again, 'pending', why, null, run.slice_import_id)
+        undone += back.length
+        // Every copy it moved went back: what it recorded did not happen as
+        // recorded. Kept in the history as a note, so it no longer counts as
+        // a failure on the copy, in the tally, or in the reprint queue.
+        if (back.length === (parseCopies(ev.copies) ?? []).length)
+          await d.execute(
+            `update part_events set kind = 'note', note = 'Undone (print removed): ' || coalesce(note, to_status),
+                    from_status = null, to_status = null where id = ?`,
+            [ev.id],
+          )
+      }
+    }
+  }
   await d.execute('delete from print_runs where id = ? and shop_id = ?', [runId, shopId])
+  return undone
+}
+
+/** The copies an event moved that are still where it put them, 0-based. */
+async function copiesStillFrom(ev: { part_id: string; to_status: PartStatus; copies: string | null }): Promise<number[]> {
+  const d = await db()
+  const [p] = await d.select<{ qty: number; printed_n: number; passed_n: number; reprint_n: number; copy_states: string | null }[]>(
+    'select qty, printed_n, passed_n, reprint_n, copy_states from job_parts where id = ?',
+    [ev.part_id],
+  )
+  if (!p) return []
+  const states = statesOf({ qty: Number(p.qty), printedN: Number(p.printed_n), passedN: Number(p.passed_n), reprintN: Number(p.reprint_n), copyStates: p.copy_states })
+  return (parseCopies(ev.copies) ?? []).map((c) => c - 1).filter((i) => states[i] === ev.to_status)
+}
+
+/** Copies that were waiting to print from `file` just before this event. */
+async function queuedBefore(ev: { id: number; part_id: string }, file: string | null): Promise<number[]> {
+  if (!file) return []
+  const d = await db()
+  const before = await d.select<{ part_id: string; copies: string | null; slice_import_id: string | null }[]>(
+    `select part_id, copies, slice_import_id from part_events
+      where part_id = ? and to_status = 'pending' and copies is not null and id < ? order by at, id`,
+    [ev.part_id, ev.id],
+  )
+  // Every copy counts as not printed here: the question is only which file
+  // it was last queued for.
+  const latest = new Map<number, string | null>()
+  for (const e of before) for (const c of parseCopies(e.copies) ?? []) latest.set(c - 1, e.slice_import_id)
+  return [...latest.entries()].filter(([, f]) => f === file).map(([i]) => i)
+}
+
+/**
+ * Save the progress read from a kept file that was imported before Guma
+ * read the moves -- so a stopped print can be costed from it, once.
+ */
+export async function setSliceProgress(shopId: string, importId: string, progress: ProgressPoint[]): Promise<void> {
+  const d = await db()
+  await d.execute('update slice_imports set progress = ? where id = ? and shop_id = ?', [encodeProgress(progress), importId, shopId])
 }
 
 /**
@@ -2684,6 +2761,7 @@ async function writeCopies(
   moved: number[],
   note: string | null,
   sliceImportId: string | null = null,
+  runId: string | null = null,
 ) {
   const d = await db()
   const c = countsOf(states)
@@ -2694,9 +2772,9 @@ async function writeCopies(
     [JSON.stringify(states), c.printed, c.passed, c.reprint, statusOf(c), partId, shopId],
   )
   await d.execute(
-    `insert into part_events (part_id, job_id, kind, from_status, to_status, n, copies, note, actor_id, slice_import_id)
-     values (?, ?, 'status', ?, ?, ?, ?, ?, ?, ?)`,
-    [partId, before.jobId, before.status, to, moved.length, copyList(moved), note?.trim() || null, actorId, sliceImportId],
+    `insert into part_events (part_id, job_id, kind, from_status, to_status, n, copies, note, actor_id, slice_import_id, run_id)
+     values (?, ?, 'status', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [partId, before.jobId, before.status, to, moved.length, copyList(moved), note?.trim() || null, actorId, sliceImportId, runId],
   )
 }
 
@@ -2730,13 +2808,15 @@ export async function setCopyStates(
   copies: number[],
   to: PartStatus,
   note: string | null,
+  runId: string | null = null,
+  sliceImportId: string | null = null,
 ): Promise<void> {
   if (to === 'reprint' && !(note ?? '').trim()) throw new Error('Say what went wrong before sending a copy back.')
   const before = await readCopies(shopId, partId)
   const changed = copies.filter((i) => before.states[i] !== to)
   if (changed.length === 0) return
   const after = setStates(before.states, changed, to)
-  await writeCopies(shopId, partId, actorId, before, after, to, changed, note)
+  await writeCopies(shopId, partId, actorId, before, after, to, changed, note, sliceImportId, runId)
 }
 
 /**
@@ -2782,6 +2862,37 @@ export async function markPlatePrinted(
   jobId: string,
   actorId: string | null,
   sliceImportId: string,
+  runId: string | null = null,
+): Promise<number> {
+  return movePlate(shopId, jobId, actorId, sliceImportId, runId, 'printed', null)
+}
+
+/**
+ * A plate that failed: the copies it was printing are marked failed, with
+ * the reason, so the reprint workflow starts on the build sheet (CG, 13 Oct)
+ * -- New file, Skip, or back to Not printed. Which copies: the same ones a
+ * successful plate would have marked printed.
+ */
+export async function markPlateFailed(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+  runId: string | null,
+  reason: string | null,
+): Promise<number> {
+  return movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', reason?.trim() || 'The plate failed.')
+}
+
+/** The copies one plate moves, part by part, each event stamped with the print. */
+async function movePlate(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+  runId: string | null,
+  to: 'printed' | 'reprint',
+  note: string | null,
 ): Promise<number> {
   const d = await db()
   const rows = await d.select<
@@ -2800,8 +2911,8 @@ export async function markPlatePrinted(
       group by s.part_id, p.qty, p.printed_n, p.passed_n, p.reprint_n, p.copy_states`,
     [sliceImportId, jobId, shopId],
   )
-  // Copies queued to print from THIS file (a failed copy's replacement):
-  // those are the ones this plate made.
+  // Copies queued to print from THIS file (a failed copy's replacement) are
+  // the ones this plate was for.
   const queued = await d.select<{ part_id: string; copies: string | null; slice_import_id: string | null }[]>(
     `select part_id, copies, slice_import_id from part_events
       where job_id = ? and to_status = 'pending' and copies is not null
@@ -2811,19 +2922,15 @@ export async function markPlatePrinted(
   let moved = 0
   for (const r of rows) {
     const states = statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states })
-    let n = Math.max(1, Number(r.per_plate))
-    const mine = queuedCopies(queued, r.part_id, sliceImportId, states).slice(0, n)
-    if (mine.length) {
-      await setCopyStates(shopId, r.part_id, actorId, mine, 'printed', null)
-      n -= mine.length
-      moved++
-      if (n <= 0) continue
-    }
-    const c = countsOf(mine.length ? setStates(states, mine, 'printed') : states)
-    n = Math.min(n, movable(c, 'printed'))
-    if (n <= 0) continue
-    await movePartCopies(shopId, r.part_id, actorId, 'printed', n, null)
-    if (!mine.length) moved++
+    const pick = plateCopies(
+      states,
+      queuedCopies(queued, r.part_id, sliceImportId, states),
+      Math.max(1, Number(r.per_plate)),
+      to === 'printed' ? ['reprint', 'pending'] : ['pending'],
+    )
+    if (!pick.length) continue
+    await setCopyStates(shopId, r.part_id, actorId, pick, to, note, runId)
+    moved++
   }
   return moved
 }
@@ -3462,6 +3569,9 @@ export async function importSlice(
     ),
   )
   if (dup) {
+    // Read again with a newer reader: keep what it now knows.
+    if (input.progress?.length)
+      await d.execute('update slice_imports set progress = coalesce(progress, ?) where id = ?', [encodeProgress(input.progress), dup.id])
     if (input.file && Number(dup.kept) === 0) {
       await d.execute(
         `insert into slice_files (import_id, byte_size, stored_size, encoding, content)
@@ -3476,8 +3586,8 @@ export async function importSlice(
   await d.execute(
     `insert into slice_imports
        (id, shop_id, job_id, file_name, kind, printer_model, printer_id,
-        material_text, material_id, est_minutes, est_grams, notes)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        material_text, material_id, est_minutes, est_grams, notes, progress)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       importId,
       shopId,
@@ -3491,6 +3601,7 @@ export async function importSlice(
       input.estMinutes,
       input.estGrams,
       JSON.stringify(input.notes ?? []),
+      encodeProgress(input.progress),
     ],
   )
 
@@ -3705,11 +3816,12 @@ export async function listSliceImports(
       notes: string | null
       imported_at: string
       kept_bytes: number | null
+      progress: string | null
     }[]
   >(
     `select i.id, i.file_name, i.kind, i.printer_model, i.printer_id, p.name as printer_name,
             i.material_text, i.material_id, m.name as material_name,
-            i.est_minutes, i.est_grams, i.notes, i.imported_at,
+            i.est_minutes, i.est_grams, i.notes, i.imported_at, i.progress,
             (select byte_size from slice_files f where f.import_id = i.id) as kept_bytes
        from slice_imports i
        left join printers p on p.id = i.printer_id
@@ -3775,6 +3887,7 @@ export async function listSliceImports(
     notes: parseNotes(h.notes),
     importedAt: h.imported_at,
     keptBytes: h.kept_bytes == null ? null : Number(h.kept_bytes),
+    progress: decodeProgress(h.progress),
     sections: byImport.get(h.id) ?? [],
   }))
 }

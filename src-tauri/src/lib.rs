@@ -218,6 +218,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0035_part_spares.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 36,
+      description: "plate progress, and which print moved which copies",
+      sql: include_str!("../migrations/0036_plate_progress_and_run_links.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

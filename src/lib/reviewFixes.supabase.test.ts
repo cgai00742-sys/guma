@@ -61,6 +61,8 @@ function builder(table: string) {
     in() { return b },
     or() { return b },
     not() { return b },
+    lt() { return b },
+    is() { return b },
     order() { return b },
     limit() { return b },
     like() { return b },
@@ -126,6 +128,26 @@ describe('hosted setPartsCopies', () => {
     expect(tables.part_events.find((e) => e.id === 7)?.copies).toBeNull()
     expect(tables.part_events.find((e) => e.id === 8)?.copies).toBeNull()
     expect(tables.job_events.at(-1)?.body).toMatch(/"Tagas" copies: 5 → 3 — 1 printed copy kept as a spare; 1 failed copy no longer reprinted\. Why: Only three/)
+  })
+})
+
+describe('hosted plate and print links (CG, 13 Oct)', () => {
+  it('a failed plate marks the copy failed, stamped with the print; removing it with undo puts it back', async () => {
+    const part = { id: 'p1', shop_id: 's', job_id: 'j', qty: 2, status: 'pending', printed_n: 0, passed_n: 0, reprint_n: 0, copy_states: '["pending","pending"]' }
+    tables.job_parts = [part]
+    tables.print_runs = [{ id: 'run1', shop_id: 's', job_id: 'j', slice_import_id: 'imp' }]
+    const embed = { ...part, shop_id: 's' }
+    tables.slice_sections = [{ import_id: 'imp', part_id: 'p1', qty: 1, slice_imports: { job_id: 'j' }, job_parts: embed }]
+    tables.part_events = []
+    const S = await import('./data.supabase')
+    await S.markPlateFailed('s', 'j', 'a', 'imp', 'run1', 'Spaghetti')
+    expect(JSON.parse(part.copy_states)).toEqual(['reprint', 'pending'])
+    const ev = tables.part_events.at(-1)!
+    expect(ev).toMatchObject({ to_status: 'reprint', copies: '1', run_id: 'run1', note: 'Spaghetti' })
+    ev.id = 1
+    ev.kind = 'status'
+    await expect(S.deletePrintRun('s', 'run1', true)).resolves.toBe(1)
+    expect(JSON.parse(part.copy_states)).toEqual(['pending', 'pending'])
   })
 })
 

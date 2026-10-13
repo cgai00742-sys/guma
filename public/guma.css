@@ -1731,3 +1731,6 @@ td.pick input,th.pick input{margin:0;cursor:pointer}
 .copieslist li{display:grid;grid-template-columns:minmax(140px,1.2fr) 70px 2fr;gap:10px;align-items:baseline;font-size:12px}
 .copieslist li.same{opacity:.55}
 .copieslist .pmeta{margin:0}
+
+/* A print stopped part way: where it got to, from the file's own moves */
+.stoppedprint{border:1px dashed color-mix(in srgb, var(--warn) 45%, var(--line));border-radius:var(--radius);padding:10px 12px;margin-top:8px;background:color-mix(in srgb, var(--warn) 5%, transparent)}
