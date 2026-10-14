@@ -29,6 +29,7 @@ import { osCurrency, osLocale } from '../lib/locale'
 import { flagsFor } from '../lib/gates'
 import { planFor } from '../lib/setupPlan'
 import { daysBetweenLocal } from '../lib/dates'
+import { fmtHours } from '../lib/duration'
 
 export default function Dashboard({ ctx }: { ctx: ShopContext }) {
   const [jobs, setJobs] = useState<JobListRow[] | null>(null)
@@ -168,7 +169,7 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
           value={String(s.printers)}
           sub={
             s.machineHours > 0
-              ? `${round1(s.machineHours)} h logged · ${s.failRate === null ? 'no failures' : `${s.failRate}% of material lost`}`
+              ? `${fmtHours(s.machineHours)} logged · ${s.failRate === null ? 'no failures' : `${s.failRate}% of material lost`}`
               : 'no runs logged yet'
           }
         />
@@ -345,7 +346,7 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
             </div>
           ) : (
             <>
-              <Row label="Machine hours logged" value={s.machineHours > 0 ? `${round1(s.machineHours)} h` : 'none yet'} />
+              <Row label="Machine hours logged" value={s.machineHours > 0 ? fmtHours(s.machineHours) : 'none yet'} />
               <Row label="Build runs recorded" value={s.runs > 0 ? String(s.runs) : 'none yet'} />
               <Row
                 label="Material lost to failed prints"

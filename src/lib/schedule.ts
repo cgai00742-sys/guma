@@ -25,6 +25,7 @@
  * settings the first time a real shop disagrees with one.
  */
 import { daysBetweenLocal, parseStored, toISODate } from './dates'
+import { fmtHours } from './duration'
 import { chosenVariant } from './parts'
 import { countsOf, statesOf } from './copies'
 import type { PartRow, QuoteInputsRow } from './data.types'
@@ -151,7 +152,7 @@ export function startBy(input: StartByInput): StartBy {
   const lead = printDays + finishDays + handover + SAFETY_DAYS
 
   assumptions.push(`${MACHINE_HOURS_PER_DAY} machine hours a day → ${printDays} day${printDays === 1 ? '' : 's'} of printing`)
-  if (finishDays) assumptions.push(`${finishingHours} h of finishing → ${finishDays} day${finishDays === 1 ? '' : 's'}`)
+  if (finishDays) assumptions.push(`${fmtHours(finishingHours)} of finishing → ${finishDays} day${finishDays === 1 ? '' : 's'}`)
   if (handover) assumptions.push(`${handover} day${handover === 1 ? '' : 's'} to reach them`)
   assumptions.push(`${SAFETY_DAYS} day of slack`)
 

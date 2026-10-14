@@ -94,10 +94,10 @@ describe('the Quote PDF worked example', () => {
 
   it('shows the arithmetic in the basis line, not just the amount', () => {
     const basis = Object.fromEntries(q.lines.map((l) => [l.key, l.basis]))
-    expect(basis.design).toContain('6 h × $85/h')
+    expect(basis.design).toContain('6h × $85/h')
     expect(basis.material).toContain('740 g at $190/kg')
-    expect(basis.machine).toContain('21 h')
-    expect(basis.finishing).toContain('2 h × $55/h')
+    expect(basis.machine).toContain('21h')
+    expect(basis.finishing).toContain('2h × $55/h')
   })
 })
 

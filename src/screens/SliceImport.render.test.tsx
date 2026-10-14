@@ -24,6 +24,13 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
+/** An hours-and-minutes field: the hours box carries the field's label, the minutes box says "(minutes)". */
+const hoursBox = (scope: { getByLabelText: typeof screen.getByLabelText }, re: RegExp) =>
+  scope.getByLabelText(re, { selector: 'input:not([aria-label$="(minutes)"])' }) as HTMLInputElement
+const minutesBox = (scope: { getByLabelText: typeof screen.getByLabelText }, name: string) =>
+  scope.getByLabelText(`${name} (minutes)`) as HTMLInputElement
+
+
 const { DatabaseSync } = (await import(/* @vite-ignore */ ['node', 'sqlite'].join(':'))) as {
   DatabaseSync: new (path: string) => {
     exec(sql: string): void
@@ -480,8 +487,9 @@ describe('turning the file into what actually happened', () => {
     // Pre-filled from the file: 86.5 g rounds to 87, 2h 3m to 2.05 hours.
     const units = (await screen.findByLabelText(/off the spool/i)) as HTMLInputElement
     expect(units.value).toBe('87')
-    const hours = screen.getByLabelText(/machine hours/i) as HTMLInputElement
-    expect(hours.value).toBe('2.05')
+    // 2h 3m, typed as hours and minutes.
+    expect(hoursBox(screen, /^machine time$/i).value).toBe('2')
+    expect(minutesBox(screen, 'Machine time').value).toBe('3')
 
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
 
@@ -493,7 +501,7 @@ describe('turning the file into what actually happened', () => {
     })
     const m = currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }
     expect(Number(m.on_hand)).toBe(913)
-    await screen.findByText(/machine hours\s+in this project/i)
+    await screen.findByText(/of machine time\s+in this project/i)
   })
 
   it('asks what went wrong when the print failed, and still bills the material', async () => {
@@ -562,7 +570,7 @@ describe('the file itself, kept', () => {
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
-    await screen.findByText(/machine hours\s+in this project/i)
+    await screen.findByText(/of machine time\s+in this project/i)
 
     await user.click(screen.getByRole('button', { name: /remove the file/i }))
     await screen.findByText(/the print still happened/i)
@@ -683,13 +691,14 @@ describe('a print stopped part way, costed from where it got to (CG, 13 Oct)', (
     await renderProject(jobId, ctx)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'cancelled')
-    await user.type(screen.getByLabelText(/machine ran for/i), '15h')
+    await user.type(hoursBox(screen, /machine ran for/i), '15')
     expect((await screen.findByTestId('stopped-at')).textContent).toMatch(/By 15h 0m the plate was 91% through, at layer 39.62 of 40.31 mm, and the printer had pushed 334 g/)
     // Ghost printing from 9h: only what left the spool by then is charged.
-    await user.type(screen.getByLabelText(/filament stopped at/i), '9')
+    await user.type(hoursBox(screen, /filament stopped at/i), '9')
     expect(screen.getByTestId('stopped-at').textContent).toMatch(/Filament stopped at 9h 0m: 270 g left the spool — the last 6h 0m moved nothing/)
     expect((screen.getByLabelText(/g off the spool/i) as HTMLInputElement).value).toBe('270')
-    expect((screen.getByLabelText(/machine hours/i) as HTMLInputElement).value).toBe('15')
+    expect(hoursBox(screen, /^machine time$/i).value).toBe('15')
+    expect(minutesBox(screen, 'Machine time').value).toBe('0')
     await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
     await waitFor(() =>
@@ -720,7 +729,7 @@ describe('a finished project reads like a record, not a control panel', () => {
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
-    await screen.findByText(/machine hours\s+in this project/i)
+    await screen.findByText(/of machine time\s+in this project/i)
 
     for (const to of ['review', 'delivered'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
@@ -745,7 +754,7 @@ describe('a finished project reads like a record, not a control panel', () => {
     const printedFrom = await screen.findByText('Printed from')
     expect(printedFrom).toBeDefined()
     expect(screen.getAllByText('Reef buoy_sliced.gcode').length).toBeGreaterThan(0)
-    expect(screen.getByText(/87 g · 2\.1 h/)).toBeDefined()
+    expect(screen.getAllByText(/87 g · 2h 3m/).length).toBeGreaterThan(0)
     // And the money/effort line, not just the controls for work that is over.
     expect(screen.getByText(/machine ·/)).toBeDefined()
   })
@@ -922,7 +931,7 @@ describe("CG's Maui: one G-code uploaded several times, project at Made", () => 
         .get(jobId) as Record<string, number>
       expect(a).toMatchObject({ material_units: 87, machine_hours: 2.05, runs: 1 })
     })
-    await within(region).findByText(/machine hours\s+in this project/i)
+    await within(region).findByText(/of machine time\s+in this project/i)
 
     // Uploading it yet again, at Done, adds nothing and counts nothing twice.
     await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile('Maui bathy.gcode'))
@@ -1201,7 +1210,8 @@ describe('a plate imported before Guma read the moves (CG, 13 Oct)', () => {
     await user.click(await within(region).findByRole('button', { name: /this print happened/i }))
     await user.selectOptions(within(region).getByLabelText(/how it went/i), 'failed')
     await user.click(within(region).getByRole('button', { name: /read the file to see where it stopped/i }))
-    await user.type(await within(region).findByLabelText(/machine ran for/i), '40m')
+    await within(region).findAllByLabelText(/machine ran for/i)
+    await user.type(minutesBox(within(region), 'Machine ran for'), '40')
     // 5000 of 6000 mm by minute 40, scaled to the slicer's 72 g: 60 g. A
     // straight line would have said 28.8 g.
     expect(within(region).getByTestId('stopped-at').textContent).toMatch(/40% through, at layer 0.20 of 5.00 mm, and the printer had pushed 60 g/)
@@ -1246,8 +1256,8 @@ describe('a print recorded as clean that had stopped part way (CG, 14 Oct)', () 
 
     expect(await screen.findByText(/Correcting the print recorded 2026-10-14/)).toBeDefined()
     expect((screen.getByLabelText(/how it went/i) as HTMLSelectElement).value).toBe('cancelled')
-    await user.type(screen.getByLabelText(/machine ran for/i), '15h')
-    await user.type(screen.getByLabelText(/filament stopped at/i), '9h')
+    await user.type(hoursBox(screen, /machine ran for/i), '15')
+    await user.type(hoursBox(screen, /filament stopped at/i), '9')
     const why = screen.getByLabelText(/what went wrong/i)
     await user.clear(why)
     await user.type(why, 'Ghost printing — Nextruder motor')
@@ -1284,7 +1294,7 @@ describe('a print recorded as clean that had stopped part way (CG, 14 Oct)', () 
     if (!pickMachine.value) await user.selectOptions(pickMachine, ctx.printers[0].id)
     expect((screen.getByRole('button', { name: /say how long it ran/i }) as HTMLButtonElement).disabled).toBe(true)
     await user.type(screen.getByLabelText(/what went wrong/i), 'Clog')
-    await user.type(screen.getByLabelText(/machine ran for/i), '40m')
+    await user.type(minutesBox(screen, 'Machine ran for'), '40')
     await user.click(screen.getByRole('button', { name: /record where it stopped/i }))
     await waitFor(() =>
       expect(currentDb.sqlite.prepare('select units_used, hours, outcome, failure_reason from print_runs').get()).toEqual({

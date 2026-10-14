@@ -13,6 +13,7 @@
  */
 import type { MaterialRef, PrinterRef, RateSet } from './pricing'
 import { osCurrency, osLocale } from './locale'
+import { fmtHours } from './duration'
 import type { ProgressPoint } from './gcodeWalk'
 
 export interface Shop {
@@ -1022,7 +1023,7 @@ export function describeRunCorrection(
   const bits: string[] = []
   const r = (n: number) => Math.round(n * 100) / 100
   if (r(before.unitsUsed ?? 0) !== r(after.unitsUsed)) bits.push(`${r(before.unitsUsed ?? 0)} ${unit} → ${r(after.unitsUsed)} ${unit}`)
-  if (r(before.hours ?? 0) !== r(after.hours)) bits.push(`${r(before.hours ?? 0)} h → ${r(after.hours)} h`)
+  if (r(before.hours ?? 0) !== r(after.hours)) bits.push(`${fmtHours(before.hours ?? 0)} → ${fmtHours(after.hours)}`)
   if ((before.outcome ?? 'success') !== after.outcome)
     bits.push(`${OUTCOME_WORDS[before.outcome ?? 'success']} → ${OUTCOME_WORDS[after.outcome]}`)
   return `Corrected a print${bits.length ? ` — ${bits.join(' · ')}` : ''}.${after.failureReason ? ` Why: ${after.failureReason}` : ''}`
@@ -1036,7 +1037,7 @@ export function validateHours(raw: number): number {
 }
 
 export function runEventBody(input: PrintRunInput): string {
-  const bits = [`${input.hours}h`, input.unitsUsed > 0 ? `${input.unitsUsed} used` : null]
+  const bits = [fmtHours(input.hours), input.unitsUsed > 0 ? `${input.unitsUsed} used` : null]
     .filter(Boolean)
     .join(', ')
   return `Run recorded — ${bits} · ${input.outcome}${input.failureReason ? ` (${input.failureReason})` : ''}`

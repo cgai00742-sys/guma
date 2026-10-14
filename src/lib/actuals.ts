@@ -25,6 +25,7 @@ import {
   type RateSet,
 } from './pricing'
 import { toRateSet, type QuoteBuildInput, type ProjectActuals, type ProjectDetail, type RateCardRow, type Shop } from './data.types'
+import { fmtHours } from './duration'
 
 export interface VarianceLine {
   key: 'material' | 'machine' | 'wear' | 'labour'
@@ -142,9 +143,9 @@ export function compareToQuote(
       pct: null,
       detail: anyWork
         ? [
-            actuals.designHours > 0 ? `${actuals.designHours}h design` : null,
-            actuals.finishingHours > 0 ? `${actuals.finishingHours}h finishing` : null,
-            actuals.adminHours > 0 ? `${actuals.adminHours}h admin` : null,
+            actuals.designHours > 0 ? `${fmtHours(actuals.designHours)} design` : null,
+            actuals.finishingHours > 0 ? `${fmtHours(actuals.finishingHours)} finishing` : null,
+            actuals.adminHours > 0 ? `${fmtHours(actuals.adminHours)} admin` : null,
           ]
             .filter(Boolean)
             .join(' · ')

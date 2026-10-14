@@ -1734,3 +1734,9 @@ td.pick input,th.pick input{margin:0;cursor:pointer}
 
 /* A print stopped part way: where it got to, from the file's own moves */
 .stoppedprint{border:1px dashed color-mix(in srgb, var(--warn) 45%, var(--line));border-radius:var(--radius);padding:10px 12px;margin-top:8px;background:color-mix(in srgb, var(--warn) 5%, transparent)}
+
+/* A duration as hours and minutes (components/HoursInput) */
+.hm{display:inline-flex;align-items:center;gap:6px}
+.hm input{min-width:0}
+.hm-u{font-size:12px;color:var(--txt-3)}
+.hm.compact{gap:3px}

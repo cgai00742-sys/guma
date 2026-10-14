@@ -159,7 +159,9 @@ import {
 import { buildComparison, compareToQuote, priceProjectQuote, type Comparison } from '../lib/actuals'
 import type { PricedQuote, RateSet } from '../lib/pricing'
 import { sheetVsQuote } from '../lib/sheetVsQuote'
-import { fmtMinutes, parseDuration, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
+import HoursInput from '../components/HoursInput'
+import { fmtHours } from '../lib/duration'
+import { fmtMinutes, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
 import type { PrintRunRow, SliceImportRow, StockHoldRow } from '../lib/data.types'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
@@ -2112,7 +2114,7 @@ function SliceImport({
         const machine = ctx.printerRows.find((p) => p.id === printerId)?.name ?? 'the machine'
         recorded =
           `Recorded as ${clean ? 'printed' : howWent === 'cancelled' ? 'stopped part way' : 'failed'} on ${machine}: ${
-            clean ? (hrs(read.totals.estMinutes) ?? '0h') : `${usedH} h`
+            clean ? (hrs(read.totals.estMinutes) ?? '0h') : fmtHours(usedH)
           }` +
           (materialId ? `, ${usedG} g off the shelf` : ', no material matched so nothing came off the shelf') +
           (marked ? `, ${marked} part${marked === 1 ? '' : 's'} marked ${clean ? 'printed' : 'failed'}` : '') +
@@ -2907,7 +2909,7 @@ function SliceRuns({
             {runs.length > 0 && openId !== s.id && (
               <div className="plmeta" style={{ marginTop: 4, color: 'var(--ok)' }}>
                 {Math.round(used)} {ctx.materials.find((m) => m.id === s.materialId)?.unit ?? 'g'} off the
-                spool · {Math.round(hours * 100) / 100} machine hours
+                spool · {fmtHours(hours)} of machine time
                 in this project&rsquo;s cost
               </div>
             )}
@@ -2944,7 +2946,7 @@ function SliceRuns({
                 {correcting && (
                   <div className="hint" style={{ marginTop: 0, marginBottom: 8 }}>
                     <b>Correcting the print recorded{correcting.startedAt ? ` ${correcting.startedAt.slice(0, 10)}` : ''}</b>{' '}
-                    — {Math.round(correcting.unitsUsed ?? 0)} {unit} · {correcting.hours ?? 0} h ·{' '}
+                    — {Math.round(correcting.unitsUsed ?? 0)} {unit} · {fmtHours(correcting.hours ?? 0)} ·{' '}
                     {correcting.outcome === 'success' ? 'came off clean' : correcting.outcome === 'failed' ? 'failed' : 'stopped part way'}.
                     The machine and spool stay; the shelf moves by the difference.
                   </div>
@@ -3021,17 +3023,13 @@ function SliceRuns({
                   </div>
                   <div className="fld">
                     <label className="lbl" htmlFor={`sr-hours-${s.id}`}>
-                      Machine hours
+                      Machine time
                     </label>
-                    <input
+                    <HoursInput
                       id={`sr-hours-${s.id}`}
-                      type="number"
-                      min="0"
-                      step="0.25"
-                      value={form.hours || ''}
-                      onChange={(e) =>
-                        setForm((f) => f && { ...f, hours: Number(e.target.value) || 0 })
-                      }
+                      label="Machine time"
+                      value={form.hours}
+                      onChange={(hours) => setForm((f) => f && { ...f, hours: hours ?? 0 })}
                     />
                   </div>
                   <div className="fld">
@@ -3265,7 +3263,7 @@ function StartByLine({ detail, locale }: { detail: ProjectDetail; locale: string
     if (plan.status === 'unknown' && !detail.facts.neededBy && plan.printHours > 0) {
       return (
         <div className="hint" style={{ marginBottom: 10 }}>
-          {Math.round(plan.printHours)} machine hours of work here. Set a delivery date and Guma
+          {fmtHours(plan.printHours)} of machine time here. Set a delivery date and Guma
           will say when printing has to start.
         </div>
       )
@@ -3284,7 +3282,7 @@ function StartByLine({ detail, locale }: { detail: ProjectDetail; locale: string
           : `Start printing by ${formatDate(plan.date, locale)}`}
       </b>
       <div style={{ marginTop: 4, fontSize: 12 }}>
-        {Math.round(plan.printHours)} machine hours still to print
+        {fmtHours(plan.printHours)} of machine time still to print
         {plan.source === 'quote' ? ', estimated from the quote' : ', from the sliced files'} ·{' '}
         {plan.assumptions.join(' · ')}.
       </div>
@@ -3363,10 +3361,10 @@ function Closeout({
           )}
           <Stat
             label="Hours in it"
-            value={hours ? `${hours} h` : '—'}
-            sub={`${Math.round(a.machineHours * 10) / 10} machine · ${
-              Math.round((a.designHours + a.finishingHours + a.adminHours) * 10) / 10
-            } yours`}
+            value={hours ? fmtHours(hours) : '—'}
+            sub={`${fmtHours(a.machineHours)} machine · ${fmtHours(
+              a.designHours + a.finishingHours + a.adminHours,
+            )} yours`}
           />
         </div>
 
@@ -3452,7 +3450,7 @@ function Closeout({
                         {runs.length === 0 ? (
                           <span style={{ color: 'var(--warn)' }}>never recorded</span>
                         ) : (
-                          `${Math.round(used)} g · ${Math.round(hrs * 10) / 10} h`
+                          `${Math.round(used)} g · ${fmtHours(hrs)}`
                         )}
                       </td>
                     </tr>
@@ -3537,7 +3535,7 @@ function Program({
   const parent = path[path.length - 1] ?? null
   const total = programTotals(rows, id)
   const g = (n: number) => `${Math.round(n)} g`
-  const h = (n: number) => `${Math.round(n * 10) / 10} h`
+  const h = (n: number) => fmtHours(n)
   const { money } = makeMoney(ctx.shop.currency, ctx.shop.locale)
 
   async function guard(fn: () => Promise<unknown>) {
@@ -4030,7 +4028,7 @@ function BuildSheet({
             tally.sentBack > 0 &&
               `${tally.sentBack} send-back${tally.sentBack === 1 ? '' : 's'} across ${tally.partsAffected} part${tally.partsAffected === 1 ? '' : 's'}`,
             tally.failedRuns > 0 &&
-              `${tally.failedRuns} failed or stopped plate${tally.failedRuns === 1 ? '' : 's'} (${tally.unitsLost} g, ${tally.hoursLost} h lost)`,
+              `${tally.failedRuns} failed or stopped plate${tally.failedRuns === 1 ? '' : 's'} (${tally.unitsLost} g, ${fmtHours(tally.hoursLost)} lost)`,
           ]
             .filter(Boolean)
             .join(' · ')}
@@ -4765,15 +4763,13 @@ function RunLog({
             </div>
             <div className="fld">
               <label className="lbl" htmlFor="r-hours">
-                Machine hours
+                Machine time
               </label>
-              <input
+              <HoursInput
                 id="r-hours"
-                type="number"
-                min="0"
-                step="0.25"
-                value={run.hours || ''}
-                onChange={(e) => setRun((r) => ({ ...r, hours: Number(e.target.value) || 0 }))}
+                label="Machine time"
+                value={run.hours}
+                onChange={(hours) => setRun((r) => ({ ...r, hours: hours ?? 0 }))}
               />
             </div>
             <div className="fld">
@@ -4847,15 +4843,13 @@ function RunLog({
             </div>
             <div className="fld">
               <label className="lbl" htmlFor="w-hours">
-                Hours
+                Time
               </label>
-              <input
+              <HoursInput
                 id="w-hours"
-                type="number"
-                min="0"
-                step="0.25"
-                value={work.hours}
-                onChange={(e) => setWork((w) => ({ ...w, hours: e.target.value }))}
+                label="Time"
+                value={Number(work.hours) || null}
+                onChange={(hours) => setWork((w) => ({ ...w, hours: hours == null ? '' : String(hours) }))}
               />
             </div>
             <div className="fld">
@@ -4928,7 +4922,7 @@ function RunLog({
               </span>
               <span style={{ color: 'var(--txt)' }}>
                 {r.unitsUsed ?? 0}
-                {r.unit ?? 'g'} · {r.hours ?? 0}h
+                {r.unit ?? 'g'} · {fmtHours(r.hours ?? 0)}
               </span>
               <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>
                 {r.printerName ?? 'machine gone'} · {r.materialName ?? 'material gone'}
@@ -4959,7 +4953,7 @@ function RunLog({
                     <div className="attn crit" role="alertdialog" aria-label="Remove this print" style={{ marginTop: 6, width: '100%' }}>
                       <div>
                         <b>Remove this print?</b> Its {r.unitsUsed ?? 0}
-                        {r.unit ?? 'g'} go back on the shelf and its {r.hours ?? 0}h come off the project.
+                        {r.unit ?? 'g'} go back on the shelf and its {fmtHours(r.hours ?? 0)} come off the project.
                       </div>
                       {n > 0 && (
                         <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginTop: 6, fontSize: 12 }}>
@@ -4999,7 +4993,7 @@ function RunLog({
             <div key={w.id} className="histitem">
               <span style={{ color: 'var(--info)' }}>◷</span>
               <span style={{ color: 'var(--txt)' }}>
-                {w.hours}h {WORK_KIND_LABEL[w.kind].toLowerCase()}
+                {fmtHours(Number(w.hours))} {WORK_KIND_LABEL[w.kind].toLowerCase()}
               </span>
               <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>
                 {w.workedOn}
@@ -5019,8 +5013,8 @@ function RunLog({
           ))}
           <div className="hint" style={{ marginTop: 6 }}>
             {detail.runs.length} run{detail.runs.length === 1 ? '' : 's'} ·{' '}
-            {(detail.actuals.designHours + detail.actuals.finishingHours + detail.actuals.adminHours)}
-            h logged · {money(detail.actuals.materialCost)} of material off the shelf
+            {fmtHours(detail.actuals.designHours + detail.actuals.finishingHours + detail.actuals.adminHours)}{' '}
+            logged · {money(detail.actuals.materialCost)} of material off the shelf
           </div>
         </div>
       )}
@@ -5570,7 +5564,7 @@ function MadeSection({
                     {split.design > 0 && (
                       <div className="guide-r">
                         <span className="k">
-                          Design, {detail.actuals.designHours} h — carried on the product
+                          Design, {fmtHours(detail.actuals.designHours)} — carried on the product
                         </span>
                         <span className="v">{money(split.design)}</span>
                       </div>
@@ -5757,7 +5751,7 @@ function FromTheFiles({
   const [saving, setSaving] = useState(false)
   if (groups.length === 0 || !canPrint(detail.phase, detail.facts.kind)) return null
 
-  const hrs = (h: number | null) => (h == null ? '—' : `${h} h`)
+  const hrs = (h: number | null) => fmtHours(h)
   const machineOf = (g: FileGroup) => picked[g.first.id] || machineFor(g, ctx.printers)
   const waiting = groups.filter((g) => !g.recorded)
   const ready = waiting.filter((g) => machineOf(g))
@@ -5877,7 +5871,7 @@ function FromTheFiles({
                   <td className="r">
                     {g.recorded ? (
                       <span className="mono" style={{ color: 'var(--ok)' }}>
-                        ✓ {g.usedUnits} g · {g.usedHours} h
+                        ✓ {g.usedUnits} g · {fmtHours(g.usedHours)}
                       </span>
                     ) : (
                       <button
@@ -6202,7 +6196,7 @@ function EstimatedBuild({
                       {l.key === 'material'
                         ? `${Math.round(asBuilt.priced.totalUnits).toLocaleString()}${unit} on the build sheet`
                         : l.key === 'machine' || l.key === 'wear'
-                          ? `${Math.round(asBuilt.priced.machineHours * 10) / 10} machine hours on the build sheet`
+                          ? `${fmtHours(asBuilt.priced.machineHours)} of machine time on the build sheet`
                           : 'Design and finishing, at the hours quoted'}
                     </div>
                   </td>
@@ -6896,8 +6890,9 @@ function StoppedPrint({
   unit: string
   onApply: (hours: number, units: number, note: string) => void
 }) {
-  const [ran, setRan] = useState('')
-  const [flow, setFlow] = useState('')
+  // Hours, typed as hours and minutes (CG, 14 Oct).
+  const [ran, setRan] = useState<number | null>(null)
+  const [flow, setFlow] = useState<number | null>(null)
   const [progress, setProgress] = useState<ProgressPoint[] | null>(slice.progress)
   const [reading, setReading] = useState(false)
   const [readErr, setReadErr] = useState<string | null>(null)
@@ -6923,16 +6918,17 @@ function StoppedPrint({
   }
 
   const total = slice.estMinutes
-  const ranMin = parseDuration(ran)
-  const flowMin = parseDuration(flow)
+  const toMin = (h: number | null) => (h == null || h <= 0 ? null : Math.round(h * 60))
+  const ranMin = toMin(ran)
+  const flowMin = toMin(flow)
   const at = progress && ranMin != null ? progressAt(progress, ranMin, slice.estGrams) : null
   const flowAt = progress && flowMin != null && ranMin != null && flowMin < ranMin ? progressAt(progress, flowMin, slice.estGrams) : null
   const layerTop = progress?.length ? progress[progress.length - 1].z : null
 
-  function apply(r: string, f: string) {
-    const rm = parseDuration(r)
+  function apply(r: number | null, f: number | null) {
+    const rm = toMin(r)
     if (rm == null || !progress) return
-    const fm = parseDuration(f)
+    const fm = toMin(f)
     const a = progressAt(progress, rm, slice.estGrams)
     if (!a) return
     const b = fm != null && fm < rm ? progressAt(progress, fm, slice.estGrams) : null
@@ -6943,6 +6939,7 @@ function StoppedPrint({
       ` (${a.pct}%, layer ${a.z.toFixed(2)} mm)` +
       (b && fm != null ? `; filament stopped at ${fmtMinutes(fm)} — ghost print after` : '') +
       '.'
+    // Two decimals is 36 seconds: 15h 20m is stored 15.33 and reads back 15h 20m.
     onApply(Math.round((rm / 60) * 100) / 100, Math.round(used.grams), note)
   }
 
@@ -6976,13 +6973,13 @@ function StoppedPrint({
               <label className="lbl" htmlFor={`sp-ran-${slice.id}`}>
                 Machine ran for{total ? ` (of ${fmtMinutes(total)})` : ''}
               </label>
-              <input
+              <HoursInput
                 id={`sp-ran-${slice.id}`}
+                label="Machine ran for"
                 value={ran}
-                placeholder="15h, 15:30, 15.5"
-                onChange={(e) => {
-                  setRan(e.target.value)
-                  apply(e.target.value, flow)
+                onChange={(h) => {
+                  setRan(h)
+                  apply(h, flow)
                 }}
               />
             </div>
@@ -6990,13 +6987,13 @@ function StoppedPrint({
               <label className="lbl" htmlFor={`sp-flow-${slice.id}`}>
                 Filament stopped at (if earlier)
               </label>
-              <input
+              <HoursInput
                 id={`sp-flow-${slice.id}`}
+                label="Filament stopped at"
                 value={flow}
-                placeholder="ghost printing from…"
-                onChange={(e) => {
-                  setFlow(e.target.value)
-                  apply(ran, e.target.value)
+                onChange={(h) => {
+                  setFlow(h)
+                  apply(ran, h)
                 }}
               />
             </div>
@@ -7019,7 +7016,7 @@ function StoppedPrint({
               Filled in above; a weighed figure is better still.
             </div>
           )}
-          {parseDuration(flow) != null && ranMin != null && (parseDuration(flow) as number) >= ranMin && (
+          {flowMin != null && ranMin != null && flowMin >= ranMin && (
             <div className="hint" style={{ marginTop: 4, color: 'var(--warn)' }}>
               Filament can only have stopped before the machine did.
             </div>

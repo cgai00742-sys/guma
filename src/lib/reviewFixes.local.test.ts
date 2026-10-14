@@ -387,7 +387,7 @@ describe('correcting a print recorded as clean (CG, 14 Oct)', () => {
       units_used: 270, hours: 15, outcome: 'cancelled', failure_reason: 'Ghost printing',
     })
     const ev = currentDb.sqlite.prepare("select body from job_events where kind = 'run' order by rowid desc").get() as any
-    expect(ev.body).toBe('Corrected a print — 355 g → 270 g · 16.43 h → 15 h · came off clean → stopped part way. Why: Ghost printing')
+    expect(ev.body).toBe('Corrected a print — 355 g → 270 g · 16h 26m → 15h · came off clean → stopped part way. Why: Ghost printing')
   })
 
   it('leaves copies already failed by hand alone, and moves no stock when the grams did not change', async () => {

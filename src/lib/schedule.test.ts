@@ -232,7 +232,7 @@ describe('when printing has to start', () => {
       today: TODAY,
     })
     expect(got.assumptions.join(' ')).toMatch(/12 machine hours a day/)
-    expect(got.assumptions.join(' ')).toMatch(/6 h of finishing/)
+    expect(got.assumptions.join(' ')).toMatch(/6h of finishing/)
     expect(got.assumptions.join(' ')).toMatch(/2 days to reach them/)
     expect(got.assumptions.join(' ')).toMatch(/1 day of slack/)
   })

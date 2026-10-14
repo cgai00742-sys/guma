@@ -25,6 +25,7 @@
  * No arithmetic lives in this file. Every figure comes from priceQuote().
  */
 import { sheetVsQuote } from '../lib/sheetVsQuote'
+import HoursInput from '../components/HoursInput'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -923,16 +924,25 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             {q.needsDesign && (
               <div className="fld">
                 <label className="lbl" htmlFor="q-dh">
-                  {input.designBilling === 'flat' ? 'Flat design fee' : 'Design hours, estimated'}
+                  {input.designBilling === 'flat' ? 'Flat design fee' : 'Design time, estimated'}
                 </label>
-                <input
-                  id="q-dh"
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  value={input.designQty}
-                  onChange={num('designQty')}
-                />
+                {input.designBilling === 'flat' ? (
+                  <input
+                    id="q-dh"
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    value={input.designQty}
+                    onChange={num('designQty')}
+                  />
+                ) : (
+                  <HoursInput
+                    id="q-dh"
+                    label="Design time"
+                    value={input.designQty}
+                    onChange={(h) => set('designQty')(h ?? 0)}
+                  />
+                )}
                 <div className="hint">
                   {input.designBilling === 'flat'
                     ? 'Client sees one number and no clock. You carry the overrun.'
@@ -1033,29 +1043,25 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="q-hrs">
-                  Print hours per part
+                  Print time per part
                 </label>
-                <input
+                <HoursInput
                   id="q-hrs"
-                  type="number"
-                  step="0.25"
-                  min="0"
+                  label="Print time per part"
                   value={input.printHrsPerPart}
-                  onChange={num('printHrsPerPart')}
+                  onChange={(h) => set('printHrsPerPart')(h ?? 0)}
                 />
                 <div className="hint">From the slicer estimate.</div>
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="q-post">
-                  Finishing hours, all parts
+                  Finishing time, all parts
                 </label>
-                <input
+                <HoursInput
                   id="q-post"
-                  type="number"
-                  step="0.25"
-                  min="0"
+                  label="Finishing time"
                   value={input.finishingHrs}
-                  onChange={num('finishingHrs')}
+                  onChange={(h) => set('finishingHrs')(h ?? 0)}
                 />
                 <div className="hint">Support removal, sanding, wash &amp; cure, assembly.</div>
               </div>
@@ -1065,15 +1071,13 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
               <div className="grid3" style={{ marginTop: 10 }}>
               <div className="fld">
                 <label className="lbl" htmlFor="q-post">
-                  Finishing hours, all parts
+                  Finishing time, all parts
                 </label>
-                <input
+                <HoursInput
                   id="q-post"
-                  type="number"
-                  step="0.25"
-                  min="0"
+                  label="Finishing time"
                   value={input.finishingHrs}
-                  onChange={num('finishingHrs')}
+                  onChange={(h) => set('finishingHrs')(h ?? 0)}
                 />
                 <div className="hint">Support removal, sanding, wash &amp; cure, assembly.</div>
               </div>

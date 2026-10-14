@@ -16,6 +16,7 @@
  * No rate in this file is a constant. Everything arrives in `RateSet`,
  * `MaterialRef` and `PrinterRef`, all of which are rows read from the database.
  */
+import { fmtHours } from './duration'
 
 export type AssetOrigin = 'model' | 'fix' | 'ready'
 export type DesignBilling = 'hourly' | 'flat'
@@ -422,7 +423,7 @@ export function priceQuote(
       basis:
         input.designBilling === 'flat'
           ? `agreed up front · ${input.revisions} revision rounds`
-          : `${trimNum(input.designQty || 0)} h × ${money0(rates.designHourly)}/h · ${input.revisions} revisions`,
+          : `${fmtHours(input.designQty || 0)} × ${money0(rates.designHourly)}/h · ${input.revisions} revisions`,
       amount: designAmt,
     })
   }
@@ -475,7 +476,7 @@ export function priceQuote(
       lines.push({
         key: onePrinter ? 'machine' : `machine:${pr?.id ?? 'none'}`,
         label: onePrinter ? 'Machine time' : `Machine time — ${pr ? pr.name : 'not set'}`,
-        basis: `${trimNum(hours)} h on ${pr ? pr.name : 'machine'} at ${money0(pr?.ratePerHour ?? 0)}/h`,
+        basis: `${fmtHours(hours)} on ${pr ? pr.name : 'machine'} at ${money0(pr?.ratePerHour ?? 0)}/h`,
         amount: group.reduce((t, b) => t + b.machine, 0),
       })
     }
@@ -491,7 +492,7 @@ export function priceQuote(
     lines.push({
       key: 'finishing',
       label: 'Finishing',
-      basis: `${trimNum(input.finishingHrs || 0)} h × ${money0(rates.finishingHourly)}/h`,
+      basis: `${fmtHours(input.finishingHrs || 0)} × ${money0(rates.finishingHourly)}/h`,
       amount: finishingAmt,
     })
   }

@@ -140,9 +140,11 @@ describe('pricing a new project from its sliced file', () => {
     // One line, on the XL, in PLA, per-copy figures from the file.
     expect((screen.getByLabelText(/copies of maui land standalone 3x/i) as HTMLInputElement).value).toBe('1')
     expect((screen.getByLabelText(/^g per copy/i) as HTMLInputElement).value).toBe('73.1')
-    expect((screen.getByLabelText(/hours per copy/i) as HTMLInputElement).value).toBe('7.5667')
+    // 7h 34m, as hours and minutes.
+    expect((screen.getByLabelText(/time per copy of .* \(hours\)/i) as HTMLInputElement).value).toBe('7')
+    expect((screen.getByLabelText(/time per copy of .* \(minutes\)/i) as HTMLInputElement).value).toBe('34')
     // The hand-typed fields are gone while the lines are the print.
-    expect(screen.queryByLabelText(/^print hours per part/i)).toBeNull()
+    expect(screen.queryByLabelText(/^print time per part/i)).toBeNull()
 
     await user.click(screen.getByRole('button', { name: /^intake/i }))
 

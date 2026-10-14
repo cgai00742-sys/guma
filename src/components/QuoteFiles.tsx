@@ -10,6 +10,7 @@
  * they are there to record from once the plates come off the bed.
  */
 import { useRef, useState } from 'react'
+import HoursInput from './HoursInput'
 import type { ShopContext } from '../lib/data'
 import type { QuoteBuild } from '../lib/pricing'
 import { buildsFromFile } from '../lib/quoteFromFile'
@@ -212,16 +213,12 @@ export default function QuoteFiles({
                         onChange={(e) => patch(l.key, { unitsPerPart: num(e.target.value) })}
                       />{' '}
                       {unitOf(l.materialId)}{' '}
-                      <input
-                        aria-label={`Hours per copy of ${l.label}`}
-                        type="number"
-                        min="0"
-                        step="0.05"
+                      <HoursInput
+                        compact
+                        label={`Time per copy of ${l.label}`}
                         value={l.printHrsPerPart}
-                        style={{ width: 64 }}
-                        onChange={(e) => patch(l.key, { printHrsPerPart: num(e.target.value) })}
-                      />{' '}
-                      h
+                        onChange={(h) => patch(l.key, { printHrsPerPart: h ?? 0 })}
+                      />
                     </td>
                     <td>
                       <button

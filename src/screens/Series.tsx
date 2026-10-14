@@ -25,6 +25,7 @@ import {
 } from '../lib/data'
 import { phaseLabel } from '../lib/gates'
 import { makeMoney } from '../lib/pricing'
+import { fmtHours } from '../lib/duration'
 import {
   eligibleSeriesParents,
   piecesOf,
@@ -79,7 +80,7 @@ export default function Series({ ctx }: { ctx: ShopContext }) {
 function Tiles({ t, ctx }: { t: ProgramTotals; ctx: ShopContext }) {
   const { money } = makeMoney(ctx.shop.currency, ctx.shop.locale)
   const g = (n: number) => `${Math.round(n)} g`
-  const h = (n: number) => `${Math.round(n * 10) / 10} h`
+  const h = (n: number) => fmtHours(n)
   return (
     <div className="dtiles" style={{ margin: 0 }}>
       <div className="dtile biolum">
@@ -358,7 +359,7 @@ function SeriesCard({
                         {r.facts.materialUnits ? `${Math.round(r.facts.materialUnits)} g` : '—'}
                       </td>
                       <td className="r mono">
-                        {r.facts.machineHours ? `${Math.round(r.facts.machineHours * 10) / 10} h` : '—'}
+                        {r.facts.machineHours ? fmtHours(r.facts.machineHours) : '—'}
                       </td>
                       <td className="r mono">{r.facts.actualCost ? money(r.facts.actualCost) : '—'}</td>
                     </tr>
@@ -579,7 +580,7 @@ function OneSeries({
                   </td>
                   <td className="r mono">{r.facts.materialUnits ? `${Math.round(r.facts.materialUnits)} g` : '—'}</td>
                   <td className="r mono">
-                    {r.facts.machineHours ? `${Math.round(r.facts.machineHours * 10) / 10} h` : '—'}
+                    {r.facts.machineHours ? fmtHours(r.facts.machineHours) : '—'}
                   </td>
                   <td className="r mono">{r.facts.actualCost ? money(r.facts.actualCost) : '—'}</td>
                 </tr>

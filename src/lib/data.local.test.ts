@@ -320,7 +320,7 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(money(q.total)).toContain('€')
     expect(money(q.total)).toContain('1.063,23')
     const design = q.lines.find((l) => l.key === 'design')
-    expect(design?.basis).toContain('6 h')
+    expect(design?.basis).toContain('6h')
     expect(design?.basis).not.toContain('$')
 
     // Editing identity keeps all three, and a blank paper is stored as

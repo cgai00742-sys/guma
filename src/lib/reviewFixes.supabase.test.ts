@@ -163,7 +163,7 @@ describe('hosted correctPrintRun (CG, 14 Oct)', () => {
     expect(n).toBe(1)
     expect(run).toMatchObject({ units_used: 270, hours: 15, outcome: 'cancelled', failure_reason: 'Ghost printing' })
     expect(JSON.parse(part.copy_states)).toEqual(['reprint'])
-    expect(tables.job_events.at(-1)?.body).toMatch(/^Corrected a print — 355 g → 270 g · 16.43 h → 15 h · came off clean → stopped part way\./)
+    expect(tables.job_events.at(-1)?.body).toMatch(/^Corrected a print — 355 g → 270 g · 16h 26m → 15h · came off clean → stopped part way\./)
   })
 })
 

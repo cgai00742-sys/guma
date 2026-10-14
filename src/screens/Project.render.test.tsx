@@ -729,7 +729,7 @@ describe('when printing has to start', () => {
     await renderProject(jobId, ctx)
 
     await screen.findByText(/^Start printing by /)
-    expect(screen.getByText(/21 machine hours still to print/)).toBeDefined()
+    expect(screen.getByText(/21h of machine time still to print/)).toBeDefined()
     // The assumptions are printed, not hidden behind the number.
     expect(screen.getByText(/12 machine hours a day/)).toBeDefined()
   })

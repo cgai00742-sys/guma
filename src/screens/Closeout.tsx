@@ -37,6 +37,7 @@ import {
 } from '../lib/data'
 import { makeMoney } from '../lib/pricing'
 import { formatDate, todayISO } from '../lib/dates'
+import { fmtHours } from '../lib/duration'
 import { osLocale, paperFor } from '../lib/locale'
 
 const INK = '#16222E'
@@ -232,7 +233,7 @@ export function CloseoutDocument({
 
       <Block title="What it took">
         <Grid>
-          <Fact label="Machine time" value={`${a.machineHours || 0} h`} sub={`${a.runs} run${a.runs === 1 ? '' : 's'}`} />
+          <Fact label="Machine time" value={fmtHours(a.machineHours || 0)} sub={`${a.runs} run${a.runs === 1 ? '' : 's'}`} />
           <Fact
             label="Material"
             // The unit comes from the runs that actually happened, not from
@@ -246,7 +247,7 @@ export function CloseoutDocument({
           />
           <Fact
             label="Hours worked"
-            value={loggedHours ? `${loggedHours} h` : '—'}
+            value={loggedHours ? fmtHours(loggedHours) : '—'}
             sub={
               loggedHours
                 ? [
@@ -295,19 +296,19 @@ export function CloseoutDocument({
                 const runs = detail.runs.filter((r) => r.sliceImportId === sl.id)
                 const used = runs.reduce((x, r) => x + (r.unitsUsed ?? 0), 0)
                 const hrs = runs.reduce((x, r) => x + (r.hours ?? 0), 0)
-                const est = sl.estMinutes == null ? null : Math.round((sl.estMinutes / 60) * 10) / 10
+                const est = sl.estMinutes == null ? null : fmtHours(sl.estMinutes / 60)
                 return (
                   <tr key={sl.id}>
                     <Td>{sl.fileName}</Td>
                     <Td muted>{sl.printerName ?? sl.printerModel ?? '—'}</Td>
                     <Td align="right" mono>
                       {sl.estGrams != null ? `${Math.round(sl.estGrams)} g` : '—'}
-                      {est != null ? ` · ${est} h` : ''}
+                      {est != null ? ` · ${est}` : ''}
                     </Td>
                     <Td align="right" mono muted={runs.length === 0}>
                       {runs.length === 0
                         ? 'not recorded'
-                        : `${Math.round(used)} g · ${Math.round(hrs * 10) / 10} h`}
+                        : `${Math.round(used)} g · ${fmtHours(hrs)}`}
                     </Td>
                   </tr>
                 )
