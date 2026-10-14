@@ -67,6 +67,7 @@ import {
   skipCopy,
   markPlateFailed,
   markPlatePrinted,
+  correctPrintRun,
   deletePrintRun,
   deleteWorkEntry,
   loadProjectDetail,
@@ -159,7 +160,7 @@ import { buildComparison, compareToQuote, priceProjectQuote, type Comparison } f
 import type { PricedQuote, RateSet } from '../lib/pricing'
 import { sheetVsQuote } from '../lib/sheetVsQuote'
 import { fmtMinutes, parseDuration, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
-import type { SliceImportRow, StockHoldRow } from '../lib/data.types'
+import type { PrintRunRow, SliceImportRow, StockHoldRow } from '../lib/data.types'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
 import { changeCopies, copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
@@ -1999,6 +2000,14 @@ function SliceImport({
   const [printedState, setPrintedNow] = useState(true)
   const printedNow = printing && printedState
   const [printedOn, setPrintedOn] = useState(todayISO)
+  /**
+   * How the print went, when it is recorded at upload (CG, 14 Oct: a 16h 26m
+   * plate stopped at 15 went in as clean, because "Already printed" only
+   * knew clean). Stopped or failed asks where it got to, from the file.
+   */
+  const [howWent, setHowWent] = useState<RunOutcome>('success')
+  const [stop, setStop] = useState<{ hours: number; units: number; note: string } | null>(null)
+  const [stopWhy, setStopWhy] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function pick(file: File | undefined) {
@@ -2037,6 +2046,9 @@ function SliceImport({
     setDragging(false)
     setPrinterId('')
     setMaterialId('')
+    setHowWent('success')
+    setStop(null)
+    setStopWhy('')
     // Without this the same file cannot be picked twice in a row: the input
     // fires change only when the value differs.
     if (fileRef.current) fileRef.current.value = ''
@@ -2076,25 +2088,34 @@ function SliceImport({
         const grams = read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)
         const hours =
           read.totals.estMinutes == null ? 0 : Math.round((read.totals.estMinutes / 60) * 100) / 100
+        const clean = howWent === 'success'
+        const usedG = clean ? grams : Math.round(stop?.units ?? grams)
+        const usedH = clean ? hours : (stop?.hours ?? hours)
+        const why = stopWhy.trim() || (howWent === 'cancelled' ? 'Stopped part way.' : 'The plate failed.')
         const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
           printerId,
           materialId: materialId || null,
-          unitsUsed: materialId ? grams : 0,
-          hours,
-          outcome: 'success',
-          failureReason: null,
-          note: `From ${read.fileName}`,
+          unitsUsed: materialId ? usedG : 0,
+          hours: usedH,
+          outcome: howWent,
+          failureReason: clean ? null : why,
+          note: clean ? `From ${read.fileName}` : (stop?.note ?? `From ${read.fileName}`),
           startedAt: printedOn || todayISO(),
           sliceImportId: res.importId,
         })
         // The plate came off: each part on it gains the copies the plate
-        // holds -- one plate of a part that needs five is one of five.
-        const marked = await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId)
+        // holds -- one plate of a part that needs five is one of five. Or it
+        // did not, and those copies fail with it.
+        const marked = clean
+          ? await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId)
+          : await markPlateFailed(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId, why)
         const machine = ctx.printerRows.find((p) => p.id === printerId)?.name ?? 'the machine'
         recorded =
-          `Recorded as printed on ${machine}: ${hrs(read.totals.estMinutes) ?? '0h'}` +
-          (materialId ? `, ${grams} g off the shelf` : ', no material matched so nothing came off the shelf') +
-          (marked ? `, ${marked} part${marked === 1 ? '' : 's'} marked printed` : '') +
+          `Recorded as ${clean ? 'printed' : howWent === 'cancelled' ? 'stopped part way' : 'failed'} on ${machine}: ${
+            clean ? (hrs(read.totals.estMinutes) ?? '0h') : `${usedH} h`
+          }` +
+          (materialId ? `, ${usedG} g off the shelf` : ', no material matched so nothing came off the shelf') +
+          (marked ? `, ${marked} part${marked === 1 ? '' : 's'} marked ${clean ? 'printed' : 'failed'}` : '') +
           '.'
       }
       const bits: string[] = []
@@ -2309,16 +2330,59 @@ function SliceImport({
                 style={{ width: 150 }}
               />
             )}
+            {printedNow && (
+              <select
+                aria-label="How it went"
+                value={howWent}
+                style={{ width: 'auto' }}
+                onChange={(e) => {
+                  setHowWent(e.target.value as RunOutcome)
+                  setStop(null)
+                }}
+              >
+                <option value="success">Came off clean</option>
+                <option value="cancelled">Stopped part way</option>
+                <option value="failed">Failed</option>
+              </select>
+            )}
           </div>
           )}
-          {printedNow && (
+          {printedNow && howWent !== 'success' && (
+            <>
+              <div className="fld" style={{ marginTop: 8, marginBottom: 0 }}>
+                <label className="lbl" htmlFor="imp-why">
+                  What went wrong
+                </label>
+                <input
+                  id="imp-why"
+                  value={stopWhy}
+                  placeholder="Ghost printing, clog, warped off the plate…"
+                  onChange={(e) => setStopWhy(e.target.value)}
+                />
+              </div>
+              <StoppedPrint
+                ctx={ctx}
+                slice={{
+                  id: null,
+                  fileName: read.fileName,
+                  estMinutes: read.totals.estMinutes,
+                  estGrams: read.totals.estGrams,
+                  progress: read.progress,
+                  keptBytes: null,
+                }}
+                unit={ctx.materials.find((m) => m.id === materialId)?.unit ?? 'g'}
+                onApply={(h, u, note) => setStop({ hours: h, units: u, note })}
+              />
+            </>
+          )}
+          {printedNow && howWent === 'success' && (
             <div className="hint" style={{ marginTop: 4 }}>
               {printerId
                 ? `Writes the run from the file: ${hrs(read.totals.estMinutes) ?? 'no time in the file'} on the machine` +
                   (materialId
                     ? `, ${read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)} g off the shelf, `
                     : ', no material matched — pick one or nothing comes off the shelf, ') +
-                  'plate parts marked printed. If the real print differed, remove the run under “Sliced files” and record it again.'
+                  'plate parts marked printed. If it stopped part way, choose that above; to fix it later, use “Correct this print” on the plate.'
                 : 'Pick the machine it printed on — a print run needs one.'}
             </div>
           )}
@@ -2327,12 +2391,18 @@ function SliceImport({
             <button
               type="button"
               className="btn sm primary"
-              disabled={busy || saving || (printedNow && !printerId)}
+              disabled={busy || saving || (printedNow && !printerId) || (printedNow && howWent !== 'success' && !!read.progress && !stop)}
               onClick={() => void confirm()}
             >
               {printedNow && !printerId
                 ? 'Pick the machine above to record the print'
-                : printedNow ? 'Add to the build sheet and record the print' : `Add ${read.totals.sections} section${read.totals.sections === 1 ? '' : 's'} to the build sheet`}
+                : printedNow && howWent !== 'success' && !!read.progress && !stop
+                  ? 'Say how long it ran, above'
+                  : printedNow
+                    ? howWent === 'success'
+                      ? 'Add to the build sheet and record the print'
+                      : 'Add to the build sheet and record where it stopped'
+                    : `Add ${read.totals.sections} section${read.totals.sections === 1 ? '' : 's'} to the build sheet`}
             </button>
             <button type="button" className="btn sm" disabled={saving} onClick={clear}>
               Discard
@@ -2395,6 +2465,12 @@ function SliceRuns({
   const [markParts, setMarkParts] = useState(true)
   const [removing, setRemoving] = useState<string | null>(null)
   const [rereadMsg, setRereadMsg] = useState<{ id: string; text: string } | null>(null)
+  /**
+   * The recorded print being corrected, when the form is open for that
+   * (CG, 14 Oct: a plate recorded as clean had stopped at 15 of 16h 26m,
+   * and the only way to fix it was to remove it and record it again).
+   */
+  const [correcting, setCorrecting] = useState<PrintRunRow | null>(null)
 
   /**
    * Write the kept file back out.
@@ -2538,8 +2614,27 @@ function SliceRuns({
   const hrs = (m: number | null) =>
     m == null ? null : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`
 
+  function openCorrect(s: (typeof detail.slices)[number], run: PrintRunRow, outcome?: RunOutcome) {
+    setError(null)
+    setOpenId(s.id)
+    setCorrecting(run)
+    setMarkParts(true)
+    setForm({
+      printerId: run.printerId ?? '',
+      materialId: run.materialId,
+      unitsUsed: run.unitsUsed ?? 0,
+      hours: run.hours ?? 0,
+      outcome: outcome ?? run.outcome ?? 'success',
+      failureReason: run.failureReason,
+      note: run.note,
+      startedAt: run.startedAt,
+      sliceImportId: s.id,
+    })
+  }
+
   function open(s: (typeof detail.slices)[number]) {
     setError(null)
+    setCorrecting(null)
     setOpenId(s.id)
     setForm({
       // A run needs a machine. The import may not have matched one, in
@@ -2574,6 +2669,26 @@ function SliceRuns({
     setSaving(true)
     setError(null)
     try {
+      if (correcting) {
+        await correctPrintRun(
+          ctx.shop.id,
+          correcting.id,
+          ctx.profile.id,
+          {
+            unitsUsed: form.unitsUsed,
+            hours: form.hours,
+            outcome: form.outcome,
+            failureReason: form.failureReason,
+            note: form.note,
+          },
+          markParts && form.outcome !== 'success',
+        )
+        setCorrecting(null)
+        setOpenId(null)
+        setForm(null)
+        await onChanged()
+        return
+      }
       const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, form)
       // The plate came off, so every object on it came off -- or it failed,
       // and every copy it was printing failed with it, so the reprint
@@ -2699,6 +2814,17 @@ function SliceRuns({
                       {runs.length ? 'Record another run' : 'This print happened'}
                     </button>
                   )}
+                  {runs.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn sm"
+                      disabled={busy || saving}
+                      title="Fix what was recorded — it stopped part way, the grams were off — without removing it."
+                      onClick={() => openCorrect(s, runs[0])}
+                    >
+                      Correct this print
+                    </button>
+                  )}
                   {/* Removing an import is allowed and deliberately small.
                       A file imported onto the wrong project is the common
                       case, and the runs recorded from it STAY -- the print
@@ -2785,9 +2911,44 @@ function SliceRuns({
                 in this project&rsquo;s cost
               </div>
             )}
+            {/* Recorded as clean, but a copy this plate prints has been
+                failed since -- the record and the build sheet disagree.
+                Say so where the fix is (CG, 14 Oct). */}
+            {(() => {
+              const latest = runs[0]
+              if (!latest || latest.outcome !== 'success' || openId === s.id) return null
+              const onPlate = new Set(g.ids.flatMap((id) => detail.slices.find((x) => x.id === id)?.sections ?? []).map((sec) => sec.partId))
+              const failedHere = detail.parts.filter((p) => onPlate.has(p.id) && statesOf(p).includes('reprint'))
+              if (!failedHere.length) return null
+              return (
+                <div className="attn warn" role="note" data-testid={`plate-disagrees-${s.id}`} style={{ marginTop: 6 }}>
+                  <span>
+                    Recorded as coming off clean, but {failedHere.map((p) => p.label).join(', ')}{' '}
+                    {failedHere.length === 1 ? 'has' : 'have'} a copy marked failed since. If this print stopped
+                    part way, correct it — Guma reads the file for how far it got and what it really used.
+                  </span>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={busy || saving}
+                    onClick={() => openCorrect(s, latest, 'cancelled')}
+                  >
+                    Correct this print
+                  </button>
+                </div>
+              )
+            })()}
 
             {openId === s.id && form && (
               <div className="gatebox" style={{ marginTop: 8 }}>
+                {correcting && (
+                  <div className="hint" style={{ marginTop: 0, marginBottom: 8 }}>
+                    <b>Correcting the print recorded{correcting.startedAt ? ` ${correcting.startedAt.slice(0, 10)}` : ''}</b>{' '}
+                    — {Math.round(correcting.unitsUsed ?? 0)} {unit} · {correcting.hours ?? 0} h ·{' '}
+                    {correcting.outcome === 'success' ? 'came off clean' : correcting.outcome === 'failed' ? 'failed' : 'stopped part way'}.
+                    The machine and spool stay; the shelf moves by the difference.
+                  </div>
+                )}
                 <div className="grid3">
                   <div className="fld">
                     <label className="lbl" htmlFor={`sr-printer-${s.id}`}>
@@ -2795,6 +2956,7 @@ function SliceRuns({
                     </label>
                     <select
                       id={`sr-printer-${s.id}`}
+                      disabled={!!correcting}
                       value={form.printerId}
                       onChange={(e) => setForm((f) => f && { ...f, printerId: e.target.value })}
                     >
@@ -2812,6 +2974,7 @@ function SliceRuns({
                     </label>
                     <select
                       id={`sr-material-${s.id}`}
+                      disabled={!!correcting}
                       value={form.materialId ?? ''}
                       onChange={(e) =>
                         setForm((f) => f && { ...f, materialId: e.target.value || null })
@@ -2831,6 +2994,7 @@ function SliceRuns({
                     </label>
                     <input
                       id={`sr-when-${s.id}`}
+                      disabled={!!correcting}
                       type="date"
                       value={form.startedAt ?? ''}
                       onChange={(e) =>
@@ -2912,7 +3076,23 @@ function SliceRuns({
                     }
                   />
                 )}
-                {form.outcome !== 'success' && pendingPartsOf(s.id).length > 0 && (
+                {correcting && form.outcome !== 'success' && runMarks(detail.parts, correcting.id).length > 0 && (
+                  <label
+                    className="hint"
+                    style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={markParts}
+                      onChange={(e) => setMarkParts(e.target.checked)}
+                    />
+                    Mark the copies this print marked printed as failed —{' '}
+                    {runMarks(detail.parts, correcting.id)
+                      .map((m) => `${m.label} ${m.copies.map((c) => `#${c}`).join(', ')}`)
+                      .join('; ')}
+                  </label>
+                )}
+                {!correcting && form.outcome !== 'success' && pendingPartsOf(s.id).length > 0 && (
                   <label
                     className="hint"
                     style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}
@@ -2926,7 +3106,7 @@ function SliceRuns({
                     each gets New file / Skip / Not printed on the build sheet
                   </label>
                 )}
-                {form.outcome === 'success' && pendingPartsOf(s.id).length > 0 && (
+                {!correcting && form.outcome === 'success' && pendingPartsOf(s.id).length > 0 && (
                   <label
                     className="hint"
                     style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}
@@ -2948,7 +3128,7 @@ function SliceRuns({
                     disabled={saving || !form.printerId}
                     onClick={() => void record()}
                   >
-                    Record it
+                    {correcting ? 'Save the correction' : 'Record it'}
                   </button>
                   <button
                     type="button"
@@ -2957,13 +3137,15 @@ function SliceRuns({
                     onClick={() => {
                       setOpenId(null)
                       setForm(null)
+                      setCorrecting(null)
                     }}
                   >
                     Cancel
                   </button>
                   <span className="hint" style={{ marginTop: 0 }}>
-                    These are the file&rsquo;s numbers — change them to what the machine actually
-                    used if you know better. Recording takes the material off the shelf.
+                    {correcting
+                      ? 'Saving changes the record in place: the spool gets back, or gives up, the difference.'
+                      : 'These are the file’s numbers — change them to what the machine actually used if you know better. Recording takes the material off the shelf.'}
                   </span>
                 </div>
               </div>
@@ -6697,6 +6879,12 @@ function runMarks(parts: PartRow[], runId: string): { label: string; copies: num
  * the file and 108 g by a straight line. Everything stays editable -- a
  * weighed figure beats both.
  */
+/** What StoppedPrint needs of a plate -- a saved import, or a file being
+ *  imported right now (id null: nothing to read back or save to). */
+type StopSource = Pick<SliceImportRow, 'fileName' | 'estMinutes' | 'estGrams' | 'progress' | 'keptBytes'> & {
+  id: string | null
+}
+
 function StoppedPrint({
   ctx,
   slice,
@@ -6704,7 +6892,7 @@ function StoppedPrint({
   onApply,
 }: {
   ctx: ShopContext
-  slice: SliceImportRow
+  slice: StopSource
   unit: string
   onApply: (hours: number, units: number, note: string) => void
 }) {
@@ -6719,6 +6907,7 @@ function StoppedPrint({
     setReading(true)
     setReadErr(null)
     try {
+      if (!slice.id) throw new Error('That file was not kept.')
       const row = await sliceFileContent(ctx.shop.id, slice.id)
       if (!row) throw new Error('That file was not kept.')
       const bytes = await unpackFile(row.content)
@@ -6760,7 +6949,12 @@ function StoppedPrint({
   return (
     <div className="stoppedprint" role="group" aria-label="Where the print stopped">
       {!progress ? (
-        slice.keptBytes != null ? (
+        slice.id == null ? (
+          <div className="hint" style={{ margin: 0 }}>
+            This file has no progress marks to read. Record it, then use “Correct this print” on the plate
+            to put in the grams and hours by hand — a weighed figure if you have one.
+          </div>
+        ) : slice.keptBytes != null ? (
           <div className="btnrow" style={{ margin: 0, alignItems: 'center' }}>
             <button type="button" className="btn sm" disabled={reading} onClick={() => void readMoves()}>
               {reading ? 'Reading the moves…' : 'Read the file to see where it stopped'}

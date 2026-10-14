@@ -998,6 +998,36 @@ export function validateRun(input: PrintRunInput): { hours: number; unitsUsed: n
   return { hours, unitsUsed }
 }
 
+/** A recorded print, corrected (CG, 14 Oct). Machine and spool stay. */
+export interface RunCorrection {
+  unitsUsed: number
+  hours: number
+  outcome: RunOutcome
+  failureReason: string | null
+  note: string | null
+}
+
+const OUTCOME_WORDS: Record<RunOutcome, string> = {
+  success: 'came off clean',
+  failed: 'failed',
+  cancelled: 'stopped part way',
+}
+
+/** "Corrected a print — 355 g → 270 g · 16.43 h → 15 h · came off clean → stopped part way." */
+export function describeRunCorrection(
+  before: { unitsUsed: number | null; hours: number | null; outcome: RunOutcome | null },
+  after: RunCorrection,
+  unit = 'g',
+): string {
+  const bits: string[] = []
+  const r = (n: number) => Math.round(n * 100) / 100
+  if (r(before.unitsUsed ?? 0) !== r(after.unitsUsed)) bits.push(`${r(before.unitsUsed ?? 0)} ${unit} → ${r(after.unitsUsed)} ${unit}`)
+  if (r(before.hours ?? 0) !== r(after.hours)) bits.push(`${r(before.hours ?? 0)} h → ${r(after.hours)} h`)
+  if ((before.outcome ?? 'success') !== after.outcome)
+    bits.push(`${OUTCOME_WORDS[before.outcome ?? 'success']} → ${OUTCOME_WORDS[after.outcome]}`)
+  return `Corrected a print${bits.length ? ` — ${bits.join(' · ')}` : ''}.${after.failureReason ? ` Why: ${after.failureReason}` : ''}`
+}
+
 export function validateHours(raw: number): number {
   const hours = Number(raw)
   if (!Number.isFinite(hours) || hours <= 0) throw new Error('Log more than zero hours.')

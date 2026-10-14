@@ -230,6 +230,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0037_copies_done.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 38,
+      description: "a recorded print can be corrected, and the shelf follows",
+      sql: include_str!("../migrations/0038_run_correction.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

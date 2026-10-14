@@ -32,6 +32,7 @@ import {
   NeedsSetup,
   asClientKind,
   validateRun,
+  describeRunCorrection,
   validateHours,
   runEventBody,
   validateRevision,
@@ -92,6 +93,7 @@ import type {
   PartInput,
   PartCopiesChange,
   PartCopiesResult,
+  RunCorrection,
   QuoteBuildInput,
   QuoteBuildRow,
   SliceImportInput,
@@ -2540,6 +2542,61 @@ export async function recordPrintRun(
     [jobId, actorId, runEventBody(input)],
   )
   return id
+}
+
+/**
+ * Correct a recorded print in place (CG, 14 Oct: a plate recorded as clean
+ * had stopped at 15 of 16h 26m). The machine and spool stay; grams, hours,
+ * outcome and reason change, and the shelf moves by the difference (0038's
+ * trigger). Turning a clean print into a failed or stopped one can also
+ * fail the copies it marked printed -- the ones still printed -- with the
+ * reason, so the reprint workflow starts. Returns how many copies failed.
+ */
+export async function correctPrintRun(
+  shopId: string,
+  runId: string,
+  actorId: string,
+  input: RunCorrection,
+  failCopies = false,
+): Promise<number> {
+  const d = await db()
+  const [run] = await d.select<
+    { job_id: string; units_used: number | null; hours: number | null; outcome: RunOutcome | null; material_id: string | null; printer_id: string | null; started_at: string | null }[]
+  >('select job_id, units_used, hours, outcome, material_id, printer_id, started_at from print_runs where id = ? and shop_id = ?', [runId, shopId])
+  if (!run) throw new Error('That print is no longer recorded.')
+  const { hours, unitsUsed } = validateRun({ ...input, printerId: run.printer_id ?? '', materialId: run.material_id, startedAt: run.started_at })
+  const why = input.failureReason?.trim() || null
+  await d.execute(
+    `update print_runs set units_used = ?, hours = ?, outcome = ?, failure_reason = ?, note = ? where id = ? and shop_id = ?`,
+    [unitsUsed, hours, input.outcome, input.outcome === 'success' ? null : why, input.note?.trim() || null, runId, shopId],
+  )
+  const [mat] = run.material_id
+    ? await d.select<{ unit: string }[]>('select unit from materials where id = ?', [run.material_id])
+    : []
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'run', ?)`, [
+    run.job_id,
+    actorId,
+    describeRunCorrection(
+      { unitsUsed: run.units_used == null ? null : Number(run.units_used), hours: run.hours == null ? null : Number(run.hours), outcome: run.outcome },
+      { ...input, unitsUsed, hours, failureReason: why },
+      mat?.unit ?? 'g',
+    ),
+  ])
+  let failed = 0
+  if (failCopies && input.outcome !== 'success') {
+    const evs = await d.select<{ id: number; part_id: string; to_status: PartStatus; copies: string | null }[]>(
+      `select id, part_id, to_status, copies from part_events
+        where run_id = ? and kind = 'status' and to_status = 'printed' and copies is not null order by id`,
+      [runId],
+    )
+    for (const ev of evs) {
+      const still = await copiesStillFrom(ev)
+      if (!still.length) continue
+      await setCopyStates(shopId, ev.part_id, actorId, still, 'reprint', why || 'The print stopped part way.', runId)
+      failed += still.length
+    }
+  }
+  return failed
 }
 
 /** Delete a run. The trigger puts its material back on the shelf. Same

@@ -1208,3 +1208,92 @@ describe('a plate imported before Guma read the moves (CG, 13 Oct)', () => {
     expect(currentDb.sqlite.prepare("select progress is not null as kept from slice_imports where id = 'old'").get()).toEqual({ kept: 1 })
   })
 })
+
+describe('a print recorded as clean that had stopped part way (CG, 14 Oct)', () => {
+  const MAUI_PROGRESS = [
+    { min: 0, pct: 0, grams: 0, z: 0 },
+    { min: 300, pct: 30, grams: 189.92, z: 13.773 },
+    { min: 540, pct: 54, grams: 270, z: 29.5 },
+    { min: 900, pct: 91, grams: 334.16, z: 39.615 },
+    { min: 985, pct: 100, grams: 354.92, z: 40.315 },
+  ]
+
+  it('the plate says it disagrees with the build sheet, and the print is corrected in place', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const d = data as any
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) await d.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    const imp = await d.importSlice(ctx.shop.id, jobId, ctx.profile.id, {
+      fileName: 'Sliced_Maui_16h26m.bgcode', kind: 'gcode', printerModel: 'Prusa XL', printerId: ctx.printers[0].id,
+      materialText: 'PLA', materialId: ctx.materials[0].id, estMinutes: 986, estGrams: 354.92, notes: [],
+      sections: [{ label: 'Maui BATHY 3x', qty: 1, estMinutes: 986, estGrams: 354.92, material: 'PLA' }],
+      progress: MAUI_PROGRESS,
+    })
+    // How CG's plate stands: recorded clean at upload, then the copy failed by hand.
+    const run = await d.recordPrintRun(ctx.shop.id, jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id, materialId: ctx.materials[0].id, unitsUsed: 355, hours: 16.43, outcome: 'success',
+      failureReason: null, note: null, startedAt: '2026-10-14', sliceImportId: imp.importId,
+    })
+    await d.markPlatePrinted(ctx.shop.id, jobId, ctx.profile.id, imp.importId, run)
+    const partId = (currentDb.sqlite.prepare('select id from job_parts').get() as { id: string }).id
+    await d.setCopyStates(ctx.shop.id, partId, ctx.profile.id, [0], 'reprint', 'Started ghost printing')
+
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    const nudge = await screen.findByTestId(`plate-disagrees-${imp.importId}`)
+    expect(nudge.textContent).toMatch(/Recorded as coming off clean, but Maui BATHY 3x has a copy marked failed since/)
+    await user.click(within(nudge).getByRole('button', { name: /correct this print/i }))
+
+    expect(await screen.findByText(/Correcting the print recorded 2026-10-14/)).toBeDefined()
+    expect((screen.getByLabelText(/how it went/i) as HTMLSelectElement).value).toBe('cancelled')
+    await user.type(screen.getByLabelText(/machine ran for/i), '15h')
+    await user.type(screen.getByLabelText(/filament stopped at/i), '9h')
+    const why = screen.getByLabelText(/what went wrong/i)
+    await user.clear(why)
+    await user.type(why, 'Ghost printing — Nextruder motor')
+    await user.click(screen.getByRole('button', { name: /save the correction/i }))
+
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select units_used, hours, outcome, failure_reason from print_runs').get()).toEqual({
+        units_used: 270,
+        hours: 15,
+        outcome: 'cancelled',
+        failure_reason: 'Ghost printing — Nextruder motor',
+      }),
+    )
+    // 85 g back on the shelf, and still only one run.
+    expect(currentDb.sqlite.prepare('select on_hand from materials').get()).toEqual({ on_hand: 730 })
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 1 })
+    await waitFor(() => expect(screen.queryByTestId(`plate-disagrees-${imp.importId}`)).toBeNull())
+  })
+
+  it('at upload, "Stopped part way" asks where it got to and records that', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    const gcode = [
+      'M83', '; printing object Lid id:0 copy 0', 'M73 P0 R100', 'G1 Z0.2', 'G1 X1 Y1 E5000', 'M73 P40 R60',
+      'G1 Z5', 'G1 X2 Y2 E1000', '; stop printing object Lid id:0 copy 0', 'M73 P100 R0',
+      '; total filament used [g] = 72.00', '; estimated printing time (normal mode) = 1h 40m 0s', '; filament_type = PLA',
+    ].join('\n')
+    await user.upload(screen.getByLabelText(/import a sliced file/i), new File([gcode], 'lid.gcode', { type: 'text/plain' }))
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'cancelled')
+    await user.selectOptions(document.getElementById('slice-material') as HTMLSelectElement, ctx.materials[0].id)
+    const pickMachine = document.getElementById('slice-printer') as HTMLSelectElement
+    if (!pickMachine.value) await user.selectOptions(pickMachine, ctx.printers[0].id)
+    expect((screen.getByRole('button', { name: /say how long it ran/i }) as HTMLButtonElement).disabled).toBe(true)
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Clog')
+    await user.type(screen.getByLabelText(/machine ran for/i), '40m')
+    await user.click(screen.getByRole('button', { name: /record where it stopped/i }))
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select units_used, hours, outcome, failure_reason from print_runs').get()).toEqual({
+        units_used: 60,
+        hours: 0.67,
+        outcome: 'cancelled',
+        failure_reason: 'Clog',
+      }),
+    )
+    expect(currentDb.sqlite.prepare("select status from job_parts where label = 'Lid'").get()).toEqual({ status: 'reprint' })
+  })
+})

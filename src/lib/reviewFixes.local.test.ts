@@ -346,6 +346,66 @@ describe('the build sheet, the plates and What it took, linked (CG, 13 Oct)', ()
   })
 })
 
+describe('correcting a print recorded as clean (CG, 14 Oct)', () => {
+  const plate = {
+    fileName: 'Sliced_Maui_BATHY_3x_16h26m.bgcode',
+    kind: 'gcode' as const,
+    printerModel: 'Prusa XL',
+    printerId: 'printer-1',
+    materialText: 'PLA',
+    materialId: 'material-1',
+    estMinutes: 986,
+    estGrams: 355,
+    notes: [],
+    sections: [{ label: 'Maui BATHY 3x', qty: 1, estMinutes: 986, estGrams: 355, material: 'PLA' }],
+  }
+  const onHand = () => (currentDb.sqlite.prepare("select on_hand from materials where id = 'material-1'").get() as any).on_hand
+  const state = () => JSON.parse((currentDb.sqlite.prepare('select copy_states from job_parts').get() as any).copy_states)
+
+  it('moves the spool by the difference, says what changed, and fails the copy it marked printed', async () => {
+    const L = await import('./data.local')
+    const imp = await L.importSlice(SHOP, JOB, ACTOR, plate)
+    // Uploaded with "Already printed": the whole plate, clean.
+    const run = await L.recordPrintRun(SHOP, JOB, ACTOR, {
+      printerId: 'printer-1', materialId: 'material-1', unitsUsed: 355, hours: 16.43, outcome: 'success',
+      failureReason: null, note: null, startedAt: '2026-10-14', sliceImportId: imp.importId,
+    })
+    await L.markPlatePrinted(SHOP, JOB, ACTOR, imp.importId, run)
+    expect(onHand()).toBe(645)
+    expect(state()).toEqual(['printed'])
+
+    // It had stopped at 15 h; filament quit at 9 h -- 270 g by the file.
+    const failed = await L.correctPrintRun(
+      SHOP, run, ACTOR,
+      { unitsUsed: 270, hours: 15, outcome: 'cancelled', failureReason: 'Ghost printing', note: 'Stopped at 15h of 16h 26m.' },
+      true,
+    )
+    expect(failed).toBe(1)
+    expect(onHand()).toBe(730) // 85 g back on the shelf
+    expect(state()).toEqual(['reprint'])
+    expect(currentDb.sqlite.prepare('select units_used, hours, outcome, failure_reason from print_runs').get()).toEqual({
+      units_used: 270, hours: 15, outcome: 'cancelled', failure_reason: 'Ghost printing',
+    })
+    const ev = currentDb.sqlite.prepare("select body from job_events where kind = 'run' order by rowid desc").get() as any
+    expect(ev.body).toBe('Corrected a print — 355 g → 270 g · 16.43 h → 15 h · came off clean → stopped part way. Why: Ghost printing')
+  })
+
+  it('leaves copies already failed by hand alone, and moves no stock when the grams did not change', async () => {
+    const L = await import('./data.local')
+    const imp = await L.importSlice(SHOP, JOB, ACTOR, plate)
+    const run = await L.recordPrintRun(SHOP, JOB, ACTOR, {
+      printerId: 'printer-1', materialId: 'material-1', unitsUsed: 355, hours: 16.43, outcome: 'success',
+      failureReason: null, note: null, startedAt: null, sliceImportId: imp.importId,
+    })
+    await L.markPlatePrinted(SHOP, JOB, ACTOR, imp.importId, run)
+    const partId = (currentDb.sqlite.prepare('select id from job_parts').get() as any).id
+    await L.setCopyStates(SHOP, partId, ACTOR, [0], 'reprint', 'Started ghost printing')
+    const failed = await L.correctPrintRun(SHOP, run, ACTOR, { unitsUsed: 355, hours: 15, outcome: 'cancelled', failureReason: 'Ghost printing', note: null }, true)
+    expect(failed).toBe(0)
+    expect(onHand()).toBe(645)
+  })
+})
+
 describe('the quote that counts, beside the newest version', () => {
   beforeEach(() => {
     currentDb.sqlite.exec(`

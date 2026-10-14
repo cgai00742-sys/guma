@@ -151,6 +151,22 @@ describe('hosted plate and print links (CG, 13 Oct)', () => {
   })
 })
 
+describe('hosted correctPrintRun (CG, 14 Oct)', () => {
+  it('updates the run, records what changed, and fails the copy it printed', async () => {
+    const part = { id: 'p1', shop_id: 's', job_id: 'j', qty: 1, status: 'printed', printed_n: 1, passed_n: 0, reprint_n: 0, copy_states: '["printed"]' }
+    tables.job_parts = [part]
+    const run = { id: 'r1', shop_id: 's', job_id: 'j', units_used: 355, hours: 16.43, outcome: 'success', material_id: 'm', printer_id: 'pr', started_at: null, materials: { unit: 'g' } }
+    tables.print_runs = [run]
+    tables.part_events = [{ id: 1, part_id: 'p1', run_id: 'r1', kind: 'status', to_status: 'printed', copies: '1' }]
+    const S = await import('./data.supabase')
+    const n = await S.correctPrintRun('s', 'r1', 'a', { unitsUsed: 270, hours: 15, outcome: 'cancelled', failureReason: 'Ghost printing', note: null }, true)
+    expect(n).toBe(1)
+    expect(run).toMatchObject({ units_used: 270, hours: 15, outcome: 'cancelled', failure_reason: 'Ghost printing' })
+    expect(JSON.parse(part.copy_states)).toEqual(['reprint'])
+    expect(tables.job_events.at(-1)?.body).toMatch(/^Corrected a print — 355 g → 270 g · 16.43 h → 15 h · came off clean → stopped part way\./)
+  })
+})
+
 describe('hosted facts read the quote that counts', () => {
   const quotes = [
     { id: 'q1', version: 1, status: 'accepted', total: 1000 },

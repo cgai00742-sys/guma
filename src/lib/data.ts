@@ -74,6 +74,7 @@ import type {
   PartInput,
   PartCopiesChange,
   PartCopiesResult,
+  RunCorrection,
   QuoteBuildRow,
   SliceImportInput,
   SliceImportResult,
@@ -166,6 +167,7 @@ export type {
   PartInput,
   PartCopiesChange,
   PartCopiesResult,
+  RunCorrection,
   PartStatus,
   QuoteInputsRow,
   PrintRunRow,
@@ -438,6 +440,17 @@ export async function recordPrintRun(
   input: PrintRunInput,
 ): Promise<string> {
   return (await backend()).recordPrintRun(shopId, jobId, actorId, input)
+}
+
+/** Correct a recorded print in place; optionally fail the copies it marked printed. */
+export async function correctPrintRun(
+  shopId: string,
+  runId: string,
+  actorId: string,
+  input: RunCorrection,
+  failCopies = false,
+): Promise<number> {
+  return (await backend()).correctPrintRun(shopId, runId, actorId, input, failCopies)
 }
 
 /** Remove a recorded print. With undoCopies, the copies it marked printed

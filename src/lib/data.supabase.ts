@@ -19,7 +19,7 @@ import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
 import { describeHolds, quoteBases } from './data.types'
-import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
+import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, describeRunCorrection, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
   toRateSet,
@@ -131,6 +131,8 @@ import type {
   PartInput,
   PartCopiesChange,
   PartCopiesResult,
+  RunCorrection,
+  RunOutcome,
   PartStatus,
   QuoteStatus,
   SliceImportInput,
@@ -1937,6 +1939,77 @@ export async function recordPrintRun(
   })
   if (evErr) throw evErr
   return data.id as string
+}
+
+/** See data.local.ts's correctPrintRun. */
+export async function correctPrintRun(
+  shopId: string,
+  runId: string,
+  actorId: string,
+  input: RunCorrection,
+  failCopies = false,
+): Promise<number> {
+  const { data: run, error } = await supabase
+    .from('print_runs')
+    .select('job_id, units_used, hours, outcome, material_id, printer_id, started_at, materials ( unit )')
+    .eq('id', runId)
+    .eq('shop_id', shopId)
+    .maybeSingle()
+  if (error) throw error
+  if (!run) throw new Error('That print is no longer recorded.')
+  // What it said before, read now: the description compares against it.
+  const before = {
+    unitsUsed: run.units_used == null ? null : Number(run.units_used),
+    hours: run.hours == null ? null : Number(run.hours),
+    outcome: run.outcome as RunOutcome | null,
+  }
+  const unit = ((run.materials as { unit?: string } | null)?.unit as string | undefined) ?? 'g'
+  const { hours, unitsUsed } = validateRun({
+    ...input,
+    printerId: (run.printer_id as string | null) ?? '',
+    materialId: run.material_id as string | null,
+    startedAt: run.started_at as string | null,
+  })
+  const why = input.failureReason?.trim() || null
+  const { error: uErr } = await supabase
+    .from('print_runs')
+    .update({
+      units_used: unitsUsed,
+      hours,
+      outcome: input.outcome,
+      failure_reason: input.outcome === 'success' ? null : why,
+      note: input.note?.trim() || null,
+    })
+    .eq('id', runId)
+    .eq('shop_id', shopId)
+  if (uErr) throw uErr
+  const { error: jErr } = await supabase.from('job_events').insert({
+    job_id: run.job_id,
+    actor_id: actorId,
+    kind: 'run',
+    body: describeRunCorrection(before, { ...input, unitsUsed, hours, failureReason: why }, unit),
+  })
+  if (jErr) throw jErr
+  let failed = 0
+  if (failCopies && input.outcome !== 'success') {
+    const { data: evs, error: eErr } = await supabase
+      .from('part_events')
+      .select('id, part_id, to_status, copies')
+      .eq('run_id', runId)
+      .eq('kind', 'status')
+      .eq('to_status', 'printed')
+      .not('copies', 'is', null)
+      .order('id')
+    if (eErr) throw eErr
+    for (const ev of (evs ?? []) as { id: number; part_id: string; to_status: PartStatus; copies: string | null }[]) {
+      const now = await readCopies(shopId, ev.part_id)
+      const still = parseCopyList(ev.copies).map((c) => c - 1).filter((i) => now.states[i] === 'printed')
+      if (!still.length) continue
+      await setCopyStates(shopId, ev.part_id, actorId, still, 'reprint', why || 'The print stopped part way.', runId)
+      failed += still.length
+    }
+  }
+  return failed
 }
 
 /** See data.local.ts's deletePrintRun. */
