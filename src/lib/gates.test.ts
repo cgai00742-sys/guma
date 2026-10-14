@@ -77,7 +77,7 @@ function facts(over: Partial<ProjectFacts> = {}): ProjectFacts {
     materialUnits: 0,
     failedUnits: 0,
     parts: 0,
-    partsPrinted: 0,
+    copies: 0, copiesDone: 0, partsPrinted: 0,
     partsPassed: 0,
     partsReprint: 0,
     reprintsEver: 0,
@@ -325,19 +325,23 @@ describe('the shop’s own work climbs a ladder of its own', () => {
   it('asks two questions, both about money that otherwise disappears', () => {
     // Every extra item here is a reason not to log the next ten-minute
     // experiment, and those experiments are where the month goes.
-    expect(gatesFor('design', 'inhouse')).toHaveLength(1)
+    // Plus one that never asks for a tick: the build sheet's copies are
+    // printed (CG, 13 Oct) -- cleared by the sheet, or by having none.
+    expect(gatesFor('design', 'inhouse')).toHaveLength(2)
+    expect(gatesFor('design', 'inhouse').every((g) => !!g.auto)).toBe(true)
     expect(gatesFor('review', 'inhouse')).toHaveLength(1)
     expect(gatesFor('delivered', 'inhouse')).toHaveLength(0)
   })
 
   it('clears the first gate off the runs and hours, with no ticking', () => {
+    const spend = (g: ReturnType<typeof gateStatus>) => g.items.find((i) => i.key === 'spend')!
     const blank = gateStatus('design', {}, inHouse({ hasActuals: false }))
-    expect(blank.items[0].checked).toBe(false)
-    expect(blank.items[0].automatic).toBe(true)
+    expect(spend(blank).checked).toBe(false)
+    expect(spend(blank).automatic).toBe(true)
     expect(blank.blocked).toBe(true)
 
     const logged = gateStatus('design', {}, inHouse({ hasActuals: true }))
-    expect(logged.items[0].checked).toBe(true)
+    expect(spend(logged).checked).toBe(true)
     expect(logged.blocked).toBe(false)
     expect(logged.next).toBe('review')
   })
@@ -347,8 +351,19 @@ describe('the shop’s own work climbs a ladder of its own', () => {
     // client gate on an in-house job by passing the wrong argument.
     const client = gateStatus('design', {}, facts())
     const mine = gateStatus('design', {}, inHouse())
-    expect(client.items.length).toBeGreaterThan(mine.items.length)
-    expect(mine.items.map((i) => i.key)).toEqual(['spend'])
+    expect(client.items.map((i) => i.key)).not.toEqual(mine.items.map((i) => i.key))
+    expect(mine.items.map((i) => i.key)).toEqual(['printed', 'spend'])
+  })
+
+  it('will not reach Made with copies still to print, or failed and waiting (CG, 13 Oct)', () => {
+    const printed = (over: Partial<ProjectFacts>) =>
+      gateStatus('design', {}, inHouse({ hasActuals: true, ...over })).items.find((i) => i.key === 'printed')!
+    expect(printed({ parts: 0 }).checked).toBe(true) // no build sheet, nothing to print
+    expect(printed({ parts: 1, copies: 1, copiesDone: 0 }).checked).toBe(false)
+    expect(printed({ parts: 2, copies: 5, copiesDone: 4 }).checked).toBe(false)
+    expect(printed({ parts: 2, copies: 5, copiesDone: 5, partsReprint: 1 }).checked).toBe(false)
+    expect(printed({ parts: 2, copies: 5, copiesDone: 5 }).checked).toBe(true)
+    expect(gateStatus('design', {}, inHouse({ hasActuals: true, parts: 1, copies: 1, copiesDone: 0 })).blocked).toBe(true)
   })
 
   it('ends at Done with nothing left to tick', () => {

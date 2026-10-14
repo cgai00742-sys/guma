@@ -548,6 +548,10 @@ export interface ProjectFacts {
    *  one, which is what lets the QC gate fall back to a manual tick rather
    *  than becoming permanently unclearable. */
   parts: number
+  /** Copies on the build sheet, and how many of them are off the machine
+   *  (printed or passed) -- "is the printing done" (0037). */
+  copies: number
+  copiesDone: number
   partsPrinted: number
   partsPassed: number
   partsReprint: number

@@ -163,7 +163,7 @@ import type { SliceImportRow, StockHoldRow } from '../lib/data.types'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
 import { changeCopies, copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
-import { splitJobCost, unitCostFrom } from '../lib/selling'
+import { splitJobCost, unitCostFrom, unshelvedProduction } from '../lib/selling'
 
 const DELIVERY_METHODS = [
   'Collected in person',
@@ -532,29 +532,37 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         onToggle={(e) => fold.set('brief', e.currentTarget.open)}
       >
         <summary className="sechead">
-          <h4>What they want</h4>
+          {/* The shop's own work has no "they" -- it starts from an idea
+              (CG, 13 Oct: "this is an In-House build and the person
+              creating the project is coming from their own ideas"). */}
+          <h4>{mine ? 'The idea' : 'What they want'}</h4>
           <span className={`secstat ${(detail.brief ?? '').trim().length >= 20 ? 'ok' : 'warn'}`}>
-            {(detail.brief ?? '').trim() ? 'written down' : 'nothing written down'}
+            {(detail.brief ?? '').trim() ? 'written down' : mine ? 'not written yet' : 'nothing written down'}
           </span>
         </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
           <div className="fld" style={{ marginBottom: 0 }}>
             <label className="lbl" htmlFor="p-brief">
-              What they asked for
+              {mine ? 'What you are making, and why' : 'What they asked for'}
             </label>
             <textarea
               id="p-brief"
               rows={3}
               defaultValue={detail.brief ?? ''}
-              placeholder="Two lines you can re-read in three weeks."
+              placeholder={
+                mine
+                  ? 'Oʻahu at 1:150,000, three times vertical — the third island in the Hawaiian set.'
+                  : 'Two lines you can re-read in three weeks.'
+              }
               onBlur={(e) => {
                 const v = e.target.value.trim() || null
                 if (v !== detail.brief) void patch({ brief: v })
               }}
             />
             <div className="hint">
-              Saved when you click away — the two lines you will wish you had written when the
-              revision argument starts.
+              {mine
+                ? 'Saved when you click away — the idea as you see it now, worth having when you come back to it in a month.'
+                : 'Saved when you click away — the two lines you will wish you had written when the revision argument starts.'}
             </div>
           </div>
           {!mine && (
@@ -891,8 +899,17 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             }`}
           >
             {detail.parts.length === 0
-              ? 'not used on this project'
-              : `${facts.partsPassed} of ${facts.parts} passed` +
+              ? mine
+                ? 'nothing on it yet'
+                : 'not used on this project'
+              : // Checking is Made's job; while working, printed is the count that moves.
+                (mine && detail.phase === 'design'
+                  ? (() => {
+                      const all = detail.parts.reduce((a, p) => a + p.qty, 0)
+                      const made = detail.parts.reduce((a, p) => a + p.printedN + p.passedN, 0)
+                      return `${made} of ${all} cop${all === 1 ? 'y' : 'ies'} printed`
+                    })()
+                  : `${facts.partsPassed} of ${facts.parts} passed`) +
                 (facts.partsReprint > 0 ? ` · ${facts.partsReprint} going back` : '')}
           </span>
         </summary>
@@ -1130,9 +1147,18 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       <div className="dlg-title" style={{ alignItems: 'baseline' }}>
         <TitleEditor title={detail.title} busy={busy} onSave={(title) => patch({ title })} />
         <span className="pmeta">
-          {detail.ref} · {detail.client.name} · {CLIENT_KIND_LABEL[detail.client.kind]}
-          {detail.facts.poc ? ` · ${detail.facts.poc}` : ''}
-          {detail.facts.neededBy ? ` · due ${detail.facts.neededBy}` : ' · no due date'}
+          {mine ? (
+            <>
+              {detail.ref} · your own work
+              {detail.facts.neededBy ? ` · aiming for ${detail.facts.neededBy}` : ''}
+            </>
+          ) : (
+            <>
+              {detail.ref} · {detail.client.name} · {CLIENT_KIND_LABEL[detail.client.kind]}
+              {detail.facts.poc ? ` · ${detail.facts.poc}` : ''}
+              {detail.facts.neededBy ? ` · due ${detail.facts.neededBy}` : ' · no due date'}
+            </>
+          )}
         </span>
       </div>
 
@@ -1448,8 +1474,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         {gate.total === 0 ? (
           <div className="gatebox">
             <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
-              Delivered is the end of the line — there is nothing left to check off. What matters
-              now is whether the balance came in, which is in Money below.
+              {mine
+                ? 'Done — nothing left to check off. It stays on the board until you archive it; archiving files it away and keeps every figure counting.'
+                : 'Delivered is the end of the line — there is nothing left to check off. What matters now is whether the balance came in, which is in Money below.'}
             </div>
           </div>
         ) : (
@@ -1502,7 +1529,10 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                 onSkip={(r) => void skipItem(item, r)}
               />
             ))}
-            {gate.blocked && <div className="gblock">{gate.reason}</div>}
+            {/* The live stage's reason is already in the bar at the bottom,
+                beside the button it explains; said twice it read as noise.
+                A past stage, looked at from the record, still says its own. */}
+            {gate.blocked && shown !== detail.phase && <div className="gblock">{gate.reason}</div>}
           </div>
         )}
       </details>
@@ -3123,7 +3153,7 @@ function Closeout({
   return (
     <section className="sec" style={{ marginTop: 18 }}>
       <div className="sechead">
-        <h4>{f.kind === 'inhouse' ? 'What this trial came to' : 'What this project came to'}</h4>
+        <h4>{f.kind === 'inhouse' ? 'What it came to' : 'What this project came to'}</h4>
         <span className="secstat ok">finished{days ? ` · ${days} days end to end` : ''}</span>
       </div>
 
@@ -3173,7 +3203,15 @@ function Closeout({
           />
           <Stat
             label="Parts"
-            value={detail.parts.length ? `${f.partsPassed} of ${f.parts} passed` : 'no build sheet'}
+            value={
+              !detail.parts.length
+                ? 'no build sheet'
+                : // Passing is optional for your own work: what matters is
+                  // what was made, not a check nobody asked for (CG, 13 Oct).
+                  f.kind === 'inhouse' && f.partsPassed === 0
+                  ? `${f.copiesDone} of ${f.copies} cop${f.copies === 1 ? 'y' : 'ies'} made`
+                  : `${f.partsPassed} of ${f.parts} passed`
+            }
             sub={f.reprintsEver > 0 ? `${f.reprintsEver} sent back along the way` : undefined}
             tone={f.reprintsEver > 0 ? 'crit' : ''}
           />
@@ -3253,10 +3291,11 @@ function Closeout({
           Printable one-pager
         </Link>
         <span className="hint" style={{ marginTop: 0 }}>
-          {f.deliveryOn
-            ? `Handed over ${formatDate(f.deliveryOn, locale)}${f.deliveryHow ? ` · ${f.deliveryHow}` : ''}.`
-            : 'No handover date was recorded.'}{' '}
-          Everything below is still here — it is just no longer the point.
+          {f.kind === 'inhouse'
+            ? 'Every run, hour and part is still here.'
+            : (f.deliveryOn
+                ? `Handed over ${formatDate(f.deliveryOn, locale)}${f.deliveryHow ? ` · ${f.deliveryHow}` : ''}.`
+                : 'No handover date was recorded.') + ' Everything below is still here — it is just no longer the point.'}
         </span>
       </div>
     </section>
@@ -3823,8 +3862,8 @@ function BuildSheet({
           Nothing listed yet — import a sliced file above, or add parts by hand below. A build
           sheet is worth keeping when a project is more than one object —
           it is what turns &ldquo;is it done?&rdquo; into a countable answer, and it is where a part
-          that keeps coming back stops looking like bad luck. Projects that do not need one are not
-          penalised: the gate items that read this step aside when it is empty.
+          that keeps coming back stops looking like bad luck. A project that does not need one is not
+          penalised: the checks that read the build sheet stand aside while it is empty.
         </div>
       ) : (
         <>
@@ -4310,7 +4349,10 @@ function BuildSheet({
           <span>One box per copy: amber = printed · green = passed · red = going back · dashed = reprint queued</span>
           <span style={{ marginLeft: 'auto' }}>
             {detail.facts.parts} part{detail.facts.parts === 1 ? '' : 's'} ·{' '}
-            {detail.parts.reduce((n, p) => n + p.qty, 0)} copies
+            {(() => {
+              const n = detail.parts.reduce((a, p) => a + p.qty, 0)
+              return `${n} cop${n === 1 ? 'y' : 'ies'}`
+            })()}
             {detail.facts.reprintsEver > 0 && (
               <span style={{ color: 'var(--warn)' }}>
                 {' '}
@@ -4358,7 +4400,9 @@ function BuildSheet({
             <input
               id="part-why"
               value={addWhy}
-              placeholder="Second tile for the client, a missing piece…"
+              placeholder={
+                detail.facts.kind === 'inhouse' ? 'A base for the set, a missing piece…' : 'Second tile for the client, a missing piece…'
+              }
               onChange={(e) => setAddWhy(e.target.value)}
             />
           </div>
@@ -4385,8 +4429,9 @@ function BuildSheet({
       </div>
       {locked && (
         <div className="hint" style={{ marginTop: 6 }}>
-          This sheet was checked at Review. A part added now starts as pending and is logged with
-          your reason. If it still has to be printed, move the project back a stage at the top.
+          This sheet was checked at {phaseLabel('review', detail.facts.kind)}. A part added now starts as
+          not printed and is logged with your reason. If it still has to be printed, move the project
+          back a stage at the top.
         </div>
       )}
 
@@ -5138,28 +5183,28 @@ function MadeSection({
   onSaved: () => void
   setError: (m: string | null) => void
 }) {
-  const navigate = useNavigate()
   const [products, setProducts] = useState<ProductRow[]>([])
   const [productId, setProductId] = useState('')
   const [name, setName] = useState('')
   const [units, setUnits] = useState('')
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
-    void listShelf(ctx.shop.id)
-      .then((rows) => {
-        if (!cancelled) setProducts(rows.filter((p) => !p.archived))
-      })
-      .catch(() => {
-        // The shelf being unreadable must not take the project page down
-        // with it. The form still works; it just cannot offer existing
-        // products to add to.
-      })
-    return () => {
-      cancelled = true
+  /** Read the shelf -- on open, and again after every batch, so the next
+   *  batch knows what this piece has already put there (and what cost has
+   *  already gone with it). */
+  const loadShelf = useCallback(async () => {
+    try {
+      const rows = await listShelf(ctx.shop.id)
+      setProducts(rows.filter((p) => !p.archived))
+    } catch {
+      // The shelf being unreadable must not take the project page down
+      // with it. The form still works; it just cannot offer existing
+      // products to add to.
     }
   }, [ctx.shop.id])
+  useEffect(() => {
+    void loadShelf()
+  }, [loadShelf])
 
   /** Batches already recorded against THIS job, so the section says what it
    *  has done rather than offering to do it again from scratch. */
@@ -5175,8 +5220,21 @@ function MadeSection({
     { actualCost: detail.facts.actualCost, designHours: detail.actuals.designHours },
     Number(ctx.rateCard.design_hourly),
   )
+  // A piece can put batch after batch on the shelf from Working (CG, 13 Oct).
+  // Each batch carries only the cost logged since the last -- the whole
+  // job's cost every time made the second batch pay for the first.
+  const unshelved = unshelvedProduction(
+    split,
+    already.map(({ batch }) => ({ unitsMade: Number(batch.units_made), unitCost: Number(batch.unit_cost) })),
+  )
   const n = Number(units) || 0
-  const unitCost = unitCostFrom(split, n)
+  const unitCost = unitCostFrom({ ...split, production: unshelved }, n)
+  const [saved, setSaved] = useState<string | null>(null)
+  // The next batch of a piece is usually more of the same thing.
+  const lastProduct = already.length ? already[already.length - 1].product.id : ''
+  useEffect(() => {
+    if (lastProduct) setProductId((cur) => cur || lastProduct)
+  }, [lastProduct])
   const isNew = productId === ''
 
   async function record() {
@@ -5201,10 +5259,14 @@ function MadeSection({
         unitCost,
         madeOn: todayISO(),
       })
+      const what = isNew ? name.trim() : (products.find((p) => p.id === productId)?.name ?? 'it')
       setUnits('')
       setName('')
+      // Stay here: a piece in Working puts batch after batch on the shelf,
+      // and being thrown to the Shelf page after each one is the long way round.
+      setSaved(`${n} × ${what} on the shelf at ${money(unitCost)} each.`)
+      await loadShelf()
       onSaved()
-      navigate('/shelf')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -5218,7 +5280,8 @@ function MadeSection({
         <h4>What this made</h4>
         <span className="secstat">
           {already.length > 0
-            ? `${already.reduce((t, a) => t + Number(a.batch.units_made), 0)} on the shelf`
+            ? `${already.reduce((t, a) => t + Number(a.batch.units_made), 0)} on the shelf` +
+              (unshelved > 0 ? ` · ${money(unshelved)} not shelved yet` : '')
             : detail.facts.hasActuals
               ? `${money(split.production)} of production recorded`
               : 'nothing recorded yet'}
@@ -5255,9 +5318,18 @@ function MadeSection({
           </div>
         ) : (
           <>
+            {saved && (
+              <div className="hint" role="status" style={{ color: 'var(--ok)', marginTop: 0, marginBottom: 8 }}>
+                {saved}{' '}
+                <Link to="/shelf" className="addnote">
+                  See the shelf
+                </Link>
+              </div>
+            )}
             <div style={{ fontSize: 12, color: 'var(--txt-2)', marginBottom: 10 }}>
-              This job spent real money. If it produced units you can sell, record them and the cost
-              follows them onto the shelf instead of sitting here as pure expense.
+              {already.length > 0
+                ? `Another batch takes the cost logged since the last one — ${money(unshelved)} so far. Put units on the shelf as they come off; the rest of the cost stays here until they do.`
+                : 'This has cost real money so far. Units you can sell carry their share onto the shelf instead of sitting here as pure expense — put them there as they come off, a batch at a time.'}
             </div>
             <div className="grid3">
               <div className="fld">
@@ -5304,8 +5376,10 @@ function MadeSection({
                   <div className="guide-h"><span className="guide-tag">Yours</span></div>
                   <div className="guide-kv">
                     <div className="guide-r">
-                      <span className="k">Production recorded on this job</span>
-                      <span className="v">{money(split.production)}</span>
+                      <span className="k">
+                        {already.length > 0 ? 'Production logged since the last batch' : 'Production recorded on this job'}
+                      </span>
+                      <span className="v">{money(unshelved)}</span>
                     </div>
                     <div className="guide-r">
                       <span className="k">Each one cost you</span>

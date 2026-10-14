@@ -398,6 +398,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           title: title.trim(),
           brief,
           seriesId: within || null,
+          neededBy: neededBy || null,
         })
         navigate(`/project/${jobId}`)
       } catch (e) {
@@ -723,7 +724,9 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'minmax(0,1fr) 420px',
+          // The shop's own work has no price to show beside it (CG, 13 Oct):
+          // one column, just what it needs to start.
+          gridTemplateColumns: inHouse ? 'minmax(0, 720px)' : 'minmax(0,1fr) 420px',
           gap: 16,
           alignItems: 'start',
         }}
@@ -731,12 +734,14 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
         {/* ---------------------------------------------------- left column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="pane" style={{ margin: 0 }}>
-            <h3>The job</h3>
+            <h3>{inHouse ? 'What you are making' : 'The job'}</h3>
             <div className="grid2">
               <div className="fld">
-                <label className="lbl" htmlFor="q-client">
-                  {inHouse ? 'Who it is for' : 'Client *'}
-                </label>
+                {!inHouse && (
+                  <label className="lbl" htmlFor="q-client">
+                    Client *
+                  </label>
+                )}
                 {!inHouse && clients.length > 0 && (
                   <select
                     aria-label="Pick an existing client"
@@ -767,11 +772,10 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 {inHouse ? (
                   <div className="guide" style={{ marginTop: 0 }}>
                     <div className="guide-g">
-                      <div className="guide-h"><span className="guide-tag">In-house</span></div>
+                      <div className="guide-h"><span className="guide-tag">Your own work</span></div>
                       <div className="guide-note">
-                        Nobody is paying for this one. There is no quote and no invoice — log the
-                        runs and hours against it as you go, and Guma counts what your own work
-                        costs you and what share of your week is actually billable.
+                        No quote, no client, no invoice. Log the runs and hours as you go, put what
+                        it makes on the shelf, and Guma counts what your own work costs.
                       </div>
                     </div>
                   </div>
@@ -783,8 +787,8 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                     placeholder="Who is paying"
                   />
                 )}
-                <ClientFieldHint
-                  typed={inHouse ? '' : client}
+                {!inHouse && <ClientFieldHint
+                  typed={client}
                   clients={clients}
                   onPick={(c) => {
                     setClient(c.name)
@@ -792,24 +796,24 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                     setEmail(c.email ?? '')
                     setPhone(c.phone ?? '')
                   }}
-                />
+                />}
               </div>
               <div className="fld">
                 <label className="lbl" htmlFor="q-need">
-                  Needed by
+                  {inHouse ? 'Aiming to finish by (optional)' : 'Needed by'}
                 </label>
                 <input id="q-need" type="date" value={neededBy} onChange={(e) => setNeededBy(e.target.value)} />
               </div>
             </div>
             <div className="fld" style={{ marginTop: 10 }}>
               <label className="lbl" htmlFor="q-title">
-                Project title *
+                {inHouse ? 'Name it *' : 'Project title *'}
               </label>
               <input
                 id="q-title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="Four sensor mast brackets"
+                placeholder={inHouse ? 'Oʻahu' : 'Four sensor mast brackets'}
               />
             </div>
             {inHouse && (
@@ -836,15 +840,28 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             )}
             <div className="fld" style={{ marginTop: 10 }}>
               <label className="lbl" htmlFor="q-brief">
-                What they asked for
+                {inHouse ? 'The idea' : 'What they asked for'}
               </label>
-              <textarea id="q-brief" rows={2} value={brief} onChange={(e) => setBrief(e.target.value)} />
+              <textarea
+                id="q-brief"
+                rows={inHouse ? 3 : 2}
+                value={brief}
+                placeholder={inHouse ? 'What you are making, and why — the idea as you see it today.' : undefined}
+                onChange={(e) => setBrief(e.target.value)}
+              />
               <div className="hint">
-                Two lines you can re-read in three weeks. It is also the first thing the project's
-                intake gate checks for.
+                {inHouse
+                  ? 'Optional, and editable on the project. Worth two lines: it is what you will want to read when you come back to it in a month.'
+                  : "Two lines you can re-read in three weeks. It is also the first thing the project's intake gate checks for."}
               </div>
             </div>
           </div>
+          {/* A quote, an asset to price and a deposit mean nothing for the
+              shop's own work, and were shown anyway -- with a $282 total
+              and "50% due before design starts" (CG, 13 Oct). Sliced files
+              go on the project's build sheet once it exists. */}
+          {!inHouse && (
+          <>
           <div className="pane" style={{ margin: 0 }}>
             <h3>
               The asset
@@ -1208,9 +1225,18 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
                 </div>
             </div>
           </details>
+          </>
+          )}
+          {inHouse && (
+            <div className="hint" style={{ margin: 0 }}>
+              Sliced files, parts and runs go on the project once it is started — drop the first plate
+              on its build sheet.
+            </div>
+          )}
         </div>
 
         {/* --------------------------------------------------- right column */}
+        {!inHouse && (
         <div style={{ position: 'sticky', top: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div
             style={{
@@ -1465,6 +1491,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   )

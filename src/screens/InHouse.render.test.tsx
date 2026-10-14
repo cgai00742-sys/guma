@@ -144,7 +144,7 @@ describe('starting work of your own', () => {
     await renderIntake(ctx)
 
     await user.click(screen.getByRole('button', { name: /it is mine/i }))
-    await user.type(screen.getByLabelText(/project title/i), 'Calibrating the new PETG')
+    await user.type(screen.getByLabelText(/name it/i), 'Calibrating the new PETG')
     await user.click(screen.getByRole('button', { name: /start it/i }))
 
     await waitFor(async () => {
@@ -294,6 +294,52 @@ describe('the whole loop', () => {
     // it a measurement rather than a number somebody typed.
     expect(batch.job_id).toBe(jobId)
     expect(batch.estimated).toBe(false)
+  })
+
+  it('puts batch after batch on the shelf from Working, each with only its own cost (CG, 13 Oct)', async () => {
+    const { ctx, data } = await seedShop()
+    const jobId = await data.createInHouseJob(ctx.shop.id, { title: 'Hex keychain run', brief: null })
+    const fresh = await data.loadShopContext()
+    const evening = () =>
+      data.recordPrintRun(ctx.shop.id, jobId, ctx.profile.id, {
+        printerId: fresh.printers[0].id,
+        materialId: fresh.materials[0].id,
+        hours: 6,
+        unitsUsed: 500,
+        outcome: 'success',
+        failureReason: null,
+        note: null,
+        startedAt: null,
+      })
+    await evening() // $13.10 of production, as in the test above
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    // Still Working -- no need to move to Made to shelve a batch.
+    await screen.findByRole('heading', { name: /what this made/i })
+    await user.type(screen.getByLabelText(/call it/i), 'Hex keychain')
+    await user.type(screen.getByLabelText(/how many usable units/i), '40')
+    await user.click(screen.getByRole('button', { name: /put them on the shelf/i }))
+    // It stays on the page and says so, with the shelf read back in.
+    expect(await screen.findByText(/40 × Hex keychain on the shelf/)).toBeDefined()
+    await waitFor(() => expect(screen.getByText(/^40 on the shelf$/)).toBeDefined())
+
+    // A second evening, and a second batch of the same thing.
+    await evening()
+    cleanup()
+    await renderProject(jobId, ctx)
+    const pick = (await screen.findByLabelText(/what did it make/i)) as HTMLSelectElement
+    await waitFor(() => expect(pick.selectedOptions[0].textContent).toBe('Hex keychain'))
+    await user.type(screen.getByLabelText(/how many usable units/i), '40')
+    await user.click(screen.getByRole('button', { name: /put them on the shelf/i }))
+    await waitFor(async () => {
+      const [p] = await data.listShelf(ctx.shop.id)
+      expect(p.batches).toHaveLength(2)
+    })
+    const shelf = await data.listShelf(ctx.shop.id)
+    // One product, two batches; the second carries the second evening only
+    // -- $0.33 each again, not $0.66 for both evenings over again.
+    expect(shelf).toHaveLength(1)
+    for (const b of shelf[0].batches) expect(Number(b.unit_cost)).toBeCloseTo(0.33, 2)
   })
 
   it('sells what the evening produced, and keeps what is left of it', async () => {

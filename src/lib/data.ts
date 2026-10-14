@@ -269,7 +269,7 @@ export async function listGuideSeen(shopId: string): Promise<string[]> {
 
 export async function createInHouseJob(
   shopId: string,
-  input: { title: string; brief?: string | null; relatedTo?: string | null; seriesId?: string | null },
+  input: { title: string; brief?: string | null; relatedTo?: string | null; seriesId?: string | null; neededBy?: string | null },
 ): Promise<string> {
   return (await backend()).createInHouseJob(shopId, input)
 }

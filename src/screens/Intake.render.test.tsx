@@ -290,8 +290,16 @@ describe('a job nobody is paying for', () => {
     expect(screen.queryByRole('button', { name: /intake →/i })).toBeNull()
     const start = screen.getByRole('button', { name: /start it/i }) as HTMLButtonElement
     expect(start.disabled).toBe(true)
+    // And none of the quote around them (CG, 13 Oct): no price, no asset to
+    // price, no deposit, no client lookup -- just what it needs to start.
+    expect(screen.queryByText(/total due/i)).toBeNull()
+    expect(screen.queryByText(/^the asset/i)).toBeNull()
+    expect(screen.queryByText(/before design starts/i)).toBeNull()
+    expect(screen.queryByText(/rates used/i)).toBeNull()
+    expect(screen.queryByText(/pick a client above/i)).toBeNull()
+    expect(screen.getByLabelText(/the idea/i)).toBeDefined()
 
-    await user.type(screen.getByLabelText(/project title/i), 'Calibrating the new PETG')
+    await user.type(screen.getByLabelText(/name it/i), 'Calibrating the new PETG')
     expect((screen.getByRole('button', { name: /start it/i }) as HTMLButtonElement).disabled).toBe(
       false,
     )
@@ -303,6 +311,7 @@ describe('a job nobody is paying for', () => {
         brief: '',
         // No program chosen: it stands on its own.
         seriesId: null,
+        neededBy: null,
       }),
     )
     // It never went near the quote machinery.

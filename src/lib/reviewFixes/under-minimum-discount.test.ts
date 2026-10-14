@@ -6,7 +6,7 @@ const base = { phase: 'building', kind: 'client', priority: 'medium', createdAt:
   neededBy: null, windowFrom: null, windowLocked: false, atRisk: false, overCeiling: null,
   wentAheadWithout: { accepted: null, deposit: null }, printerId: null, deliveryOn: null, deliveryHow: null, brief: null,
   poc: null, quoteStatus: 'accepted', depositDue: 0, depositOwed: 0, balanceOwed: 0, lastActivityAt: null,
-  actualRuns: 1, actualHours: 0, machineHours: 0, materialUnits: 0, failedUnits: 0, parts: 0, partsPrinted: 0,
+  actualRuns: 1, actualHours: 0, machineHours: 0, materialUnits: 0, failedUnits: 0, parts: 0, copies: 0, copiesDone: 0, partsPrinted: 0,
   partsPassed: 0, partsReprint: 0, reprintsEver: 0, unitsMade: 0, archivedAt: null, relatedTo: null, seriesId: null,
 } as unknown as ProjectFacts
 

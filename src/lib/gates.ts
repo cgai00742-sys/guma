@@ -251,6 +251,18 @@ export const GATES: Record<JobPhase, GateItem[]> = {
 const IN_HOUSE_GATES: Partial<Record<JobPhase, GateItem[]>> = {
   design: [
     {
+      // CG, 13 Oct: a piece reached Made with its only part 0 of 1 printed.
+      // Reads the build sheet; clears itself when there is none.
+      key: 'printed',
+      label: 'Every copy on the build sheet printed — or skipped',
+      why: 'Made is for looking at what came out. A copy still to print, or one that failed and is waiting for a reprint, means the work is not finished yet.',
+      // No build sheet: nothing to print, so cleared -- never a box to tick.
+      // In-house gates stay short on purpose (see above).
+      auto: (f) => (f.parts === 0 ? true : f.copiesDone >= f.copies && f.partsReprint === 0),
+      autoFrom: 'from the build sheet',
+      fix: 'Print what is left on the build sheet, or skip the copies you no longer need.',
+    },
+    {
       key: 'spend',
       label: 'What it took is logged',
       why: 'Filament, machine hours and your own time are the whole cost of this. Unlogged, the job reads as free and the month reads as a mystery.',
@@ -263,7 +275,7 @@ const IN_HOUSE_GATES: Partial<Record<JobPhase, GateItem[]>> = {
     {
       key: 'made',
       label: 'What came out of it is recorded — units on the shelf, or nothing',
-      why: 'A trial that made nothing still cost you, and a trial that made forty keychains turned that cost into stock. Both are answers. Leaving it blank is how the money just vanishes.',
+      why: 'A piece that made nothing sellable still cost you, and one that made forty keychains turned that cost into stock. Both are answers. Leaving it blank is how the money just vanishes.',
       // Units on the shelf answer this item by existing. Returning null
       // rather than false when there are none is the difference between
       // "not yet" and "no": a trial that produced nothing sellable is a
@@ -444,7 +456,10 @@ export function gateStatus(
   let reason: string
 
   if (next === null) {
-    reason = 'Delivered — this is the end of the line.'
+    reason =
+      kind === 'inhouse'
+        ? 'Done — archive it when it no longer needs to be on the board.'
+        : 'Delivered — this is the end of the line.'
   } else if (missingNotes.length > 0) {
     blocked = true
     reason =
@@ -461,10 +476,11 @@ export function gateStatus(
     }
     if (auto.length > 0) {
       parts.push(
-        `${auto.length} that clear${auto.length > 1 ? '' : 's'} on their own once the work is done`,
+        `${auto.length} that ${auto.length > 1 ? 'clear themselves' : 'clears itself'} as the work gets done`,
       )
     }
-    reason = `${parts.join(', and ')}. Nothing advances to ${phaseLabel(next, kind)} until they are done or skipped with a reason.`
+    const one = outstanding.length === 1
+    reason = `${parts.join(', and ')}. Nothing moves to ${phaseLabel(next, kind)} until ${one ? 'it is' : 'each is'} done or skipped with a reason.`
   } else {
     reason = `All ${total} cleared. Ready for ${phaseLabel(next, kind)}.`
   }

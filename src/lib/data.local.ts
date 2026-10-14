@@ -721,7 +721,7 @@ async function systemClientId(shopId: string): Promise<string> {
  */
 export async function createInHouseJob(
   shopId: string,
-  input: { title: string; brief?: string | null; relatedTo?: string | null; seriesId?: string | null },
+  input: { title: string; brief?: string | null; relatedTo?: string | null; seriesId?: string | null; neededBy?: string | null },
 ): Promise<string> {
   const title = input.title.trim()
   if (!title) throw new Error('An in-house job needs a title — what are you working on?')
@@ -739,10 +739,10 @@ export async function createInHouseJob(
   // CG as "the drafts feature isn't working"; fixed for old rows by 0022.
   await d.execute(
     `insert into jobs (id, shop_id, ref, client_id, title, brief, kind, phase, asset_origin,
-                       taken_in_at, series_id)
+                       taken_in_at, series_id, needed_by)
      values (?, ?, ?, ?, ?, ?, 'inhouse', 'design', 'model',
-             strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?)`,
-    [jobId, shopId, ref, clientId, title, input.brief?.trim() || null, input.seriesId ?? null],
+             strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?, ?)`,
+    [jobId, shopId, ref, clientId, title, input.brief?.trim() || null, input.seriesId ?? null, input.neededBy || null],
   )
   if (input.relatedTo) await setRelatedProject(shopId, jobId, input.relatedTo)
   return jobId
@@ -839,6 +839,8 @@ const JOB_LIST_SQL = `
            + (coalesce(a.finishing_hours, 0) + coalesce(a.admin_hours, 0))
              * coalesce(rc.finishing_hourly, 0) as actual_cost,
          coalesce(ps.parts, 0) as parts,
+         coalesce(ps.copies, 0) as copies,
+         coalesce(ps.copies_done, 0) as copies_done,
          coalesce(ps.printed, 0) as parts_printed,
          coalesce(ps.passed, 0) as parts_passed,
          coalesce(ps.reprint, 0) as parts_reprint,
@@ -928,6 +930,8 @@ interface JobListSqlRow {
   actual_runs: number
   actual_hours: number
   parts: number
+  copies: number
+  copies_done: number
   parts_printed: number
   parts_passed: number
   parts_reprint: number
@@ -978,6 +982,8 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     materialUnits: Number(r.material_units ?? 0),
     failedUnits: Number(r.failed_units ?? 0),
     parts: Number(r.parts ?? 0),
+    copies: Number(r.copies ?? 0),
+    copiesDone: Number(r.copies_done ?? 0),
     partsPrinted: Number(r.parts_printed ?? 0),
     partsPassed: Number(r.parts_passed ?? 0),
     partsReprint: Number(r.parts_reprint ?? 0),

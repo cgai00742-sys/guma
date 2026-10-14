@@ -230,3 +230,19 @@ describe('splitting what an in-house job cost', () => {
     expect(unitCostFrom({ production: 70, design: 0 }, 0)).toBe(0)
   })
 })
+
+describe('a second batch from the same piece (CG, 13 Oct)', async () => {
+  const { unshelvedProduction, unitCostFrom } = await import('./selling')
+  it('carries only the cost logged since the last batch', () => {
+    const split = { production: 100, design: 40 }
+    // First batch: 20 units took the whole $100 then recorded -- $5 each.
+    expect(unitCostFrom({ ...split, production: unshelvedProduction(split, []) }, 20)).toBe(5)
+    // $60 more logged since. The second batch must not pay for the first.
+    const later = { production: 160, design: 40 }
+    const left = unshelvedProduction(later, [{ unitsMade: 20, unitCost: 5 }])
+    expect(left).toBe(60)
+    expect(unitCostFrom({ ...later, production: left }, 30)).toBe(2)
+    // Never below zero.
+    expect(unshelvedProduction(split, [{ unitsMade: 50, unitCost: 5 }])).toBe(0)
+  })
+})

@@ -25,7 +25,7 @@ const job = (over: Partial<JobListRow['facts']> = {}): JobListRow =>
       kind: 'client', quoteStatus: 'sent', quoteTotal: 400, actualHours: 0,
       actualCost: 0, hasActuals: false, actualRuns: 0, machineHours: 0,
       materialUnits: 0, failedUnits: 0, takenInAt: '2026-01-01',
-      balanceOwed: 0, depositDue: 0, depositOwed: 0, parts: 0, partsPrinted: 0,
+      balanceOwed: 0, depositDue: 0, depositOwed: 0, parts: 0, copies: 0, copiesDone: 0, partsPrinted: 0,
       partsPassed: 0, partsReprint: 0, reprintsEver: 0, minimumOrder: 0,
       ...over,
     },

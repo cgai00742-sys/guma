@@ -462,7 +462,7 @@ async function systemClientId(shopId: string): Promise<string> {
  *  intake is where a client brief becomes a quote, and neither applies. */
 export async function createInHouseJob(
   shopId: string,
-  input: { title: string; brief?: string | null; relatedTo?: string | null; seriesId?: string | null },
+  input: { title: string; brief?: string | null; relatedTo?: string | null; seriesId?: string | null; neededBy?: string | null },
 ): Promise<string> {
   const title = input.title.trim()
   if (!title) throw new Error('An in-house job needs a title — what are you working on?')
@@ -483,6 +483,7 @@ export async function createInHouseJob(
       // Live at birth -- see data.local.ts's createInHouseJob.
       taken_in_at: new Date().toISOString(),
       series_id: input.seriesId ?? null,
+      needed_by: input.neededBy || null,
     })
     .select('id')
     .single()
@@ -623,7 +624,7 @@ const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_i
             material_id, printer_id, units_per_part, print_hrs_part, finishing_hrs,
             rush, flat_each, discount_pct, rates_snapshot ),
    job_money ( deposit_due, deposit_owed, balance_owed ),
-   job_parts_summary ( parts, printed, passed, reprint, reprints_ever ),
+   job_parts_summary ( parts, copies, copies_done, printed, passed, reprint, reprints_ever ),
    batches ( units_made ),
    job_actuals ( material_cost, machine_cost, power_cost, wear_cost, runs,
                  design_hours, finishing_hours, admin_hours, material_units,
@@ -742,6 +743,8 @@ function factsFrom(
     materialUnits: acts.materialUnits,
     failedUnits: acts.failedUnits,
     parts: Number(r.job_parts_summary?.[0]?.parts ?? 0),
+    copies: Number(r.job_parts_summary?.[0]?.copies ?? 0),
+    copiesDone: Number(r.job_parts_summary?.[0]?.copies_done ?? 0),
     partsPrinted: Number(r.job_parts_summary?.[0]?.printed ?? 0),
     partsPassed: Number(r.job_parts_summary?.[0]?.passed ?? 0),
     partsReprint: Number(r.job_parts_summary?.[0]?.reprint ?? 0),

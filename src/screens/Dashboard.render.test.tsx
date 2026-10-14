@@ -39,7 +39,7 @@ const job = (over: Record<string, unknown> = {}, facts: Record<string, unknown> 
       quoteStatus: 'accepted', quoteTotal: 400, depositDue: 0, depositOwed: 0, balanceOwed: 0,
       lastActivityAt: null, minimumOrder: 0, actualCost: 0, hasActuals: false, actualRuns: 0,
       actualHours: 0, machineHours: 0, materialUnits: 0, failedUnits: 0, parts: 0,
-      partsPrinted: 0, partsPassed: 0, partsReprint: 0, reprintsEver: 0,
+      copies: 0, copiesDone: 0, partsPrinted: 0, partsPassed: 0, partsReprint: 0, reprintsEver: 0,
       ...facts,
     },
     ...over,

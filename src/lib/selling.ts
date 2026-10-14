@@ -251,3 +251,17 @@ export function unitCostFrom(split: JobCostSplit, units: number): number {
   // cents stored it as $0.00 -- free stock. Screens round for display.
   return Math.round((split.production / units) * 1e6) / 1e6
 }
+
+/**
+ * The production cost not yet carried onto the shelf (CG, 13 Oct: a piece
+ * sits in Working for months, putting batches on the shelf as they come
+ * off). Each batch takes what was logged since the one before -- never the
+ * whole job's cost again, which made a second batch pay for the first.
+ */
+export function unshelvedProduction(
+  split: JobCostSplit,
+  batches: { unitsMade: number; unitCost: number }[],
+): number {
+  const shelved = batches.reduce((a, b) => a + Math.max(0, b.unitsMade) * Math.max(0, b.unitCost), 0)
+  return round2(Math.max(0, split.production - shelved))
+}

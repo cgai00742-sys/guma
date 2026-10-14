@@ -25,7 +25,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { PHASE_LABEL } from '../lib/gates'
+import { PHASE_LABEL, phaseLabel } from '../lib/gates'
 import { buildComparison } from '../lib/actuals'
 import {
   PART_STATUS_LABEL,
@@ -138,7 +138,7 @@ export default function Closeout() {
             cursor: 'pointer',
           }}
         >
-          {showCosts ? 'Hide costs (client copy)' : 'Show costs'}
+          {showCosts ? (detail.facts.kind === 'inhouse' ? 'Hide costs' : 'Hide costs (client copy)') : 'Show costs'}
         </button>
         <button
           type="button"
@@ -190,6 +190,8 @@ export function CloseoutDocument({
   const a = detail.actuals
   const loggedHours = a.designHours + a.finishingHours + a.adminHours
   const delivered = detail.facts.deliveryOn
+  // The shop's own work: no client, no handover, no "delivered" (CG, 13 Oct).
+  const mine = detail.facts.kind === 'inhouse'
 
   return (
     <doc-page size={paperFor(ctx.shop)} margin="18mm">
@@ -199,7 +201,7 @@ export function CloseoutDocument({
             {ctx.shop.name}
           </div>
           <div style={{ fontFamily: MONO, fontSize: 10, color: FAINT, letterSpacing: '0.08em' }}>
-            PROJECT CLOSEOUT · {detail.ref}
+            {mine ? 'PROJECT SUMMARY' : 'PROJECT CLOSEOUT'} · {detail.ref}
           </div>
         </div>
       </header>
@@ -208,13 +210,22 @@ export function CloseoutDocument({
         {detail.title}
       </h1>
       <div style={{ fontSize: 12, color: MUTED, marginBottom: 18 }}>
-        {detail.client.name}
-        {detail.facts.poc ? ` · ${detail.facts.poc}` : ''} · {PHASE_LABEL[detail.phase]}
-        {delivered ? ` · delivered ${longDate(delivered, docLocale)}` : ' · not yet delivered'}
+        {mine ? (
+          <>
+            Your own work · {phaseLabel(detail.phase, 'inhouse')}
+            {detail.facts.neededBy ? ` · aiming for ${longDate(detail.facts.neededBy, docLocale)}` : ''}
+          </>
+        ) : (
+          <>
+            {detail.client.name}
+            {detail.facts.poc ? ` · ${detail.facts.poc}` : ''} · {PHASE_LABEL[detail.phase]}
+            {delivered ? ` · delivered ${longDate(delivered, docLocale)}` : ' · not yet delivered'}
+          </>
+        )}
       </div>
 
       {detail.brief && (
-        <Block title="What they asked for">
+        <Block title={mine ? 'The idea' : 'What they asked for'}>
           <p style={{ margin: 0, fontSize: 12, lineHeight: 1.6, color: INK }}>{detail.brief}</p>
         </Block>
       )}
@@ -248,11 +259,19 @@ export function CloseoutDocument({
                 : 'none logged'
             }
           />
-          <Fact
-            label="Handover"
-            value={delivered ? longDate(delivered, docLocale) : 'pending'}
-            sub={detail.facts.deliveryHow ?? (detail.facts.neededBy ? `due ${detail.facts.neededBy}` : '—')}
-          />
+          {mine ? (
+            <Fact
+              label="On the shelf"
+              value={detail.facts.unitsMade ? `${detail.facts.unitsMade} unit${detail.facts.unitsMade === 1 ? '' : 's'}` : '—'}
+              sub={detail.facts.unitsMade ? 'costed from this project' : 'nothing sellable recorded'}
+            />
+          ) : (
+            <Fact
+              label="Handover"
+              value={delivered ? longDate(delivered, docLocale) : 'pending'}
+              sub={detail.facts.deliveryHow ?? (detail.facts.neededBy ? `due ${detail.facts.neededBy}` : '—')}
+            />
+          )}
         </Grid>
       </Block>
 
@@ -458,7 +477,7 @@ export function CloseoutDocument({
                 </span>
                 <span style={{ color: INK }}>
                   {e.kind === 'phase_change'
-                    ? `${PHASE_LABEL[e.fromPhase ?? 'intake']} → ${PHASE_LABEL[e.toPhase ?? 'intake']}`
+                    ? `${phaseLabel(e.fromPhase ?? 'intake', detail.facts.kind)} → ${phaseLabel(e.toPhase ?? 'intake', detail.facts.kind)}`
                     : (e.body ?? '')}
                 </span>
               </Row>

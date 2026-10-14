@@ -37,7 +37,9 @@ describe('each stage shows only what moves it forward', () => {
   })
 
   it('gives the shop\'s own work its three stages', () => {
-    expect(workFor('design', 'inhouse')).toEqual(['brief', 'build', 'took'])
+    // What it made goes on the shelf from Working too (CG, 13 Oct).
+    expect(workFor('design', 'inhouse')).toEqual(['brief', 'build', 'took', 'made'])
+    expect(workFor('review', 'inhouse')).toEqual(['build', 'took', 'made'])
     expect(canPrint('design', 'inhouse')).toBe(true)
     expect(recordFor('design', 'review', 'inhouse')).toEqual(['brief'])
   })

@@ -151,7 +151,7 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
         />
         <Tile
           to="/projects"
-          label="Cost of work delivered"
+          label="Cost of finished work"
           hue="ember"
           value={s.hasActuals ? money(s.cogs) : '—'}
           sub={
@@ -234,7 +234,7 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
             <Row label="Quoted and accepted, not yet delivered" value={money(s.inFlight)} />
             <Row label="Deposits not received" value={money(s.depositOwed)} tone={s.depositOwed > 0 ? 'crit' : ''} />
             <Row label="Balances not received" value={money(s.balanceOwed)} tone={s.balanceOwed > 0 ? 'crit' : ''} />
-            <Row label="Delivered, this shop's own work" value={`${s.inHouseDelivered} project${s.inHouseDelivered === 1 ? '' : 's'}`} />
+            <Row label="Your own work, done" value={`${s.inHouseDelivered} project${s.inHouseDelivered === 1 ? '' : 's'}`} />
             <div className="hint" style={{ marginTop: 8 }}>
               Owed is derived from payments, which are append-only — a refund is a row, never an
               edit. <Link to="/projects">Open the board</Link> to chase anything here.
@@ -435,6 +435,12 @@ const PHASE_ORDER = [
   ['review', 'Review'],
 ] as const
 
+/** The shop's own work, by its own stage names. */
+const IN_HOUSE_ORDER = [
+  ['design', 'Working · yours'],
+  ['review', 'Made · yours'],
+] as const
+
 function summarize(
   jobs: JobListRow[] | null,
   materials: MaterialRow[] | null,
@@ -495,11 +501,21 @@ function summarize(
     inHouseDelivered: delivered.filter((j) => j.facts.kind === 'inhouse').length,
     needsAttention: attention.length,
     attention,
-    byPhase: PHASE_ORDER.map(([phase, label]) => ({
-      phase,
-      label,
-      n: live.filter((j) => j.facts.phase === phase).length,
-    })).filter((p) => p.n > 0 || live.length === 0),
+    // The shop's own work climbs its own ladder (Working, Made): counted
+    // under the client stage that shares its stored value, it read as
+    // "Design 3" for three BathyTopo pieces (CG, 13 Oct).
+    byPhase: [
+      ...PHASE_ORDER.map(([phase, label]) => ({
+        phase: phase as string,
+        label: label as string,
+        n: live.filter((j) => j.facts.kind !== 'inhouse' && j.facts.phase === phase).length,
+      })),
+      ...IN_HOUSE_ORDER.map(([phase, label]) => ({
+        phase: `inhouse-${phase}`,
+        label,
+        n: live.filter((j) => j.facts.kind === 'inhouse' && j.facts.phase === phase).length,
+      })),
+    ].filter((p) => p.n > 0 || live.length === 0),
     cogs,
     hasActuals: withActuals.length > 0,
     inFlight: live.reduce((t, j) => t + (j.facts.quoteStatus === 'accepted' ? (j.facts.quoteTotal ?? 0) : 0), 0),

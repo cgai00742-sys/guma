@@ -224,6 +224,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0036_plate_progress_and_run_links.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 37,
+      description: "copies made per project, for the gates and the board",
+      sql: include_str!("../migrations/0037_copies_done.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

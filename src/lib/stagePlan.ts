@@ -43,9 +43,12 @@ const CLIENT_WORK: Record<JobPhase, Section[]> = {
   delivered: ['closeout', 'money'],
 }
 
+// Working can run for months on a series piece, so what it made goes on
+// the shelf as it comes off -- not only at Made (CG, 13 Oct). The order is
+// the order of the work: plan it, print it, cost it, shelve it.
 const IN_HOUSE_WORK: Partial<Record<JobPhase, Section[]>> = {
-  design: ['brief', 'build', 'took'],
-  review: ['build', 'made', 'took'],
+  design: ['brief', 'build', 'took', 'made'],
+  review: ['build', 'took', 'made'],
   delivered: ['closeout'],
 }
 
@@ -67,7 +70,7 @@ const IN_HOUSE_HOME: Partial<Record<Section, JobPhase>> = {
   brief: 'design',
   build: 'design',
   took: 'design',
-  made: 'review',
+  made: 'design',
 }
 
 export function workFor(phase: JobPhase, kind: JobKind): Section[] {
