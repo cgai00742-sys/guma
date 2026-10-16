@@ -1295,8 +1295,10 @@ export function sameSliceFile(
   b: { fileName: string; estMinutes: number | null; estGrams: number | null },
 ): boolean {
   const n = (v: number | null) => (v == null ? null : Math.round(Number(v) * 10) / 10)
+  // A browser saving the same download twice names it "x (1).bgcode".
+  const name = (f: string) => f.trim().toLowerCase().replace(/\s\(\d+\)(?=\.[^.]+$|$)/, '')
   return (
-    a.fileName.trim().toLowerCase() === b.fileName.trim().toLowerCase() &&
+    name(a.fileName) === name(b.fileName) &&
     n(a.estMinutes) === n(b.estMinutes) &&
     n(a.estGrams) === n(b.estGrams)
   )

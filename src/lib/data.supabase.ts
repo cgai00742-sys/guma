@@ -1178,7 +1178,9 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
          printers ( id, name ), materials ( id, name, unit ), profiles ( full_name )`,
       )
       .eq('job_id', jobId)
-      .order('started_at', { ascending: false }),
+      .order('started_at', { ascending: false })
+      // Two prints on one day: the later-recorded one first.
+      .order('consumed_at', { ascending: false, nullsFirst: false }),
     supabase
       .from('work_log')
       .select('id, kind, hours, worked_on, note, profiles ( full_name )')

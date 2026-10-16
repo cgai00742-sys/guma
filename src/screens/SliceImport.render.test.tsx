@@ -210,7 +210,7 @@ describe('importing a sliced file from the project screen', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
 
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
 
     // Everything the person needs to judge it, on screen.
     await screen.findByText('Reef buoy_sliced.gcode')
@@ -227,7 +227,7 @@ describe('importing a sliced file from the project screen', () => {
     const { ctx, jobId } = await seedShop()
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
 
     // "XL" in the file, "Prusa XL" in the shop -- and the label says which
     // word came from the file, so a wrong match is visible rather than
@@ -242,7 +242,7 @@ describe('importing a sliced file from the project screen', () => {
     const { ctx, jobId } = await seedShop()
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
 
     await waitFor(() => {
@@ -265,7 +265,7 @@ describe('importing a sliced file from the project screen', () => {
     const { ctx, jobId } = await seedShop()
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
     await screen.findByText('Buoy shell')
 
@@ -284,7 +284,7 @@ describe('importing a sliced file from the project screen', () => {
     await renderProject(jobId, ctx)
 
     await user.upload(
-      screen.getByLabelText(/import a sliced file/i),
+      screen.getByLabelText(/import sliced files/i),
       new File(['\x00\x01binary'], 'part.bgcode', { type: 'application/octet-stream' }),
     )
 
@@ -300,7 +300,7 @@ describe('importing a sliced file from the project screen', () => {
     const { ctx, jobId } = await seedShop()
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await screen.findByText('Reef buoy_sliced.gcode')
 
     await user.click(screen.getByRole('button', { name: /discard/i }))
@@ -314,11 +314,11 @@ describe('importing a sliced file from the project screen', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
 
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
     await screen.findByText('Buoy shell')
 
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile('fixed_v2.gcode'))
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile('fixed_v2.gcode'))
     await addAsEstimate(user)
 
     await waitFor(() => {
@@ -343,7 +343,7 @@ describe('a shop that has not set up its machines', () => {
     // A machine the shop does not own.
     const other = GCODE.replace('printer_model = XL', 'printer_model = Creality K1')
     await user.upload(
-      screen.getByLabelText(/import a sliced file/i),
+      screen.getByLabelText(/import sliced files/i),
       new File([other], 'k1.gcode', { type: 'text/plain' }),
     )
 
@@ -397,7 +397,7 @@ describe("the shop's own work", () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
 
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
 
     await waitFor(() => {
@@ -415,7 +415,7 @@ describe("the shop's own work", () => {
     const { ctx, jobId } = await seedShop('inhouse')
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
     await screen.findByText('Buoy shell')
 
@@ -445,7 +445,7 @@ describe('turning the file into what actually happened', () => {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
 
     const box = (await screen.findByRole('checkbox', { name: /already printed/i })) as HTMLInputElement
     expect(box.checked).toBe(true)
@@ -479,7 +479,7 @@ describe('turning the file into what actually happened', () => {
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
 
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
@@ -501,7 +501,7 @@ describe('turning the file into what actually happened', () => {
     })
     const m = currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }
     expect(Number(m.on_hand)).toBe(913)
-    await screen.findByText(/of machine time\s+in this project/i)
+    await screen.findByRole('list', { name: /^prints of /i })
   })
 
   it('asks what went wrong when the print failed, and still bills the material', async () => {
@@ -509,7 +509,7 @@ describe('turning the file into what actually happened', () => {
     const user = userEvent.setup()
     currentDb.sqlite.exec('update materials set on_hand = 1000')
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
 
@@ -527,7 +527,7 @@ describe('turning the file into what actually happened', () => {
     // A failed run burned the filament all the same.
     const m = currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }
     expect(Number(m.on_hand)).toBe(913)
-    await screen.findByRole('button', { name: /record another run/i })
+    await screen.findByRole('button', { name: /print it again/i })
   })
 })
 
@@ -539,7 +539,7 @@ describe('the file itself, kept', () => {
     const { ctx, jobId } = await seedShop()
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     // Said before anything is written, while the file can still be discarded.
     await screen.findByText(/The file itself will be kept with the project/)
     await addAsEstimate(user)
@@ -566,11 +566,11 @@ describe('the file itself, kept', () => {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
-    await screen.findByText(/of machine time\s+in this project/i)
+    await screen.findByRole('list', { name: /^prints of /i })
 
     await user.click(screen.getByRole('button', { name: /remove the file/i }))
     await screen.findByText(/the print still happened/i)
@@ -606,7 +606,7 @@ describe('a plate is one print, and the whole plate comes off it', () => {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
 
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
@@ -634,7 +634,7 @@ describe('a plate is one print, and the whole plate comes off it', () => {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
@@ -725,11 +725,11 @@ describe('a finished project reads like a record, not a control panel', () => {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
-    await screen.findByText(/of machine time\s+in this project/i)
+    await screen.findByRole('list', { name: /^prints of /i })
 
     for (const to of ['review', 'delivered'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
@@ -776,7 +776,7 @@ describe('the import is findable, and says what it did', () => {
     const { ctx, jobId } = await seedShop()
     await renderProject(jobId, ctx)
 
-    const drop = screen.getByLabelText(/import a sliced file/i)
+    const drop = screen.getByLabelText(/import sliced files/i)
     const manual = screen.getByLabelText(/^part$/i)
     // Node.compareDocumentPosition: 4 means `manual` follows `drop`.
     expect(drop.compareDocumentPosition(manual) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -785,7 +785,7 @@ describe('the import is findable, and says what it did', () => {
   it('offers a drop target, not just a file button', async () => {
     const { ctx, jobId } = await seedShop()
     await renderProject(jobId, ctx)
-    expect(screen.getByText(/drop a sliced file here/i)).toBeDefined()
+    expect(screen.getByText(/drop sliced files here/i)).toBeDefined()
   })
 
   it('says what it did after importing, in a sentence', async () => {
@@ -793,7 +793,7 @@ describe('the import is findable, and says what it did', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
 
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
 
     // The thing whose absence read as "nothing happened". It also says
@@ -806,11 +806,11 @@ describe('the import is findable, and says what it did', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
 
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
     await screen.findByText('Buoy shell')
 
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile('fixed_v2.gcode'))
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile('fixed_v2.gcode'))
     await addAsEstimate(user)
 
     // Nothing was added, and saying "2 parts added" would be a lie that
@@ -852,7 +852,7 @@ describe('a failed part, Voltage-style', () => {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
     await renderProject(jobId, ctx)
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByText(/Recorded as printed on/i)
 
@@ -931,10 +931,10 @@ describe("CG's Maui: one G-code uploaded several times, project at Made", () => 
         .get(jobId) as Record<string, number>
       expect(a).toMatchObject({ material_units: 87, machine_hours: 2.05, runs: 1 })
     })
-    await within(region).findByText(/of machine time\s+in this project/i)
+    await within(region).findByRole('list', { name: /^prints of /i })
 
     // Uploading it yet again, at Done, adds nothing and counts nothing twice.
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile('Maui bathy.gcode'))
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile('Maui bathy.gcode'))
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByText(/not added again/i)
     expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 3 })
@@ -1004,7 +1004,7 @@ describe('an import that cannot be saved', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     const bad = new File(['\x00\x01binary'], 'part.bgcode', { type: 'application/octet-stream' })
-    await user.upload(screen.getByLabelText(/import a sliced file/i), bad)
+    await user.upload(screen.getByLabelText(/import sliced files/i), bad)
     const alerts = await screen.findAllByRole('alert')
     expect(alerts.some((a) => /not imported/i.test(a.textContent ?? ''))).toBe(true)
   })
@@ -1059,7 +1059,7 @@ describe("CG's PrusaSlicer .bgcode, imported and recorded", () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     await user.upload(
-      screen.getByLabelText(/import a sliced file/i),
+      screen.getByLabelText(/import sliced files/i),
       new File([bytes], 'Maui_Top_2mm Base.bgcode', { type: 'application/octet-stream' }),
     )
     // Matched to the shop's Prusa XL, ticked as already printed.
@@ -1128,7 +1128,7 @@ describe('failing one part of a plate, and swapping in its fixed file', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     // The plate prints, In build.
-    await user.upload(screen.getByLabelText(/import a sliced file/i), gcodeFile())
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByText(/Recorded as printed on/i)
 
@@ -1287,7 +1287,7 @@ describe('a print recorded as clean that had stopped part way (CG, 14 Oct)', () 
       'G1 Z5', 'G1 X2 Y2 E1000', '; stop printing object Lid id:0 copy 0', 'M73 P100 R0',
       '; total filament used [g] = 72.00', '; estimated printing time (normal mode) = 1h 40m 0s', '; filament_type = PLA',
     ].join('\n')
-    await user.upload(screen.getByLabelText(/import a sliced file/i), new File([gcode], 'lid.gcode', { type: 'text/plain' }))
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([gcode], 'lid.gcode', { type: 'text/plain' }))
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'cancelled')
     await user.selectOptions(document.getElementById('slice-material') as HTMLSelectElement, ctx.materials[0].id)
     const pickMachine = document.getElementById('slice-printer') as HTMLSelectElement
@@ -1305,5 +1305,81 @@ describe('a print recorded as clean that had stopped part way (CG, 14 Oct)', () 
       }),
     )
     expect(currentDb.sqlite.prepare("select status from job_parts where label = 'Lid'").get()).toEqual({ status: 'reprint' })
+  })
+})
+
+/** A second plate: another object, its own numbers. */
+const CAP_GCODE = `
+; printing object Spare cap id:0 copy 0
+; filament used [g] = 12.0
+; total filament used [g] = 12.0
+; estimated printing time (normal mode) = 0h 41m
+; filament_type = PETG
+; printer_model = XL
+`
+
+describe('several files at once, and each print said once (CG, 15 Oct)', () => {
+  it('reads every file dropped, reviews each, and adds them all together', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), [
+      gcodeFile(),
+      new File([CAP_GCODE], 'Spare cap.gcode', { type: 'text/plain' }),
+    ])
+    expect(await screen.findByText(/2 files read/i)).toBeDefined()
+    expect(screen.getByRole('group', { name: /review reef buoy_sliced\.gcode/i })).toBeDefined()
+    const cap = screen.getByRole('group', { name: /review spare cap\.gcode/i })
+    // Each file has its own answers: the cap is still to print.
+    await user.click(within(cap).getByRole('checkbox', { name: /already printed/i }))
+    await user.click(screen.getByRole('button', { name: /^add all 2$/i }))
+
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 2 }),
+    )
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 1 })
+    // The print sits under its own plate, once -- and What it took adds it
+    // up rather than listing it again.
+    const plates = await screen.findByRole('region', { name: /^plates$/i })
+    const prints = await within(plates).findByRole('list', { name: /prints of reef buoy_sliced\.gcode/i })
+    expect(within(prints).getByText(/came off clean · 2h 3m · 87 g/)).toBeDefined()
+    expect(screen.getAllByText(/came off clean · 2h 3m/)).toHaveLength(1)
+    expect(screen.getByTestId('took-totals').textContent).toMatch(/1 print · all listed under their plates/)
+    expect(within(plates).getAllByText('not printed yet')).toHaveLength(1)
+    expect(within(plates).getByText(/^Makes Buoy shell ×2, Cap$/)).toBeDefined()
+  })
+
+  it('counts the same file dropped twice in one go as one plate and one print', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), [gcodeFile(), gcodeFile('Reef buoy_sliced (1).gcode')])
+    expect(await screen.findByText(/already in this batch/i)).toBeDefined()
+    await user.click(screen.getByRole('button', { name: /^add all 2$/i }))
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 1 }),
+    )
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 1 })
+  })
+
+  it('names a plate that printed a failed copy as its reprint', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    // The first plate failed...
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Clog')
+    await user.click(screen.getByRole('button', { name: /record where it stopped/i }))
+    await screen.findByText('failed')
+    // ...and a re-sliced file printed its copies.
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile('Reef buoy v2.gcode'))
+    await user.click(await screen.findByRole('button', { name: /record the print/i }))
+    const plates = await screen.findByRole('region', { name: /^plates$/i })
+    expect(await within(plates).findByText(/reprint · Buoy shell, copy 1 & 2; Cap, copy 1/)).toBeDefined()
+    const failedPrints = within(plates).getByRole('list', { name: /prints of reef buoy_sliced\.gcode/i })
+    expect(within(failedPrints).getByText(/failed · /)).toBeDefined()
+    expect(within(failedPrints).getByText('Clog')).toBeDefined()
+    expect(screen.getByTestId('took-totals').textContent).toMatch(/Lost to failures/)
   })
 })

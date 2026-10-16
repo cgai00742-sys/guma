@@ -1740,3 +1740,12 @@ td.pick input,th.pick input{margin:0;cursor:pointer}
 .hm input{min-width:0}
 .hm-u{font-size:12px;color:var(--txt-3)}
 .hm.compact{gap:3px}
+
+/* What it took, as four totals (CG, 15 Oct). */
+.tooktot{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:2px 0 10px}
+.tooktot>div{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
+.tooktot .lbl{margin:0}
+.tooktot b{font-size:15px;color:var(--txt);font-weight:600}
+.tooktot .sub{font-size:11px;color:var(--txt-3)}
+.plateprints{margin-top:6px;border-top:1px dashed var(--line);padding-top:2px}
+.pvar-file{display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}

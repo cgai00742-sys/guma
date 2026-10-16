@@ -266,7 +266,7 @@ describe('each stage shows only what moves it forward (CG, 7 Oct)', () => {
     await renderProject(jobId, ctx)
     expect(screen.getByLabelText(/what they asked for/i)).toBeDefined()
     expect(screen.getByLabelText(/point of contact/i)).toBeDefined()
-    expect(screen.queryByLabelText(/import a sliced file/i)).toBeNull()
+    expect(screen.queryByLabelText(/import sliced files/i)).toBeNull()
     expect(screen.queryByRole('button', { name: /record a build run/i })).toBeNull()
     expect(document.querySelector('[data-fold="build"]')).toBeNull()
     // The gate is the last section on the page.

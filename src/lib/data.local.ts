@@ -1494,7 +1494,8 @@ export async function loadProjectDetail(shopId: string, jobId: string): Promise<
        left join materials m on m.id = r.material_id
        left join profiles pr on pr.id = r.operator_id
       where r.job_id = ?
-      order by coalesce(r.started_at, r.id) desc`,
+      -- Newest first; two prints on one day in the order they were recorded.
+      order by coalesce(r.started_at, '') desc, r.rowid desc`,
     [jobId],
   )
 

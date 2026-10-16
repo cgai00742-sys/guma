@@ -162,7 +162,7 @@ import { sheetVsQuote } from '../lib/sheetVsQuote'
 import HoursInput from '../components/HoursInput'
 import { fmtHours } from '../lib/duration'
 import { fmtMinutes, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
-import type { PrintRunRow, SliceImportRow, StockHoldRow } from '../lib/data.types'
+import { sameSliceFile, type PrintRunRow, type SliceImportRow, type StockHoldRow } from '../lib/data.types'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
 import { changeCopies, copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
@@ -1057,9 +1057,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           */}
           {mine ? (
             <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
-              Nobody is paying for this, so there is no quote to measure it against. What it cost is
-              measured against what it made instead — log the runs and hours here, then record what
-              came out of it below.
+              Nobody is paying for this, so there is no quote to measure it against. Prints are
+              recorded on their plates above; this adds them up with your own hours. What it cost is
+              measured against what it made, below.
             </div>
           ) : comparison === null ? (
             <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
@@ -1084,6 +1084,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             busy={busy}
             onChanged={reload}
             setError={setError}
+            platesAbove={!inRecord && workFor(detail.phase, detail.facts.kind).includes('build')}
           />
         </div>
       </details>
@@ -1952,6 +1953,25 @@ function Variance({ comparison, money }: { comparison: Comparison; money: (n: nu
  *     below open on "not matched" so the omission is visible rather than
  *     quietly wrong.
  */
+/** One file read and waiting for a yes: everything the review card asks. */
+interface PendingFile {
+  key: string
+  read: SliceFile
+  /** The file's own bytes, packed for storage. Null when over the cap. */
+  kept: KeptFile | null
+  tooBig: string | null
+  printerId: string
+  materialId: string
+  printed: boolean
+  printedOn: string
+  /** How the print went, when recorded at upload (CG, 14 Oct). */
+  howWent: RunOutcome
+  stop: { hours: number; units: number; note: string } | null
+  stopWhy: string
+  /** Already on this project (or earlier in this batch): when, or 'this batch'. */
+  dupOf: string | null
+}
+
 function SliceImport({
   ctx,
   detail,
@@ -1968,186 +1988,206 @@ function SliceImport({
   onImported: (n: number) => void
   setError: (m: string | null) => void
 }) {
-  const [read, setRead] = useState<SliceFile | null>(null)
-  /** The file's own bytes, packed for storage. Null when it was over the
-   *  cap -- the import still goes ahead, and `tooBig` says so. */
-  const [kept, setKept] = useState<KeptFile | null>(null)
-  const [tooBig, setTooBig] = useState<string | null>(null)
-  const [printerId, setPrinterId] = useState('')
-  const [materialId, setMaterialId] = useState('')
+  /**
+   * Every file dropped, each with its own review (CG, 15 Oct: "allow for
+   * multiple files to be uploaded"). Nothing is written until a card is
+   * added -- one at a time, or all at once.
+   */
+  const [pending, setPending] = useState<PendingFile[]>([])
+  const [reading, setReading] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [dragging, setDragging] = useState(false)
-  /** What the last import did, in a sentence. Without this an import is
-   *  silent: the rows appear somewhere below and nothing says the file was
-   *  read, which reads as "nothing happened". */
-  const [done, setDone] = useState<string | null>(null)
-  /** Errors shown IN the box, where the person is looking. Sent to the
-   *  page banner too, but that sits a screen above on a long project. */
+  /** What the last import did, a sentence per file. Without this an import
+   *  is silent and reads as "nothing happened". */
+  const [done, setDone] = useState<string[]>([])
+  /** Errors shown IN the box, where the person is looking. */
   const [failed, setFailed] = useState<string | null>(null)
   const fail = (m: string | null) => {
     setFailed(m)
     setError(m)
   }
-  /**
-   * Asked once, at import: has this file already been printed? Most files
-   * arrive AFTER the plate came off -- that is when people remember to log
-   * them -- so the default is yes. Checked, one step writes the run from
-   * the file's own numbers: machine hours, filament off the shelf, the
-   * plate's parts marked printed. Unchecked, the file waits under "Sliced
-   * files" as an estimate until someone records it.
-   */
   // Offered only where printing belongs (stagePlan.canPrint). Before In
   // build a file is read in to price and plan -- never as printed.
   const printing = canPrint(detail.phase, detail.facts.kind)
-  const [printedState, setPrintedNow] = useState(true)
-  const printedNow = printing && printedState
-  const [printedOn, setPrintedOn] = useState(todayISO)
-  /**
-   * How the print went, when it is recorded at upload (CG, 14 Oct: a 16h 26m
-   * plate stopped at 15 went in as clean, because "Already printed" only
-   * knew clean). Stopped or failed asks where it got to, from the file.
-   */
-  const [howWent, setHowWent] = useState<RunOutcome>('success')
-  const [stop, setStop] = useState<{ hours: number; units: number; note: string } | null>(null)
-  const [stopWhy, setStopWhy] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
-  async function pick(file: File | undefined) {
-    if (!file) return
-    fail(null)
-    setDone(null)
-    try {
-      const parsed = await parseSliceFile(file)
-      // Keep the file itself, not only what it said. Packing cannot fail
-      // the import: the numbers are the part that matters. Everything is
-      // worked out BEFORE the preview appears, so the buttons on it never
-      // act on a half-read file (a 22 MB .bgcode takes a moment to pack).
-      const bytes = new Uint8Array(await file.arrayBuffer())
-      const packed = await packFile(bytes)
-      // A file that names no machine, in a shop with one, was printed on
-      // that one. A file that names a machine the shop does not own is left
-      // unmatched: a blank is an open question, a guess looks answered.
-      setPrinterId(
-        matchPrinter(ctx.printerRows, parsed.printerModel)?.id ??
-          (!parsed.printerModel && ctx.printerRows.length === 1 ? ctx.printerRows[0].id : ''),
-      )
-      setMaterialId(matchMaterial(ctx.materials, parsed.totals.material)?.id ?? '')
-      setKept(packed)
-      setTooBig(packed ? null : tooBigNote(bytes.byteLength))
-      setRead(parsed)
-    } catch (e) {
-      setRead(null)
-      fail(e instanceof Error ? e.message : String(e))
-    }
-  }
+  const patchOne = (key: string, p: Partial<PendingFile>) =>
+    setPending((xs) => xs.map((x) => (x.key === key ? { ...x, ...p } : x)))
 
-  function clear() {
-    setRead(null)
-    setKept(null)
-    setTooBig(null)
-    setDragging(false)
-    setPrinterId('')
-    setMaterialId('')
-    setHowWent('success')
-    setStop(null)
-    setStopWhy('')
+  async function pick(files: FileList | File[] | null | undefined) {
+    const list = [...(files ?? [])]
+    if (!list.length) return
+    fail(null)
+    setDone([])
+    const errors: string[] = []
+    const fresh: PendingFile[] = []
+    for (const file of list) {
+      setReading(list.length > 1 ? `Reading ${file.name} (${fresh.length + errors.length + 1} of ${list.length})…` : `Reading ${file.name}…`)
+      try {
+        const parsed = await parseSliceFile(file)
+        // Keep the file itself, not only what it said. Everything is worked
+        // out BEFORE the card appears, so its buttons never act on a
+        // half-read file (a 22 MB .bgcode takes a moment to pack).
+        const bytes = new Uint8Array(await file.arrayBuffer())
+        const packed = await packFile(bytes)
+        const id = { fileName: parsed.fileName, estMinutes: parsed.totals.estMinutes, estGrams: parsed.totals.estGrams }
+        const onProject = detail.slices.find((x) => sameSliceFile(x, id))
+        const inBatch = [...pending, ...fresh].some((x) =>
+          sameSliceFile({ fileName: x.read.fileName, estMinutes: x.read.totals.estMinutes, estGrams: x.read.totals.estGrams }, id),
+        )
+        fresh.push({
+          key: `${file.name}-${crypto.randomUUID()}`,
+          read: parsed,
+          kept: packed,
+          tooBig: packed ? null : tooBigNote(bytes.byteLength),
+          // A file that names no machine, in a shop with one, was printed on
+          // that one. A machine the shop does not own stays unmatched: a
+          // blank is an open question, a guess looks answered.
+          printerId:
+            matchPrinter(ctx.printerRows, parsed.printerModel)?.id ??
+            (!parsed.printerModel && ctx.printerRows.length === 1 ? ctx.printerRows[0].id : ''),
+          materialId: matchMaterial(ctx.materials, parsed.totals.material)?.id ?? '',
+          // Most files arrive AFTER the plate came off -- that is when people
+          // remember to log them -- so the default is yes.
+          printed: true,
+          printedOn: todayISO(),
+          howWent: 'success',
+          stop: null,
+          stopWhy: '',
+          dupOf: onProject ? onProject.importedAt.slice(0, 10) : inBatch ? 'this batch' : null,
+        })
+      } catch (e) {
+        errors.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    setReading(null)
+    setPending((xs) => [...xs, ...fresh])
+    if (errors.length) fail(errors.join(' · '))
     // Without this the same file cannot be picked twice in a row: the input
     // fires change only when the value differs.
     if (fileRef.current) fileRef.current.value = ''
   }
 
-  async function confirm() {
-    if (!read) return
+  function discard(key: string) {
+    setPending((xs) => xs.filter((x) => x.key !== key))
+    setDragging(false)
+  }
+
+  /** Why a card cannot be added yet, or null when it can. */
+  function blocker(p: PendingFile): string | null {
+    const printedNow = printing && p.printed
+    if (printedNow && !p.printerId) return 'Pick the machine above to record the print'
+    if (printedNow && p.howWent !== 'success' && !!p.read.progress && !p.stop) return 'Say how long it ran, above'
+    return null
+  }
+
+  /** Write one card: the import, and the print if it already happened. */
+  async function addOne(p: PendingFile, recordedNow: Set<string>): Promise<{ text: string; parts: number }> {
+    const { read, kept, printerId, materialId, howWent, stop, stopWhy } = p
+    const printedNow = printing && p.printed
+    const res = await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
+      file: kept,
+      fileName: read.fileName,
+      kind: read.kind,
+      printerModel: read.printerModel,
+      printerId: printerId || null,
+      materialText: read.totals.material,
+      materialId: materialId || null,
+      estMinutes: read.totals.estMinutes,
+      estGrams: read.totals.estGrams,
+      notes: read.notes,
+      progress: read.progress,
+      sections: read.sections.map((sec) => ({
+        label: sec.label,
+        qty: sec.qty,
+        estMinutes: sec.estMinutes,
+        estGrams: sec.estGrams,
+        material: sec.material,
+      })),
+    })
+    let recorded: string | null = null
+    // A duplicate is not a second print -- unless you said it printed again
+    // and nothing was recorded from it yet.
+    // `detail` is from before this batch, so a file recorded earlier in the
+    // same batch is remembered here -- the same file dropped twice is one print.
+    const alreadyRecorded =
+      !!res.duplicateOf && (recordedNow.has(res.importId) || detail.runs.some((r) => r.sliceImportId === res.importId))
+    if (alreadyRecorded) {
+      recorded = 'Its print was already recorded, so nothing was counted twice — use “Print it again” on the plate if it really printed twice.'
+    } else if (printedNow && printerId) {
+      const grams = read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)
+      const hours = read.totals.estMinutes == null ? 0 : Math.round((read.totals.estMinutes / 60) * 100) / 100
+      const clean = howWent === 'success'
+      const usedG = clean ? grams : Math.round(stop?.units ?? grams)
+      const usedH = clean ? hours : (stop?.hours ?? hours)
+      const why = stopWhy.trim() || (howWent === 'cancelled' ? 'Stopped part way.' : 'The plate failed.')
+      const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
+        printerId,
+        materialId: materialId || null,
+        unitsUsed: materialId ? usedG : 0,
+        hours: usedH,
+        outcome: howWent,
+        failureReason: clean ? null : why,
+        note: clean ? `From ${read.fileName}` : (stop?.note ?? `From ${read.fileName}`),
+        startedAt: p.printedOn || todayISO(),
+        sliceImportId: res.importId,
+      })
+      recordedNow.add(res.importId)
+      // The plate came off: each part on it gains the copies the plate
+      // holds. Or it did not, and those copies fail with it.
+      const marked = clean
+        ? await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId)
+        : await markPlateFailed(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId, why)
+      const machine = ctx.printerRows.find((x) => x.id === printerId)?.name ?? 'the machine'
+      recorded =
+        `Recorded as ${clean ? 'printed' : howWent === 'cancelled' ? 'stopped part way' : 'failed'} on ${machine}: ${
+          clean ? (hrs(read.totals.estMinutes) ?? '0h') : fmtHours(usedH)
+        }` +
+        (materialId ? `, ${usedG} g off the shelf` : ', no material matched so nothing came off the shelf') +
+        (marked ? `, ${marked} part${marked === 1 ? '' : 's'} marked ${clean ? 'printed' : 'failed'}` : '') +
+        '.'
+    }
+    const bits: string[] = []
+    if (res.duplicateOf) bits.push(`already on this project since ${res.duplicateOf.slice(0, 10)}, not added again`)
+    if (res.partsAdded) bits.push(`${res.partsAdded} part${res.partsAdded === 1 ? '' : 's'} added`)
+    if (res.partsMatched) bits.push(`${res.partsMatched} already on the sheet, estimate updated`)
+    return {
+      text:
+        `${read.fileName} — ${bits.join(' · ') || 'read, nothing to add'}${kept ? ', file kept' : ''}. ` +
+        (recorded ?? 'It is listed under “Plates” below; record it when it comes off the machine and the filament comes off the shelf.'),
+      parts: res.partsAdded + res.partsMatched,
+    }
+  }
+
+  /** Add these cards, in the order they were dropped, then reload once. */
+  async function add(cards: PendingFile[]) {
     setSaving(true)
     fail(null)
+    const notes: string[] = []
+    let parts = 0
+    const recordedNow = new Set<string>()
     try {
-      const res = await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
-        file: kept,
-        fileName: read.fileName,
-        kind: read.kind,
-        printerModel: read.printerModel,
-        printerId: printerId || null,
-        materialText: read.totals.material,
-        materialId: materialId || null,
-        estMinutes: read.totals.estMinutes,
-        estGrams: read.totals.estGrams,
-        notes: read.notes,
-        progress: read.progress,
-        sections: read.sections.map((sec) => ({
-          label: sec.label,
-          qty: sec.qty,
-          estMinutes: sec.estMinutes,
-          estGrams: sec.estGrams,
-          material: sec.material,
-        })),
-      })
-      let recorded: string | null = null
-      const alreadyRecorded =
-        !!res.duplicateOf && detail.runs.some((r) => r.sliceImportId === res.importId)
-      if (alreadyRecorded) {
-        recorded = 'Its print was already recorded, so nothing was counted twice.'
-      } else if (printedNow && printerId) {
-        const grams = read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)
-        const hours =
-          read.totals.estMinutes == null ? 0 : Math.round((read.totals.estMinutes / 60) * 100) / 100
-        const clean = howWent === 'success'
-        const usedG = clean ? grams : Math.round(stop?.units ?? grams)
-        const usedH = clean ? hours : (stop?.hours ?? hours)
-        const why = stopWhy.trim() || (howWent === 'cancelled' ? 'Stopped part way.' : 'The plate failed.')
-        const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
-          printerId,
-          materialId: materialId || null,
-          unitsUsed: materialId ? usedG : 0,
-          hours: usedH,
-          outcome: howWent,
-          failureReason: clean ? null : why,
-          note: clean ? `From ${read.fileName}` : (stop?.note ?? `From ${read.fileName}`),
-          startedAt: printedOn || todayISO(),
-          sliceImportId: res.importId,
-        })
-        // The plate came off: each part on it gains the copies the plate
-        // holds -- one plate of a part that needs five is one of five. Or it
-        // did not, and those copies fail with it.
-        const marked = clean
-          ? await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId)
-          : await markPlateFailed(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId, why)
-        const machine = ctx.printerRows.find((p) => p.id === printerId)?.name ?? 'the machine'
-        recorded =
-          `Recorded as ${clean ? 'printed' : howWent === 'cancelled' ? 'stopped part way' : 'failed'} on ${machine}: ${
-            clean ? (hrs(read.totals.estMinutes) ?? '0h') : fmtHours(usedH)
-          }` +
-          (materialId ? `, ${usedG} g off the shelf` : ', no material matched so nothing came off the shelf') +
-          (marked ? `, ${marked} part${marked === 1 ? '' : 's'} marked ${clean ? 'printed' : 'failed'}` : '') +
-          '.'
+      for (const p of cards) {
+        const r = await addOne(p, recordedNow)
+        notes.push(r.text)
+        parts += r.parts
+        setPending((xs) => xs.filter((x) => x.key !== p.key))
       }
-      const bits: string[] = []
-      if (res.duplicateOf)
-        bits.push(`already on this project since ${res.duplicateOf.slice(0, 10)}, not added again`)
-      if (res.partsAdded) bits.push(`${res.partsAdded} part${res.partsAdded === 1 ? '' : 's'} added`)
-      if (res.partsMatched)
-        bits.push(
-          `${res.partsMatched} already on the sheet, estimate updated`,
-        )
-      setDone(
-        `${read.fileName} — ${bits.join(' · ') || 'read, nothing to add'}${
-          kept ? ', file kept' : ''
-        }. ` +
-          (recorded ??
-            'It is listed under “Plates” below; record it when it comes off the ' +
-              'machine and the filament comes off the shelf.'),
-      )
-      onImported(res.partsAdded + res.partsMatched)
-      clear()
-      await onChanged()
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e))
     } finally {
+      setDone(notes)
+      if (notes.length) {
+        onImported(parts)
+        await onChanged()
+      }
       setSaving(false)
     }
   }
 
   const hrs = (m: number | null) =>
     m == null ? null : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`
+  const ready = pending.filter((p) => !blocker(p))
 
   return (
     <div style={{ marginTop: 12 }}>
@@ -2156,19 +2196,17 @@ function SliceImport({
           <span>That file was not imported: {failed}</span>
         </div>
       )}
-      {done && (
-        <div className="landed-note hint" style={{ marginTop: 0, marginBottom: 10, color: 'var(--ok)' }}>
-          {done}
+      {done.map((d) => (
+        <div key={d} className="landed-note hint" style={{ marginTop: 0, marginBottom: 6, color: 'var(--ok)' }}>
+          {d}
         </div>
-      )}
+      ))}
 
       {/* A label wrapping a visually-hidden input, so the whole box is the
-          control: clickable, focusable, and announced as a file input. A
-          div with an onClick would be none of those. */}
+          control: clickable, focusable, and announced as a file input. */}
       <label
-        // Once the sheet has parts, importing is the exception (a fixed or
-        // added plate), so the box shrinks to one line and stops pushing the
-        // parts down the page.
+        // Once the sheet has parts, importing is the exception, so the box
+        // shrinks to one line and stops pushing the parts down the page.
         className={`drop ${dragging ? 'over' : ''} ${detail.parts.length > 0 ? 'compact' : ''}`.trim()}
         htmlFor="slice-file"
         onDragOver={(e) => {
@@ -2179,16 +2217,17 @@ function SliceImport({
         onDrop={(e) => {
           e.preventDefault()
           setDragging(false)
-          void pick(e.dataTransfer.files?.[0])
+          void pick(e.dataTransfer.files)
         }}
       >
         <span className="dropicon">⤓</span>
         <span className="drop-title">
-          {dragging
-            ? 'Drop it'
-            : detail.parts.length > 0
-              ? 'Add a plate — drop a sliced file, or click'
-              : 'Drop a sliced file here, or click to choose one'}
+          {reading ??
+            (dragging
+              ? 'Drop them'
+              : detail.parts.length > 0
+                ? 'Add plates — drop sliced files, or click'
+                : 'Drop sliced files here, or click to choose — one or several')}
         </span>
         <span className="drop-sub">
           .gcode.3mf from Bambu Studio or Orca · .gcode or .bgcode from PrusaSlicer
@@ -2197,221 +2236,235 @@ function SliceImport({
           id="slice-file"
           ref={fileRef}
           type="file"
-          // The visible label changes while a file is over the box ("Drop
-          // it"), which would make the accessible name change mid-drag. A
-          // fixed aria-label keeps the control's name stable for anyone
-          // using a screen reader, and for the tests.
-          aria-label="Import a sliced file"
+          multiple
+          // A fixed aria-label keeps the control's name stable while the
+          // visible label changes mid-drag.
+          aria-label="Import sliced files"
           accept={SLICE_ACCEPT}
-          disabled={busy || saving}
-          onChange={(e) => void pick(e.target.files?.[0])}
-          // Visually hidden, NOT disabled for the pointer. pointer-events:
-          // none here stops the input being clicked or dropped on at all,
-          // which breaks both the control and every test that drives it.
-          // The wrapping label is what the person actually clicks.
+          disabled={busy || saving || !!reading}
+          onChange={(e) => void pick(e.target.files)}
+          // Visually hidden, NOT disabled for the pointer.
           style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }}
         />
       </label>
-      {detail.parts.length === 0 && (
+      {detail.parts.length === 0 && pending.length === 0 && (
         <div className="hint" style={{ marginTop: 6 }}>
-          Guma reads the objects on the plate, the machine and the filament, and shows you before
-          writing anything. You choose whether it has already been printed; if not, it waits as an
+          Guma reads the objects on each plate, the machine and the filament, and shows you before
+          writing anything. You choose whether each has already been printed; if not, it waits as an
           estimate until you record it.
         </div>
       )}
 
-      {read && (
-        <div className="pane" style={{ marginTop: 10 }}>
-          <div className="sechead">
-            <h4>{read.fileName}</h4>
-            <span className="sub">
-              {read.totals.sections} section{read.totals.sections === 1 ? '' : 's'} ·{' '}
-              {read.totals.units} cop{read.totals.units === 1 ? 'y' : 'ies'}
-              {read.totals.estGrams != null && ` · ~${read.totals.estGrams} g`}
-              {read.totals.estMinutes != null && ` · ~${hrs(read.totals.estMinutes)}`}
-            </span>
-          </div>
-
-          <div className="sheetwrap" style={{ maxHeight: 260 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th style={{ width: '50%' }}>Part</th>
-                  <th className="r">Copies</th>
-                  <th className="r">Est. grams</th>
-                  <th className="r">Est. time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {read.sections.map((sec) => (
-                  <tr key={sec.label}>
-                    <td>
-                      <span className="pn">{sec.label}</span>
-                    </td>
-                    <td className="r">{sec.qty}</td>
-                    <td className="r">{sec.estGrams ?? '—'}</td>
-                    <td className="r">{hrs(sec.estMinutes) ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="btnrow" style={{ marginTop: 10, alignItems: 'flex-end' }}>
-            <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
-              <label className="lbl" htmlFor="slice-printer">
-                Machine{read.printerModel ? ` — file says “${read.printerModel}”` : ''}
-              </label>
-              <select
-                id="slice-printer"
-                value={printerId}
-                onChange={(e) => setPrinterId(e.target.value)}
-              >
-                <option value="">Not matched</option>
-                {ctx.printerRows.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                    {p.model ? ` · ${p.model}` : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
-              <label className="lbl" htmlFor="slice-material">
-                Material{read.totals.material ? ` — file says “${read.totals.material}”` : ''}
-              </label>
-              <select
-                id="slice-material"
-                value={materialId}
-                onChange={(e) => setMaterialId(e.target.value)}
-              >
-                <option value="">Not matched</option>
-                {ctx.materials.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {tooBig && (
-            <div className="hint" style={{ marginTop: 6, color: 'var(--warn)' }}>
-              {tooBig}
-            </div>
-          )}
-          {kept && (
-            <div className="hint" style={{ marginTop: 6 }}>
-              The file itself will be kept with the project — {mb(kept.byteSize)}, stored as{' '}
-              {mb(kept.storedSize)}. Reprinting in eight months means reprinting THIS file, not one
-              with the same name.
-            </div>
-          )}
-          {read.notes.map((n) => (
-            <div className="hint" key={n} style={{ marginTop: 6 }}>
-              {n}
-            </div>
-          ))}
-
-          {printing && (
-          <div className="btnrow" style={{ marginTop: 10, alignItems: 'center' }}>
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
-              <input
-                type="checkbox"
-                checked={printedNow}
-                onChange={(e) => setPrintedNow(e.target.checked)}
-              />
-              Already printed — record it now
-            </label>
-            {printedNow && (
-              <input
-                type="date"
-                aria-label="Printed on"
-                value={printedOn}
-                onChange={(e) => setPrintedOn(e.target.value)}
-                style={{ width: 150 }}
-              />
-            )}
-            {printedNow && (
-              <select
-                aria-label="How it went"
-                value={howWent}
-                style={{ width: 'auto' }}
-                onChange={(e) => {
-                  setHowWent(e.target.value as RunOutcome)
-                  setStop(null)
-                }}
-              >
-                <option value="success">Came off clean</option>
-                <option value="cancelled">Stopped part way</option>
-                <option value="failed">Failed</option>
-              </select>
-            )}
-          </div>
-          )}
-          {printedNow && howWent !== 'success' && (
-            <>
-              <div className="fld" style={{ marginTop: 8, marginBottom: 0 }}>
-                <label className="lbl" htmlFor="imp-why">
-                  What went wrong
-                </label>
-                <input
-                  id="imp-why"
-                  value={stopWhy}
-                  placeholder="Ghost printing, clog, warped off the plate…"
-                  onChange={(e) => setStopWhy(e.target.value)}
-                />
-              </div>
-              <StoppedPrint
-                ctx={ctx}
-                slice={{
-                  id: null,
-                  fileName: read.fileName,
-                  estMinutes: read.totals.estMinutes,
-                  estGrams: read.totals.estGrams,
-                  progress: read.progress,
-                  keptBytes: null,
-                }}
-                unit={ctx.materials.find((m) => m.id === materialId)?.unit ?? 'g'}
-                onApply={(h, u, note) => setStop({ hours: h, units: u, note })}
-              />
-            </>
-          )}
-          {printedNow && howWent === 'success' && (
-            <div className="hint" style={{ marginTop: 4 }}>
-              {printerId
-                ? `Writes the run from the file: ${hrs(read.totals.estMinutes) ?? 'no time in the file'} on the machine` +
-                  (materialId
-                    ? `, ${read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)} g off the shelf, `
-                    : ', no material matched — pick one or nothing comes off the shelf, ') +
-                  'plate parts marked printed. If it stopped part way, choose that above; to fix it later, use “Correct this print” on the plate.'
-                : 'Pick the machine it printed on — a print run needs one.'}
-            </div>
-          )}
-
-          <div className="btnrow" style={{ marginTop: 10 }}>
-            <button
-              type="button"
-              className="btn sm primary"
-              disabled={busy || saving || (printedNow && !printerId) || (printedNow && howWent !== 'success' && !!read.progress && !stop)}
-              onClick={() => void confirm()}
-            >
-              {printedNow && !printerId
-                ? 'Pick the machine above to record the print'
-                : printedNow && howWent !== 'success' && !!read.progress && !stop
-                  ? 'Say how long it ran, above'
-                  : printedNow
-                    ? howWent === 'success'
-                      ? 'Add to the build sheet and record the print'
-                      : 'Add to the build sheet and record where it stopped'
-                    : `Add ${read.totals.sections} section${read.totals.sections === 1 ? '' : 's'} to the build sheet`}
-            </button>
-            <button type="button" className="btn sm" disabled={saving} onClick={clear}>
-              Discard
-            </button>
-          </div>
+      {pending.length > 1 && (
+        <div className="pane" style={{ marginTop: 10, marginBottom: 0, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ flex: 1, minWidth: 200, fontSize: 12 }}>
+            <b>{pending.length} files read.</b> Check each below — machine, material, and whether it printed — then add
+            them together. They are added in this order, so a failed plate before its reprint stays in that order.
+          </span>
+          <button
+            type="button"
+            className="btn sm primary"
+            disabled={busy || saving || ready.length !== pending.length}
+            title={ready.length !== pending.length ? 'One of the files below still needs an answer.' : undefined}
+            onClick={() => void add(pending)}
+          >
+            {saving ? 'Adding…' : ready.length !== pending.length ? `${pending.length - ready.length} still need an answer` : `Add all ${pending.length}`}
+          </button>
+          <button type="button" className="btn sm" disabled={saving} onClick={() => setPending([])}>
+            Discard all
+          </button>
         </div>
       )}
+
+      {pending.map((p, i) => {
+        const { read } = p
+        const printedNow = printing && p.printed
+        // The first card keeps the plain ids the page has always had.
+        const sfx = i === 0 ? '' : `-${i + 1}`
+        const block = blocker(p)
+        return (
+          <div className="pane" style={{ marginTop: 10 }} key={p.key} role="group" aria-label={`Review ${read.fileName}`}>
+            <div className="sechead">
+              <h4>{read.fileName}</h4>
+              <span className="sub">
+                {read.totals.sections} section{read.totals.sections === 1 ? '' : 's'} ·{' '}
+                {read.totals.units} cop{read.totals.units === 1 ? 'y' : 'ies'}
+                {read.totals.estGrams != null && ` · ~${read.totals.estGrams} g`}
+                {read.totals.estMinutes != null && ` · ~${hrs(read.totals.estMinutes)}`}
+              </span>
+            </div>
+            {p.dupOf && (
+              <div className="attn warn" role="note" style={{ marginTop: 0, marginBottom: 8 }}>
+                <span>
+                  {p.dupOf === 'this batch'
+                    ? 'The same file is already in this batch — it will be counted once.'
+                    : `This file is already on the project (imported ${p.dupOf}). Adding it again changes nothing; if it printed a second time, use “Print it again” on its plate instead.`}
+                </span>
+              </div>
+            )}
+
+            <div className="sheetwrap" style={{ maxHeight: 260 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: '50%' }}>Part</th>
+                    <th className="r">Copies</th>
+                    <th className="r">Est. grams</th>
+                    <th className="r">Est. time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {read.sections.map((sec) => (
+                    <tr key={sec.label}>
+                      <td>
+                        <span className="pn">{sec.label}</span>
+                      </td>
+                      <td className="r">{sec.qty}</td>
+                      <td className="r">{sec.estGrams ?? '—'}</td>
+                      <td className="r">{hrs(sec.estMinutes) ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="btnrow" style={{ marginTop: 10, alignItems: 'flex-end' }}>
+              <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
+                <label className="lbl" htmlFor={`slice-printer${sfx}`}>
+                  Machine{read.printerModel ? ` — file says “${read.printerModel}”` : ''}
+                </label>
+                <select id={`slice-printer${sfx}`} value={p.printerId} onChange={(e) => patchOne(p.key, { printerId: e.target.value })}>
+                  <option value="">Not matched</option>
+                  {ctx.printerRows.map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.name}
+                      {x.model ? ` · ${x.model}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
+                <label className="lbl" htmlFor={`slice-material${sfx}`}>
+                  Material{read.totals.material ? ` — file says “${read.totals.material}”` : ''}
+                </label>
+                <select id={`slice-material${sfx}`} value={p.materialId} onChange={(e) => patchOne(p.key, { materialId: e.target.value })}>
+                  <option value="">Not matched</option>
+                  {ctx.materials.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {p.tooBig && (
+              <div className="hint" style={{ marginTop: 6, color: 'var(--warn)' }}>
+                {p.tooBig}
+              </div>
+            )}
+            {p.kept && (
+              <div className="hint" style={{ marginTop: 6 }}>
+                The file itself will be kept with the project — {mb(p.kept.byteSize)}, stored as {mb(p.kept.storedSize)}.
+                Reprinting in eight months means reprinting THIS file, not one with the same name.
+              </div>
+            )}
+            {read.notes.map((n) => (
+              <div className="hint" key={n} style={{ marginTop: 6 }}>
+                {n}
+              </div>
+            ))}
+
+            {printing && (
+              <div className="btnrow" style={{ marginTop: 10, alignItems: 'center' }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                  <input type="checkbox" checked={printedNow} onChange={(e) => patchOne(p.key, { printed: e.target.checked })} />
+                  Already printed — record it now
+                </label>
+                {printedNow && (
+                  <input
+                    type="date"
+                    aria-label="Printed on"
+                    value={p.printedOn}
+                    onChange={(e) => patchOne(p.key, { printedOn: e.target.value })}
+                    style={{ width: 150 }}
+                  />
+                )}
+                {printedNow && (
+                  <select
+                    aria-label="How it went"
+                    value={p.howWent}
+                    style={{ width: 'auto' }}
+                    onChange={(e) => patchOne(p.key, { howWent: e.target.value as RunOutcome, stop: null })}
+                  >
+                    <option value="success">Came off clean</option>
+                    <option value="cancelled">Stopped part way</option>
+                    <option value="failed">Failed</option>
+                  </select>
+                )}
+              </div>
+            )}
+            {printedNow && p.howWent !== 'success' && (
+              <>
+                <div className="fld" style={{ marginTop: 8, marginBottom: 0 }}>
+                  <label className="lbl" htmlFor={`imp-why${sfx}`}>
+                    What went wrong
+                  </label>
+                  <input
+                    id={`imp-why${sfx}`}
+                    value={p.stopWhy}
+                    placeholder="Ghost printing, clog, warped off the plate…"
+                    onChange={(e) => patchOne(p.key, { stopWhy: e.target.value })}
+                  />
+                </div>
+                <StoppedPrint
+                  ctx={ctx}
+                  slice={{
+                    id: null,
+                    fileName: read.fileName,
+                    estMinutes: read.totals.estMinutes,
+                    estGrams: read.totals.estGrams,
+                    progress: read.progress,
+                    keptBytes: null,
+                  }}
+                  unit={ctx.materials.find((m) => m.id === p.materialId)?.unit ?? 'g'}
+                  onApply={(h, u, note) => patchOne(p.key, { stop: { hours: h, units: u, note } })}
+                />
+              </>
+            )}
+            {printedNow && p.howWent === 'success' && (
+              <div className="hint" style={{ marginTop: 4 }}>
+                {p.printerId
+                  ? `Writes the run from the file: ${hrs(read.totals.estMinutes) ?? 'no time in the file'} on the machine` +
+                    (p.materialId
+                      ? `, ${read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)} g off the shelf, `
+                      : ', no material matched — pick one or nothing comes off the shelf, ') +
+                    'plate parts marked printed. If it stopped part way, choose that above; to fix it later, use “correct” on the print under its plate.'
+                  : 'Pick the machine it printed on — a print run needs one.'}
+              </div>
+            )}
+
+            <div className="btnrow" style={{ marginTop: 10 }}>
+              <button
+                type="button"
+                className={`btn sm ${pending.length > 1 ? '' : 'primary'}`.trim()}
+                disabled={busy || saving || !!block}
+                onClick={() => void add([p])}
+              >
+                {block ??
+                  (printedNow
+                    ? p.howWent === 'success'
+                      ? `Add${pending.length > 1 ? ' this one' : ''} to the build sheet and record the print`
+                      : `Add${pending.length > 1 ? ' this one' : ''} to the build sheet and record where it stopped`
+                    : `Add ${read.totals.sections} section${read.totals.sections === 1 ? '' : 's'} to the build sheet`)}
+              </button>
+              <button type="button" className="btn sm" disabled={saving} onClick={() => discard(p.key)}>
+                Discard
+              </button>
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -2753,11 +2806,33 @@ function SliceRuns({
         const failed = runs.filter((r) => r.outcome !== 'success').length
         // A failed copy's replacement file says whose it is (CG, 9 Oct):
         // it is not a new plate of work, it is that copy's second go.
+        // Or it printed a copy that had failed -- a reprint, whether or not
+        // the file was named as its replacement (CG, 15 Oct).
+        const runIds = new Set(runs.map((r) => r.id))
         const fixes = detail.parts.flatMap((p) => {
           const cs = new Set<number>()
-          for (const h of p.history) if (h.sliceImportId && g.ids.includes(h.sliceImportId)) (h.copies ?? []).forEach((c) => cs.add(c))
+          for (const h of p.history) {
+            if (h.sliceImportId && g.ids.includes(h.sliceImportId)) (h.copies ?? []).forEach((c) => cs.add(c))
+            if (h.runId && runIds.has(h.runId) && h.fromStatus === 'reprint') (h.copies ?? []).forEach((c) => cs.add(c))
+          }
           return cs.size ? [`${p.label}, copy ${[...cs].sort((a, b) => a - b).join(' & ')}`] : []
         })
+        // What this plate makes, by name -- the thread back to the build sheet.
+        const makes = (() => {
+          const by = new Map<string, number>()
+          for (const id of g.ids)
+            for (const sec of detail.slices.find((x) => x.id === id)?.sections ?? []) {
+              const label = detail.parts.find((p) => p.id === sec.partId)?.label ?? sec.label
+              if (id === g.first.id) by.set(label, (by.get(label) ?? 0) + Math.max(1, sec.qty ?? 1))
+            }
+          return [...by].map(([l, q]) => (q > 1 ? `${l} ×${q}` : l))
+        })()
+        const latest = runs[0]
+        const status = !latest
+          ? { cls: '', text: 'not printed yet' }
+          : latest.outcome === 'success'
+            ? { cls: 'ok', text: runs.length > 1 ? `printed · ${runs.length} prints` : 'printed' }
+            : { cls: 'crit', text: latest.outcome === 'failed' ? 'failed' : 'stopped part way' }
         return (
           <div className="plate" key={s.id}>
             <div className="platehead">
@@ -2786,12 +2861,13 @@ function SliceRuns({
                     file not stored
                   </span>
                 )}
-                {runs.length > 0 && (
-                  <span className="chip" style={{ color: 'var(--ok)' }}>
-                    recorded{runs.length > 1 ? ` ×${runs.length}` : ''}
-                    {failed > 0 ? ` · ${failed} failed` : ''}
-                  </span>
-                )}
+                <span
+                  className="chip"
+                  data-testid={`plate-status-${s.id}`}
+                  style={{ color: status.cls === 'ok' ? 'var(--ok)' : status.cls === 'crit' ? 'var(--red)' : 'var(--txt-3)' }}
+                >
+                  {status.text}
+                </span>
               </div>
               {openId !== s.id && (
                 <div className="btnrow" style={{ margin: 0 }}>
@@ -2813,18 +2889,7 @@ function SliceRuns({
                       disabled={busy || saving}
                       onClick={() => open(s)}
                     >
-                      {runs.length ? 'Record another run' : 'This print happened'}
-                    </button>
-                  )}
-                  {runs.length > 0 && (
-                    <button
-                      type="button"
-                      className="btn sm"
-                      disabled={busy || saving}
-                      title="Fix what was recorded — it stopped part way, the grams were off — without removing it."
-                      onClick={() => openCorrect(s, runs[0])}
-                    >
-                      Correct this print
+                      {runs.length ? 'Print it again' : 'This print happened'}
                     </button>
                   )}
                   {/* Removing an import is allowed and deliberately small.
@@ -2906,11 +2971,40 @@ function SliceRuns({
               </div>
             )}
 
-            {runs.length > 0 && openId !== s.id && (
-              <div className="plmeta" style={{ marginTop: 4, color: 'var(--ok)' }}>
-                {Math.round(used)} {ctx.materials.find((m) => m.id === s.materialId)?.unit ?? 'g'} off the
-                spool · {fmtHours(hours)} of machine time
-                in this project&rsquo;s cost
+            {makes.length > 0 && (
+              <div className="plmeta" style={{ marginTop: 4 }}>
+                Makes {makes.join(', ')}
+              </div>
+            )}
+            {runs.length > 0 && (
+              <div className="plateprints" role="list" aria-label={`Prints of ${s.fileName}`}>
+                {[...runs].reverse().map((r) => (
+                  <PrintLine
+                    key={r.id}
+                    run={r}
+                    parts={detail.parts}
+                    busy={busy || saving}
+                    onCorrect={openId === s.id ? undefined : () => openCorrect(s, r)}
+                    onRemove={async (undo) => {
+                      setSaving(true)
+                      setError(null)
+                      try {
+                        await deletePrintRun(ctx.shop.id, r.id, undo)
+                        await onChanged()
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : String(e))
+                      } finally {
+                        setSaving(false)
+                      }
+                    }}
+                  />
+                ))}
+                {runs.length > 1 && (
+                  <div className="plmeta">
+                    {Math.round(used)} {ctx.materials.find((m) => m.id === s.materialId)?.unit ?? 'g'} ·{' '}
+                    {fmtHours(hours)} across {runs.length} prints{failed ? `, ${failed} that did not finish` : ''}
+                  </div>
+                )}
               </div>
             )}
             {/* Recorded as clean, but a copy this plate prints has been
@@ -3214,18 +3308,22 @@ function PartVariants({
             type="button"
             className={`chip ${on ? 'on' : ''}`.trim()}
             disabled={busy || saving}
-            title={`${v.fileName} · imported ${v.importedAt.slice(0, 10)}${
+            title={`${v.fileName} · ${v.printerName ?? v.printerModel ?? 'unknown machine'} · imported ${v.importedAt.slice(0, 10)}${
               v.estGrams != null ? ` · ~${Math.round(v.estGrams)} g` : ''
             }`}
             onClick={() => void choose(v.sectionId)}
           >
-            {v.printerName ?? v.printerModel ?? 'unknown machine'} · {mins(v.estMinutes)}
+            {/* Which FILE, not only which machine: two files for one part on
+                one machine read as the same chip twice (CG, 15 Oct). */}
+            <span className="pvar-file">{v.fileName.replace(/\.(gcode\.3mf|bgcode|gcode|3mf)$/i, '')}</span> ·{' '}
+            {mins(v.estMinutes)}
+            {v.estGrams != null ? ` · ${Math.round(v.estGrams)} g` : ''}
           </button>
         )
       })}
       {part.variants.length > 1 && !picked && (
         <span className="pmeta" style={{ color: 'var(--warn)' }}>
-          assuming the fastest{spread != null && ` — ${spread}% between them`}
+          {spread ? `estimating from the fastest — ${spread}% between them; click one to choose` : 'estimating from the first; click one to choose'}
         </span>
       )}
       {isOnSharedPlate(variant) && (
@@ -4629,6 +4727,63 @@ function BuildSheet({
  * or a lookup would not get filled in, and a log nobody fills in is worse
  * than no log at all, because it looks like evidence.
  */
+/**
+ * What it took, as totals: the prints themselves are listed once, under
+ * their plates. This is the sum a person checks -- filament, machine time,
+ * their own time, and what failures cost of it.
+ */
+function TookTotals({
+  detail,
+  money,
+  fromPlates,
+}: {
+  detail: ProjectDetail
+  money: (n: number) => string
+  fromPlates: number
+}) {
+  const a = detail.actuals
+  const yours = a.designHours + a.finishingHours + a.adminHours
+  const lost = detail.runs.filter((r) => r.outcome !== 'success')
+  const lostH = lost.reduce((t, r) => t + (r.hours ?? 0), 0)
+  // From the prints themselves: a stopped print burned filament too, which
+  // the actuals' failedUnits (failed outcomes only) leaves out.
+  const lostU = lost.reduce((t, r) => t + (r.unitsUsed ?? 0), 0)
+  const unit = detail.runs[0]?.unit ?? 'g'
+  return (
+    <div className="tooktot" data-testid="took-totals">
+      <div>
+        <span className="lbl">Filament</span>
+        <b>
+          {Math.round(a.materialUnits)} {unit}
+        </b>
+        <span className="sub">{money(a.materialCost)} off the shelf</span>
+      </div>
+      <div>
+        <span className="lbl">Machine time</span>
+        <b>{fmtHours(a.machineHours)}</b>
+        <span className="sub">
+          {a.runs} print{a.runs === 1 ? '' : 's'}
+          {fromPlates > 0 ? ` · ${fromPlates === a.runs ? 'all' : fromPlates} listed under their plates` : ''}
+        </span>
+      </div>
+      <div>
+        <span className="lbl">Your time</span>
+        <b>{fmtHours(yours)}</b>
+        <span className="sub">{yours > 0 ? 'logged below' : 'nothing logged yet'}</span>
+      </div>
+      <div>
+        <span className="lbl">Lost to failures</span>
+        <b style={{ color: lost.length ? 'var(--red)' : undefined }}>
+          {lost.length ? `${Math.round(lostU)} ${unit} · ${fmtHours(lostH)}` : 'none'}
+        </b>
+        <span className="sub">
+          {lost.length ? `${lost.length} print${lost.length === 1 ? '' : 's'} that did not finish` : 'every print came off'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function RunLog({
   ctx,
   detail,
@@ -4636,6 +4791,7 @@ function RunLog({
   busy,
   onChanged,
   setError,
+  platesAbove = false,
 }: {
   ctx: ShopContext
   detail: ProjectDetail
@@ -4643,13 +4799,15 @@ function RunLog({
   busy: boolean
   onChanged: () => Promise<void>
   setError: (m: string | null) => void
+  /** The Plates list is on this page, so a print from a file is listed
+   *  there, under its file, and not a second time here (CG, 15 Oct). */
+  platesAbove?: boolean
 }) {
   const [mode, setMode] = useState<'none' | 'run' | 'work'>('none')
-  /** The print being removed, and whether its copies go back (CG, 13 Oct:
-   *  "remove something from What it took … flag or auto edit upstream"). */
-  const [removingRun, setRemovingRun] = useState<string | null>(null)
-  const [undoCopies, setUndoCopies] = useState(true)
   const [saving, setSaving] = useState(false)
+  const sliceIds = new Set(detail.slices.map((x) => x.id))
+  const fromPlates = platesAbove ? detail.runs.filter((r) => r.sliceImportId && sliceIds.has(r.sliceImportId)) : []
+  const looseRuns = platesAbove ? detail.runs.filter((r) => !fromPlates.includes(r)) : detail.runs
 
   const [run, setRun] = useState<PrintRunInput>({
     printerId: ctx.printers[0]?.id ?? '',
@@ -4906,88 +5064,15 @@ function RunLog({
 
       {(detail.runs.length > 0 || detail.work.length > 0) && (
         <div style={{ marginTop: 12 }}>
-          {detail.runs.map((r) => (
-            <div key={r.id} className="histitem">
-              <span
-                style={{
-                  color:
-                    r.outcome === 'failed'
-                      ? 'var(--red)'
-                      : r.outcome === 'cancelled'
-                        ? 'var(--warn)'
-                        : 'var(--ok)',
-                }}
-              >
-                {r.outcome === 'success' ? '✓' : r.outcome === 'failed' ? '✕' : '−'}
-              </span>
-              <span style={{ color: 'var(--txt)' }}>
-                {r.unitsUsed ?? 0}
-                {r.unit ?? 'g'} · {fmtHours(r.hours ?? 0)}
-              </span>
-              <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>
-                {r.printerName ?? 'machine gone'} · {r.materialName ?? 'material gone'}
-                {r.startedAt ? ` · ${r.startedAt.slice(0, 10)}` : ''}
-                {r.operator ? ` · ${r.operator}` : ''}
-              </span>
-              <button
-                type="button"
-                className="linkbtn"
-                style={{ marginLeft: 'auto', fontSize: 11, width: 'auto', marginTop: 0 }}
-                disabled={saving}
-                aria-label={`Remove the print of ${r.startedAt?.slice(0, 10) ?? 'unknown date'}`}
-                title="Remove this run. Its material goes back on the shelf."
-                onClick={() => {
-                  setRemovingRun(removingRun === r.id ? null : r.id)
-                  setUndoCopies(true)
-                }}
-              >
-                remove
-              </button>
-              {r.failureReason && <div className="histnote">{r.failureReason}</div>}
-              {r.note && r.note !== r.failureReason && <div className="histnote">{r.note}</div>}
-              {removingRun === r.id &&
-                (() => {
-                  const marked = runMarks(detail.parts, r.id)
-                  const n = marked.reduce((a, m) => a + m.copies.length, 0)
-                  return (
-                    <div className="attn crit" role="alertdialog" aria-label="Remove this print" style={{ marginTop: 6, width: '100%' }}>
-                      <div>
-                        <b>Remove this print?</b> Its {r.unitsUsed ?? 0}
-                        {r.unit ?? 'g'} go back on the shelf and its {fmtHours(r.hours ?? 0)} come off the project.
-                      </div>
-                      {n > 0 && (
-                        <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginTop: 6, fontSize: 12 }}>
-                          <input type="checkbox" checked={undoCopies} onChange={(e) => setUndoCopies(e.target.checked)} />
-                          <span>
-                            It marked {n} cop{n === 1 ? 'y' : 'ies'}{' '}
-                            {r.outcome === 'success' ? 'printed' : 'failed'} on the build sheet —{' '}
-                            {marked.map((m) => `${m.label} ${m.copies.map((c) => `#${c}`).join(', ')}`).join('; ')}. Set{' '}
-                            {n === 1 ? 'it' : 'them'} back to not printed.
-                          </span>
-                        </label>
-                      )}
-                      <div className="btnrow" style={{ marginTop: 8 }}>
-                        <button
-                          type="button"
-                          className="btn sm danger"
-                          disabled={saving}
-                          onClick={() =>
-                            void guard(async () => {
-                              await deletePrintRun(ctx.shop.id, r.id, n > 0 && undoCopies)
-                              setRemovingRun(null)
-                            })
-                          }
-                        >
-                          Remove it
-                        </button>
-                        <button type="button" className="btn sm" onClick={() => setRemovingRun(null)}>
-                          Keep it
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })()}
-            </div>
+          <TookTotals detail={detail} money={money} fromPlates={fromPlates.length} />
+          {looseRuns.map((r) => (
+            <PrintLine
+              key={r.id}
+              run={r}
+              parts={detail.parts}
+              busy={saving}
+              onRemove={(undo) => guard(() => deletePrintRun(ctx.shop.id, r.id, undo))}
+            />
           ))}
           {detail.work.map((w) => (
             <div key={w.id} className="histitem">
@@ -5011,11 +5096,6 @@ function RunLog({
               {w.note && <div className="histnote">{w.note}</div>}
             </div>
           ))}
-          <div className="hint" style={{ marginTop: 6 }}>
-            {detail.runs.length} run{detail.runs.length === 1 ? '' : 's'} ·{' '}
-            {fmtHours(detail.actuals.designHours + detail.actuals.finishingHours + detail.actuals.adminHours)}{' '}
-            logged · {money(detail.actuals.materialCost)} of material off the shelf
-          </div>
         </div>
       )}
     </div>
@@ -6848,6 +6928,125 @@ function PendingRevision({
  * The copies one recorded print moved that are still where it put them --
  * what removing it would put back. 1-based, per part.
  */
+/**
+ * One recorded print, said once (CG, 15 Oct: "tough to understand what has
+ * been imported versus printed versus what it took"). A print that came
+ * from a file is listed under that file's plate; one with no file is listed
+ * in What it took. Removing it asks whether the copies it marked go back.
+ */
+function PrintLine({
+  run: r,
+  parts,
+  busy,
+  onRemove,
+  onCorrect,
+  showFile,
+}: {
+  run: PrintRunRow
+  parts: PartRow[]
+  busy: boolean
+  onRemove: (undoCopies: boolean) => Promise<void>
+  onCorrect?: () => void
+  /** Say which file it came from -- only where the plate is not the heading. */
+  showFile?: string | null
+}) {
+  const [removing, setRemoving] = useState(false)
+  const [undoCopies, setUndoCopies] = useState(true)
+  const marked = runMarks(parts, r.id)
+  const n = marked.reduce((a, m) => a + m.copies.length, 0)
+  const how = r.outcome === 'success' ? 'came off clean' : r.outcome === 'failed' ? 'failed' : 'stopped part way'
+  // The note "From <file>" says nothing under the file's own heading.
+  const note = r.note && r.note !== r.failureReason && !/^From [^—]*$/.test(r.note.trim()) ? r.note : null
+  return (
+    <div className="histitem" data-testid={`print-${r.id}`}>
+      <span
+        style={{
+          color: r.outcome === 'failed' ? 'var(--red)' : r.outcome === 'cancelled' ? 'var(--warn)' : 'var(--ok)',
+        }}
+      >
+        {r.outcome === 'success' ? '✓' : r.outcome === 'failed' ? '✕' : '−'}
+      </span>
+      <span style={{ color: 'var(--txt)' }}>
+        {r.startedAt ? `${r.startedAt.slice(0, 10)} · ` : ''}
+        {how} · {fmtHours(r.hours ?? 0)} · {r.unitsUsed ?? 0} {r.unit ?? 'g'}
+      </span>
+      <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>
+        {r.printerName ?? 'machine gone'} · {r.materialName ?? 'material gone'}
+        {r.operator ? ` · ${r.operator}` : ''}
+        {showFile ? ` · ${showFile}` : ''}
+        {marked.length > 0 &&
+          ` · ${r.outcome === 'success' ? 'printed' : 'failed'} ${marked
+            .map((m) => `${m.label} #${m.copies.join(', #')}`)
+            .join('; ')}`}
+      </span>
+      <span style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+        {onCorrect && (
+          <button
+            type="button"
+            className="linkbtn"
+            style={{ fontSize: 11, width: 'auto', marginTop: 0 }}
+            disabled={busy}
+            aria-label={`Correct the print of ${r.startedAt?.slice(0, 10) ?? 'unknown date'}`}
+            title="Fix what was recorded — it stopped part way, the grams were off — without removing it."
+            onClick={onCorrect}
+          >
+            correct
+          </button>
+        )}
+        <button
+          type="button"
+          className="linkbtn"
+          style={{ fontSize: 11, width: 'auto', marginTop: 0 }}
+          disabled={busy}
+          aria-label={`Remove the print of ${r.startedAt?.slice(0, 10) ?? 'unknown date'}`}
+          title="Remove this run. Its material goes back on the shelf."
+          onClick={() => {
+            setRemoving((x) => !x)
+            setUndoCopies(true)
+          }}
+        >
+          remove
+        </button>
+      </span>
+      {r.failureReason && <div className="histnote">{r.failureReason}</div>}
+      {note && <div className="histnote">{note}</div>}
+      {removing && (
+        <div className="attn crit" role="alertdialog" aria-label="Remove this print" style={{ marginTop: 6, width: '100%' }}>
+          <div>
+            <b>Remove this print?</b> Its {r.unitsUsed ?? 0}
+            {r.unit ?? 'g'} go back on the shelf and its {fmtHours(r.hours ?? 0)} come off the project.
+          </div>
+          {n > 0 && (
+            <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginTop: 6, fontSize: 12 }}>
+              <input type="checkbox" checked={undoCopies} onChange={(e) => setUndoCopies(e.target.checked)} />
+              <span>
+                It marked {n} cop{n === 1 ? 'y' : 'ies'} {r.outcome === 'success' ? 'printed' : 'failed'} on the
+                build sheet — {marked.map((m) => `${m.label} ${m.copies.map((c) => `#${c}`).join(', ')}`).join('; ')}.
+                Set {n === 1 ? 'it' : 'them'} back to not printed.
+              </span>
+            </label>
+          )}
+          <div className="btnrow" style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              className="btn sm danger"
+              disabled={busy}
+              onClick={() =>
+                void onRemove(n > 0 && undoCopies).then(() => setRemoving(false))
+              }
+            >
+              Remove it
+            </button>
+            <button type="button" className="btn sm" onClick={() => setRemoving(false)}>
+              Keep it
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function runMarks(parts: PartRow[], runId: string): { label: string; copies: number[] }[] {
   const out: { label: string; copies: number[] }[] = []
   for (const p of parts) {
