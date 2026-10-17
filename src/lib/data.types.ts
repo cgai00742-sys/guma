@@ -1244,6 +1244,35 @@ export interface SliceSectionInput {
   estMinutes: number | null
   estGrams: number | null
   material: string | null
+  /** Where this object goes, as sorted by a person at import (CG, 16 Oct:
+   *  same-named objects in different files are often different parts). An
+   *  existing part, or a new one under this name. Absent: matched by name. */
+  assign?: SectionAssign | null
+}
+
+/** One object's place on the build sheet: an existing part, a new part, or
+ *  the part of this project with this exact name (made by an earlier file
+ *  of the same batch) -- made under that name if there is none yet. */
+export type SectionAssign = { partId: string } | { newLabel: string } | { label: string }
+
+/** What moving one object of a plate to another part did. */
+export interface SectionMoveResult {
+  partId: string
+  /** Copies the plate's prints marked, moved onto the new part. */
+  moved: number
+  /** Copies that could not be marked there: the part had none left to mark. */
+  unplaced: number
+}
+
+/** A part name not already taken on this project: "X", then "X (2)", "X (3)". */
+export function uniqueLabel(label: string, taken: Iterable<string>): string {
+  const t = new Set([...taken].map((x) => x.trim().toLowerCase()))
+  const base = label.trim()
+  if (!t.has(base.toLowerCase())) return base
+  for (let n = 2; ; n++) {
+    const c = `${base} (${n})`
+    if (!t.has(c.toLowerCase())) return c
+  }
 }
 
 /** The file itself, packed by sliceFile.ts. Absent when it was over the

@@ -522,3 +522,110 @@ describe('a quote saved across two machines', () => {
     expect(n).toEqual({ n: 0 })
   })
 })
+
+describe('sorting the objects of a plate onto parts (CG, 16 Oct)', () => {
+  const BATHY = (fileName: string, grams: number): SliceImportInput => ({
+    ...BUOY,
+    fileName,
+    estGrams: grams,
+    estMinutes: grams * 2.8,
+    sections: [{ label: 'Maui BATHY 3x', qty: 1, estMinutes: grams * 2.8, estGrams: grams, material: 'PLA' }],
+  })
+  const partsNow = () =>
+    currentDb.sqlite.prepare('select id, label, copy_states, printed_n, reprint_n from job_parts where job_id = ? order by sort').all(JOB) as {
+      id: string
+      label: string
+      copy_states: string | null
+      printed_n: number
+      reprint_n: number
+    }[]
+
+  it('puts a same-named object on a new part when the person says so, and never reuses a name', async () => {
+    const { importSlice } = await import('./data.local')
+    await importSlice(SHOP, JOB, ACTOR, BATHY('Sliced_Maui_BATHY_16h26m.bgcode', 355))
+    const res = await importSlice(SHOP, JOB, ACTOR, {
+      ...BATHY('Sliced_Maui_BATHY_7h14m.bgcode', 117),
+      sections: [{ label: 'Maui BATHY 3x', qty: 1, estMinutes: 434, estGrams: 117, material: 'PLA', assign: { newLabel: 'Maui BATHY 3x' } }],
+    })
+    expect(res).toMatchObject({ partsAdded: 1, partsMatched: 0 })
+    expect(partsNow().map((p) => p.label)).toEqual(['Maui BATHY 3x', 'Maui BATHY 3x (2)'])
+    // The object keeps the name the file gave it.
+    expect(currentDb.sqlite.prepare("select label from slice_sections where import_id = (select id from slice_imports where file_name like '%7h14m%')").get()).toEqual({
+      label: 'Maui BATHY 3x',
+    })
+  })
+
+  it('puts an object on the existing part the person picked, whatever it is called', async () => {
+    const { importSlice } = await import('./data.local')
+    await importSlice(SHOP, JOB, ACTOR, BUOY)
+    const cap = partsNow().find((p) => p.label === 'Cap')!
+    await importSlice(SHOP, JOB, ACTOR, {
+      ...BUOY,
+      fileName: 'lid v2.gcode',
+      sections: [{ label: 'Lid', qty: 1, estMinutes: 40, estGrams: 28, material: 'PETG', assign: { partId: cap.id } }],
+    })
+    expect(partsNow().map((p) => p.label)).toEqual(['Buoy shell', 'Cap'])
+    await expect(
+      importSlice(SHOP, JOB, ACTOR, { ...BUOY, fileName: 'x.gcode', sections: [{ ...BUOY.sections[0], assign: { partId: 'nope' } }] }),
+    ).rejects.toThrow(/not on this project/)
+  })
+
+  it('moves an object to a new part and takes the copies its prints marked with it', async () => {
+    const data = await import('./data.local')
+    // Two files, both calling their object "Maui BATHY 3x" -- matched by name, as before.
+    const a = await data.importSlice(SHOP, JOB, ACTOR, BATHY('Sliced_Maui_BATHY_16h26m.bgcode', 355))
+    // It stopped part way...
+    const r1 = await data.recordPrintRun(SHOP, JOB, ACTOR, {
+      printerId: 'printer-1', materialId: 'material-1', unitsUsed: 335, hours: 15.07, outcome: 'cancelled',
+      failureReason: 'Ghost printing', note: null, startedAt: '2026-10-14', sliceImportId: a.importId,
+    })
+    await data.markPlateFailed(SHOP, JOB, ACTOR, a.importId, r1, 'Ghost printing')
+    // ...and a different, smaller file under the same object name printed.
+    const b = await data.importSlice(SHOP, JOB, ACTOR, BATHY('Sliced_Maui_BATHY_7h14m.bgcode', 117))
+    const r2 = await data.recordPrintRun(SHOP, JOB, ACTOR, {
+      printerId: 'printer-1', materialId: 'material-1', unitsUsed: 117, hours: 7.23, outcome: 'success',
+      failureReason: null, note: null, startedAt: '2026-10-15', sliceImportId: b.importId,
+    })
+    await data.markPlatePrinted(SHOP, JOB, ACTOR, b.importId, r2)
+    expect(partsNow()).toHaveLength(1)
+    expect(JSON.parse(partsNow()[0].copy_states!)).toEqual(['printed'])
+
+    // Sorted: the 7h 14m object is its own part.
+    const sec = currentDb.sqlite.prepare('select id from slice_sections where import_id = ?').get(b.importId) as { id: string }
+    const res = await data.moveSliceSection(SHOP, JOB, ACTOR, sec.id, { newLabel: 'Maui BATHY small' })
+    expect(res).toMatchObject({ moved: 1, unplaced: 0 })
+    const [big, small] = partsNow()
+    expect(small.label).toBe('Maui BATHY small')
+    expect(JSON.parse(small.copy_states!)).toEqual(['printed'])
+    // The big part is back where its own plate left it: failed, waiting for a reprint.
+    expect(JSON.parse(big.copy_states!)).toEqual(['reprint'])
+    // Both histories say what happened.
+    const notes = currentDb.sqlite.prepare("select part_id, note from part_events where kind = 'note' order by id").all() as { part_id: string; note: string }[]
+    expect(notes.find((n) => n.part_id === big.id && /moved to/.test(n.note))?.note).toMatch(/Maui BATHY 3x on Sliced_Maui_BATHY_7h14m\.bgcode moved to Maui BATHY small — 1 copy it marked put back as before/)
+    expect(notes.find((n) => n.part_id === small.id && /sorted here/.test(n.note))?.note).toMatch(/sorted here from Maui BATHY 3x/)
+    // Removing the print now undoes the copy on the part it moved to.
+    await data.deletePrintRun(SHOP, r2, true)
+    expect(JSON.parse(partsNow()[1].copy_states!)).toEqual(['pending'])
+  })
+
+  it('moves a failed object, failure and all, onto an existing part', async () => {
+    const data = await import('./data.local')
+    await data.importSlice(SHOP, JOB, ACTOR, BUOY)
+    const a = await data.importSlice(SHOP, JOB, ACTOR, BATHY('Outer Islands.bgcode', 2))
+    const r1 = await data.recordPrintRun(SHOP, JOB, ACTOR, {
+      printerId: 'printer-1', materialId: 'material-1', unitsUsed: 2, hours: 0.48, outcome: 'failed',
+      failureReason: 'Warped', note: null, startedAt: '2026-10-13', sliceImportId: a.importId,
+    })
+    await data.markPlateFailed(SHOP, JOB, ACTOR, a.importId, r1, 'Warped')
+    const cap = partsNow().find((p) => p.label === 'Cap')!
+    const sec = currentDb.sqlite.prepare('select id from slice_sections where import_id = ?').get(a.importId) as { id: string }
+    const res = await data.moveSliceSection(SHOP, JOB, ACTOR, sec.id, { partId: cap.id })
+    expect(res).toMatchObject({ partId: cap.id, moved: 1, unplaced: 0 })
+    const after = partsNow()
+    expect(JSON.parse(after.find((p) => p.label === 'Cap')!.copy_states!)).toEqual(['reprint'])
+    expect(JSON.parse(after.find((p) => p.label === 'Maui BATHY 3x')!.copy_states ?? '["pending"]')).toEqual(['pending'])
+    // The failure no longer counts against the part it left.
+    const left = after.find((p) => p.label === 'Maui BATHY 3x')!
+    expect(currentDb.sqlite.prepare("select count(*) as n from part_events where part_id = ? and to_status = 'reprint'").get(left.id)).toEqual({ n: 0 })
+  })
+})

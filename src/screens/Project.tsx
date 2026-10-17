@@ -69,6 +69,7 @@ import {
   markPlatePrinted,
   correctPrintRun,
   deletePrintRun,
+  moveSliceSection,
   deleteWorkEntry,
   loadProjectDetail,
   listMaterials,
@@ -163,6 +164,7 @@ import HoursInput from '../components/HoursInput'
 import { fmtHours } from '../lib/duration'
 import { fmtMinutes, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
 import { sameSliceFile, type PrintRunRow, type SliceImportRow, type StockHoldRow } from '../lib/data.types'
+import { choiceFrom, choiceValue, guessSort, nameFromFile, partSizes, perCopyOf, toAssign, type BatchPart, type SortChoice, type SortGuess } from '../lib/sortParts'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
 import { changeCopies, copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
@@ -1953,6 +1955,100 @@ function Variance({ comparison, money }: { comparison: Comparison; money: (n: nu
  *     below open on "not matched" so the omission is visible rather than
  *     quietly wrong.
  */
+/**
+ * Where one object of a file goes on the build sheet (CG, 16 Oct). A select
+ * of "New part" and the parts already there, with the name of the new part
+ * editable, and why a same-named part was not picked when it was not.
+ */
+function SortPick({
+  id,
+  objectLabel,
+  fileName,
+  guess,
+  parts,
+  joins = [],
+  onChange,
+}: {
+  id: string
+  objectLabel: string
+  /** The file, when it holds this object alone -- offered as a name. */
+  fileName: string | null
+  guess: SortGuess | undefined
+  parts: PartRow[]
+  /** New parts earlier files of the same batch are making. */
+  joins?: string[]
+  onChange: (g: SortGuess) => void
+}) {
+  const choice: SortChoice = guess?.choice ?? { kind: 'new', label: objectLabel }
+  const [name, setName] = useState(choice.kind === 'new' ? choice.label : objectLabel)
+  const fromFile = fileName ? nameFromFile(fileName) : null
+  const sizeOf = (p: PartRow) => {
+    const s = partSizes(p)[0]
+    if (!s) return ''
+    const bits = [s.grams != null ? `${Math.round(s.grams)} g` : null, s.minutes != null ? fmtHours(s.minutes / 60) : null].filter(Boolean)
+    return bits.length ? ` · ${bits.join(', ')} a copy` : ''
+  }
+  return (
+    <div className="sortpick">
+      <select
+        id={id}
+        aria-label={`Where ${objectLabel} goes`}
+        value={choiceValue(choice)}
+        onChange={(e) => onChange({ choice: choiceFrom(e.target.value, name), why: null })}
+      >
+        <option value="new">New part</option>
+        {parts.length > 0 && (
+          <optgroup label="Already on the build sheet">
+            {parts.map((p) => (
+              <option key={p.id} value={`part:${p.id}`}>
+                {p.label}
+                {sizeOf(p)}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {joins.length > 0 && (
+          <optgroup label="New from a file above">
+            {[...new Set(joins)].map((l) => (
+              <option key={l} value={`join:${l}`}>
+                {l}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+      {choice.kind === 'new' && (
+        <input
+          aria-label={`Name the new part for ${objectLabel}`}
+          value={choice.label}
+          onChange={(e) => {
+            setName(e.target.value)
+            onChange({ choice: { kind: 'new', label: e.target.value }, why: guess?.why ?? null })
+          }}
+        />
+      )}
+      {choice.kind === 'new' &&
+        fromFile &&
+        fromFile.toLowerCase() !== choice.label.trim().toLowerCase() &&
+        // Not when that name is a part already: it would only become "… (2)".
+        !parts.some((p) => p.label.trim().toLowerCase() === fromFile.toLowerCase()) && (
+        <button
+          type="button"
+          className="linkbtn"
+          style={{ fontSize: 11, width: 'auto', marginTop: 2 }}
+          onClick={() => {
+            setName(fromFile)
+            onChange({ choice: { kind: 'new', label: fromFile }, why: guess?.why ?? null })
+          }}
+        >
+          use the file&rsquo;s name: {fromFile}
+        </button>
+      )}
+      {guess?.why && <div className="hint" style={{ marginTop: 2, color: 'var(--warn)' }}>{guess.why}</div>}
+    </div>
+  )
+}
+
 /** One file read and waiting for a yes: everything the review card asks. */
 interface PendingFile {
   key: string
@@ -1970,6 +2066,8 @@ interface PendingFile {
   stopWhy: string
   /** Already on this project (or earlier in this batch): when, or 'this batch'. */
   dupOf: string | null
+  /** Where each object goes, one per section (CG, 16 Oct). */
+  sorts: SortGuess[]
 }
 
 function SliceImport({
@@ -2035,7 +2133,16 @@ function SliceImport({
         const inBatch = [...pending, ...fresh].some((x) =>
           sameSliceFile({ fileName: x.read.fileName, estMinutes: x.read.totals.estMinutes, estGrams: x.read.totals.estGrams }, id),
         )
+        const earlier: BatchPart[] = [...pending, ...fresh].flatMap((x) =>
+          x.read.sections.flatMap((sec, j) => {
+            const c = x.sorts[j]?.choice
+            if (!c || c.kind !== 'new') return []
+            const size = perCopyOf(sec)
+            return [{ label: c.label, objectLabel: sec.label, grams: size.grams, minutes: size.minutes, fileName: x.read.fileName }]
+          }),
+        )
         fresh.push({
+          sorts: guessSort(parsed.sections, parsed.fileName, detail.parts, earlier),
           key: `${file.name}-${crypto.randomUUID()}`,
           read: parsed,
           kept: packed,
@@ -2075,6 +2182,7 @@ function SliceImport({
 
   /** Why a card cannot be added yet, or null when it can. */
   function blocker(p: PendingFile): string | null {
+    if (p.sorts.some((g) => g.choice.kind === 'new' && !g.choice.label.trim())) return 'Name the new part above'
     const printedNow = printing && p.printed
     if (printedNow && !p.printerId) return 'Pick the machine above to record the print'
     if (printedNow && p.howWent !== 'success' && !!p.read.progress && !p.stop) return 'Say how long it ran, above'
@@ -2097,12 +2205,13 @@ function SliceImport({
       estGrams: read.totals.estGrams,
       notes: read.notes,
       progress: read.progress,
-      sections: read.sections.map((sec) => ({
+      sections: read.sections.map((sec, j) => ({
         label: sec.label,
         qty: sec.qty,
         estMinutes: sec.estMinutes,
         estGrams: sec.estGrams,
         material: sec.material,
+        assign: p.sorts[j] ? toAssign(p.sorts[j].choice) : null,
       })),
     })
     let recorded: string | null = null
@@ -2303,25 +2412,42 @@ function SliceImport({
               </div>
             )}
 
-            <div className="sheetwrap" style={{ maxHeight: 260 }}>
+            <div className="sheetwrap">
               <table>
                 <thead>
                   <tr>
-                    <th style={{ width: '50%' }}>Part</th>
+                    <th style={{ width: '30%' }}>Object in the file</th>
                     <th className="r">Copies</th>
                     <th className="r">Est. grams</th>
                     <th className="r">Est. time</th>
+                    <th style={{ width: '38%' }}>Goes on the build sheet as</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {read.sections.map((sec) => (
-                    <tr key={sec.label}>
+                  {read.sections.map((sec, j) => (
+                    <tr key={`${sec.label}-${j}`}>
                       <td>
                         <span className="pn">{sec.label}</span>
                       </td>
                       <td className="r">{sec.qty}</td>
                       <td className="r">{sec.estGrams ?? '—'}</td>
                       <td className="r">{hrs(sec.estMinutes) ?? '—'}</td>
+                      <td>
+                        <SortPick
+                          id={`sort${sfx}-${j}`}
+                          objectLabel={sec.label}
+                          fileName={read.sections.length === 1 ? read.fileName : null}
+                          guess={p.sorts[j]}
+                          parts={detail.parts}
+                          joins={pending
+                            .slice(0, i)
+                            .flatMap((x) => x.sorts.map((g) => g.choice))
+                            .flatMap((c) => (c.kind === 'new' ? [c.label] : []))}
+                          onChange={(g) =>
+                            patchOne(p.key, { sorts: p.sorts.map((x, k) => (k === j ? g : x)) })
+                          }
+                        />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2526,6 +2652,10 @@ function SliceRuns({
    * and the only way to fix it was to remove it and record it again).
    */
   const [correcting, setCorrecting] = useState<PrintRunRow | null>(null)
+  /** The plate whose objects are being sorted onto parts, and the draft. */
+  const [sorting, setSorting] = useState<string | null>(null)
+  const [sortDraft, setSortDraft] = useState<Record<string, SortGuess>>({})
+  const [sortMsg, setSortMsg] = useState<{ id: string; text: string } | null>(null)
 
   /**
    * Write the kept file back out.
@@ -2619,6 +2749,59 @@ function SliceRuns({
     try {
       for (const importId of importIds) await deleteSliceImport(ctx.shop.id, importId)
       setRemoving(null)
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /**
+   * Move the objects whose part changed (CG, 16 Oct). Each one takes the
+   * copies its prints marked with it; the same object in a re-upload of the
+   * same file goes the same way.
+   */
+  async function saveSort(g: ReturnType<typeof groupSliceFiles>[number]) {
+    setSaving(true)
+    setError(null)
+    setSortMsg(null)
+    const said: string[] = []
+    try {
+      const first = detail.slices.find((x) => x.id === g.first.id)
+      const left = new Set<string>()
+      for (const sec of first?.sections ?? []) {
+        const pick = sortDraft[sec.id]?.choice
+        if (!pick) continue
+        if (pick.kind === 'part' && pick.partId === sec.partId) continue
+        const was = detail.parts.find((p) => p.id === sec.partId)?.label ?? 'no part'
+        const res = await moveSliceSection(ctx.shop.id, detail.jobId, ctx.profile.id, sec.id, toAssign(pick))
+        // The same object on a re-upload of this file follows it.
+        for (const id of g.ids.slice(1))
+          for (const twin of detail.slices.find((x) => x.id === id)?.sections ?? [])
+            if (twin.label === sec.label && twin.partId === sec.partId)
+              await moveSliceSection(ctx.shop.id, detail.jobId, ctx.profile.id, twin.id, { partId: res.partId })
+        if (sec.partId) left.add(sec.partId)
+        const name =
+          pick.kind === 'part' ? (detail.parts.find((p) => p.id === pick.partId)?.label ?? 'that part') : pick.label
+        said.push(
+          `${sec.label}: ${was} → ${name}` +
+            (res.moved ? ` (${res.moved} cop${res.moved === 1 ? 'y' : 'ies'} moved with it)` : '') +
+            (res.unplaced ? ` — ${res.unplaced} print${res.unplaced === 1 ? '' : 's'} could not mark a copy there: it has none left to mark; add a copy on the build sheet` : ''),
+        )
+      }
+      // A part no plate prints any more may not be a part at all.
+      const moved = new Set((first?.sections ?? []).filter((x) => sortDraft[x.id]).map((x) => x.id))
+      const orphans = [...left].filter(
+        (pid) => !detail.slices.some((x) => x.sections.some((sec) => sec.partId === pid && !moved.has(sec.id) && !g.ids.slice(1).includes(x.id))),
+      )
+      for (const pid of orphans) {
+        const p = detail.parts.find((x) => x.id === pid)
+        if (p) said.push(`${p.label} has no plate now — remove it on the build sheet if it is not a real part.`)
+      }
+      setSorting(null)
+      setSortDraft({})
+      setSortMsg({ id: g.first.id, text: said.length ? said.join(' · ') : 'Nothing changed.' })
       await onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -2837,7 +3020,10 @@ function SliceRuns({
           <div className="plate" key={s.id}>
             <div className="platehead">
               <div className="platename">
-                <span className="pn">{s.fileName}</span>
+                {/* Named for what it makes: two plates can share a file name
+                    and hold different parts (CG, 16 Oct). */}
+                <span className="pn">{makes.length ? makes.join(', ') : s.fileName}</span>
+                {makes.length > 0 && <span className="plfile">{s.fileName}</span>}
                 {fixes.length > 0 && (
                   <span className="chip" style={{ color: 'var(--warn)' }} title="A replacement file for a failed copy.">
                     reprint · {fixes.join('; ')}
@@ -2882,6 +3068,19 @@ function SliceRuns({
                       Save a copy
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={busy || saving}
+                    aria-expanded={sorting === s.id}
+                    title="Which part each object on this plate is. A print's copies move with its object."
+                    onClick={() => {
+                      setSortDraft({})
+                      setSorting(sorting === s.id ? null : s.id)
+                    }}
+                  >
+                    Sort parts
+                  </button>
                   {canPrint(detail.phase, detail.facts.kind) && (
                     <button
                       type="button"
@@ -2971,9 +3170,67 @@ function SliceRuns({
               </div>
             )}
 
-            {makes.length > 0 && (
-              <div className="plmeta" style={{ marginTop: 4 }}>
-                Makes {makes.join(', ')}
+            {sortMsg?.id === s.id && (
+              <div className="hint" role="status" style={{ marginTop: 6, color: 'var(--ok)' }}>
+                {sortMsg.text}
+              </div>
+            )}
+            {sorting === s.id && (
+              <div className="gatebox" style={{ marginTop: 8 }} role="group" aria-label={`Sort the parts of ${s.fileName}`}>
+                <div className="hint" style={{ marginTop: 0, marginBottom: 6 }}>
+                  Which part is each object on this plate?
+                  {runs.length > 0 &&
+                    ' Copies its prints marked move with it — off the part it leaves (back to how they were), onto the part it joins.'}
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th style={{ width: '30%' }}>Object in the file</th>
+                      <th className="r">Copies</th>
+                      <th className="r">Est. grams</th>
+                      <th>Is the part</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(detail.slices.find((x) => x.id === s.id)?.sections ?? []).map((sec) => (
+                      <tr key={sec.id}>
+                        <td>
+                          <span className="pn">{sec.label}</span>
+                        </td>
+                        <td className="r">{sec.qty}</td>
+                        <td className="r">{sec.estGrams == null ? '—' : Math.round(sec.estGrams)}</td>
+                        <td>
+                          <SortPick
+                            id={`resort-${sec.id}`}
+                            objectLabel={sec.label}
+                            fileName={(detail.slices.find((x) => x.id === s.id)?.sections.length ?? 0) === 1 ? s.fileName : null}
+                            guess={
+                              sortDraft[sec.id] ??
+                              (sec.partId
+                                ? { choice: { kind: 'part', partId: sec.partId }, why: null }
+                                : { choice: { kind: 'new', label: sec.label }, why: null })
+                            }
+                            parts={detail.parts}
+                            onChange={(g2) => setSortDraft((d) => ({ ...d, [sec.id]: g2 }))}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="btnrow" style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="btn sm primary"
+                    disabled={saving || Object.keys(sortDraft).length === 0 || Object.values(sortDraft).some((x) => x.choice.kind === 'new' && !x.choice.label.trim())}
+                    onClick={() => void saveSort(g)}
+                  >
+                    {saving ? 'Sorting…' : 'Save the sorting'}
+                  </button>
+                  <button type="button" className="btn sm" disabled={saving} onClick={() => setSorting(null)}>
+                    Cancel
+                  </button>
+                </div>
               </div>
             )}
             {runs.length > 0 && (

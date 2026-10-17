@@ -1346,7 +1346,7 @@ describe('several files at once, and each print said once (CG, 15 Oct)', () => {
     expect(screen.getAllByText(/came off clean · 2h 3m/)).toHaveLength(1)
     expect(screen.getByTestId('took-totals').textContent).toMatch(/1 print · all listed under their plates/)
     expect(within(plates).getAllByText('not printed yet')).toHaveLength(1)
-    expect(within(plates).getByText(/^Makes Buoy shell ×2, Cap$/)).toBeDefined()
+    expect(within(plates).getByText('Buoy shell ×2, Cap')).toBeDefined()
   })
 
   it('counts the same file dropped twice in one go as one plate and one print', async () => {
@@ -1381,5 +1381,75 @@ describe('several files at once, and each print said once (CG, 15 Oct)', () => {
     expect(within(failedPrints).getByText(/failed · /)).toBeDefined()
     expect(within(failedPrints).getByText('Clog')).toBeDefined()
     expect(screen.getByTestId('took-totals').textContent).toMatch(/Lost to failures/)
+  })
+})
+
+/** The same object name as GCODE's "Cap", a quarter of the size. */
+const SMALL_CAP = `
+; printing object Cap id:0 copy 0
+; filament used [g] = 7.0
+; total filament used [g] = 7.0
+; estimated printing time (normal mode) = 0h 10m
+; filament_type = PETG
+; printer_model = XL
+`
+
+describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
+  it('does not put a same-named object of a different size on the old part without asking', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /record the print/i }))
+    await screen.findByRole('list', { name: /prints of reef buoy_sliced/i })
+
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([SMALL_CAP], 'Sliced_Small cap_0.4n_0.2mm_PETG_XL_10m.gcode'))
+    // Guessed as a new part, named for the file, and the screen says why.
+    const name = (await screen.findByLabelText(/name the new part for cap/i)) as HTMLInputElement
+    expect(name.value).toBe('Small cap')
+    expect(screen.getByText(/Same name as Cap \(29 g, 41m a copy\), but this is 7 g, 10m/)).toBeDefined()
+    await user.click(screen.getByRole('button', { name: /record the print/i }))
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select label from job_parts order by sort').all()).toEqual([
+        { label: 'Buoy shell' },
+        { label: 'Cap' },
+        { label: 'Small cap' },
+      ]),
+    )
+    // The plate is named for what it makes.
+    const plates = screen.getByRole('region', { name: /^plates$/i })
+    expect(await within(plates).findByText('Small cap')).toBeDefined()
+  })
+
+  it('moves an object already imported to the right part, and its printed copy with it', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    // Put on the old part by hand, the way name-matching used to.
+    await user.click(await screen.findByRole('button', { name: /record the print/i }))
+    await screen.findByRole('list', { name: /prints of reef buoy_sliced/i })
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([SMALL_CAP], 'small.gcode'))
+    await user.selectOptions(await screen.findByLabelText(/where cap goes/i), screen.getByRole('option', { name: /^Cap · / }))
+    await user.click(screen.getByRole('button', { name: /record the print/i }))
+    await screen.findByRole('list', { name: /prints of small\.gcode/i })
+    const cap = () => currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Cap'").get() as { copy_states: string }
+    // Cap needed one copy; the reef plate printed it, so the small plate had none left to mark.
+    expect(JSON.parse(cap().copy_states)).toEqual(['printed'])
+
+    // Sorted: the small plate's object is its own part.
+    const plates = screen.getByRole('region', { name: /^plates$/i })
+    const sortButtons = within(plates).getAllByRole('button', { name: /^sort parts$/i })
+    await user.click(sortButtons[sortButtons.length - 1])
+    const box = await screen.findByRole('group', { name: /sort the parts of small\.gcode/i })
+    await user.selectOptions(within(box).getByLabelText(/where cap goes/i), 'new')
+    const nm = within(box).getByLabelText(/name the new part for cap/i)
+    await user.clear(nm)
+    await user.type(nm, 'Small cap')
+    await user.click(within(box).getByRole('button', { name: /save the sorting/i }))
+    expect(await screen.findByText(/Cap: Cap → Small cap \(1 copy moved with it\)/)).toBeDefined()
+    const small = currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Small cap'").get() as { copy_states: string }
+    expect(JSON.parse(small.copy_states)).toEqual(['printed'])
+    expect(JSON.parse(cap().copy_states)).toEqual(['printed'])
   })
 })

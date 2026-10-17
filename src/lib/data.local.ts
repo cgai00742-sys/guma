@@ -38,6 +38,9 @@ import {
   validateRevision,
   CHANGE_CAUSE_LABEL,
   sameSliceFile,
+  uniqueLabel,
+  type SectionAssign,
+  type SectionMoveResult,
   describeHolds,
   quoteBases,
   type StockHoldRow,
@@ -2645,6 +2648,22 @@ export async function deletePrintRun(shopId: string, runId: string, undoCopies =
   return undone
 }
 
+/** What copy `c` (1-based) was just before event `beforeId`: the last status
+ *  event that named it, or not printed. */
+async function stateBefore(partId: string, c: number, beforeId: number): Promise<PartStatus> {
+  const d = await db()
+  const evs = await d.select<{ to_status: PartStatus; copies: string | null }[]>(
+    `select to_status, copies from part_events
+      where part_id = ? and kind = 'status' and to_status is not null and id < ? order by id desc`,
+    [partId, beforeId],
+  )
+  for (const e of evs) {
+    const cs = parseCopies(e.copies)
+    if (cs == null || cs.includes(c)) return e.to_status
+  }
+  return 'pending'
+}
+
 /** The copies an event moved that are still where it put them, 0-based. */
 async function copiesStillFrom(ev: { part_id: string; to_status: PartStatus; copies: string | null }): Promise<number[]> {
   const d = await db()
@@ -2957,6 +2976,7 @@ async function movePlate(
   runId: string | null,
   to: 'printed' | 'reprint',
   note: string | null,
+  onlyPart: string | null = null,
 ): Promise<number> {
   const d = await db()
   const rows = await d.select<
@@ -2985,6 +3005,7 @@ async function movePlate(
   )
   let moved = 0
   for (const r of rows) {
+    if (onlyPart && r.part_id !== onlyPart) continue
     const states = statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states })
     const pick = plateCopies(
       states,
@@ -2994,9 +3015,152 @@ async function movePlate(
     )
     if (!pick.length) continue
     await setCopyStates(shopId, r.part_id, actorId, pick, to, note, runId)
-    moved++
+    moved += onlyPart ? pick.length : 1
   }
   return moved
+}
+
+/**
+ * Move one object of a plate to another part -- or to a new one (CG, 16 Oct:
+ * "a plate can have the same name ... but have completely different parts";
+ * Guma had matched objects to parts by name alone). What the plate's prints
+ * marked moves with it: the copies go back to not printed on the part it
+ * leaves, and the same prints mark copies on the part it joins. Both parts'
+ * histories say so.
+ */
+export async function moveSliceSection(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sectionId: string,
+  to: SectionAssign,
+): Promise<SectionMoveResult> {
+  const d = await db()
+  const [sec] = await d.select<
+    { import_id: string; part_id: string | null; label: string; qty: number; file_name: string; old_label: string | null; chosen: string | null }[]
+  >(
+    `select s.import_id, s.part_id, s.label, s.qty, i.file_name, p.label as old_label, p.chosen_section_id as chosen
+       from slice_sections s
+       join slice_imports i on i.id = s.import_id
+       left join job_parts p on p.id = s.part_id
+      where s.id = ? and i.job_id = ? and i.shop_id = ?`,
+    [sectionId, jobId, shopId],
+  )
+  if (!sec) throw new Error('That object is not on a plate of this project.')
+  const parts = await d.select<{ id: string; label: string; sort: number }[]>(
+    'select id, label, sort from job_parts where job_id = ? and shop_id = ?',
+    [jobId, shopId],
+  )
+  let partId: string
+  let newName: string
+  if ('label' in to) {
+    const want = to.label.trim().toLowerCase()
+    const named = parts.find((x) => x.label.trim().toLowerCase() === want)
+    to = named ? { partId: named.id } : { newLabel: to.label }
+  }
+  if ('partId' in to) {
+    const p = parts.find((x) => x.id === to.partId)
+    if (!p) throw new Error('That part is not on this project.')
+    partId = p.id
+    newName = p.label
+  } else {
+    newName = uniqueLabel(to.newLabel.trim() || sec.label, parts.map((x) => x.label))
+    partId = crypto.randomUUID()
+    const sort = Math.max(-1, ...parts.map((x) => Number(x.sort))) + 1
+    await d.execute(
+      'insert into job_parts (id, shop_id, job_id, label, qty, sort) values (?, ?, ?, ?, ?, ?)',
+      [partId, shopId, jobId, newName, Math.max(1, Number(sec.qty) || 1), sort],
+    )
+    await d.execute(
+      `insert into part_events (part_id, job_id, kind, to_status, note, actor_id) values (?, ?, 'status', 'pending', ?, ?)`,
+      [partId, jobId, `Sorted from ${sec.file_name}`, actorId],
+    )
+  }
+  const from = sec.part_id
+  if (from === partId) return { partId, moved: 0, unplaced: 0 }
+
+  // The prints recorded from this plate, oldest first.
+  const runs = await d.select<{ id: string; outcome: string; failure_reason: string | null }[]>(
+    `select id, outcome, failure_reason from print_runs
+      where slice_import_id = ? and shop_id = ? order by coalesce(started_at, ''), rowid`,
+    [sec.import_id, shopId],
+  )
+  // 1. What those prints marked on the part it leaves is taken back: each
+  // copy returns to the state it had before (a reprint the plate printed is
+  // a failed copy again, waiting -- not a fresh failure), and the marks
+  // become notes, so they no longer count there.
+  let undone = 0
+  if (from) {
+    for (const run of [...runs].reverse()) {
+      const evs = await d.select<{ id: number; to_status: PartStatus; copies: string | null }[]>(
+        `select id, to_status, copies from part_events
+          where run_id = ? and part_id = ? and kind = 'status' and copies is not null order by id desc`,
+        [run.id, from],
+      )
+      for (const ev of evs) {
+        const cur = await readCopies(shopId, from)
+        const states = [...cur.states]
+        const marked = parseCopies(ev.copies) ?? []
+        let back = 0
+        for (const c of marked) {
+          if (states[c - 1] !== ev.to_status) continue
+          states[c - 1] = await stateBefore(from, c, ev.id)
+          back++
+        }
+        if (back) {
+          const n = countsOf(states)
+          await d.execute(
+            `update job_parts set copy_states = ?, printed_n = ?, passed_n = ?, reprint_n = ?, status = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ? and shop_id = ?`,
+            [JSON.stringify(states), n.printed, n.passed, n.reprint, statusOf(n), from, shopId],
+          )
+          undone += back
+        }
+        if (back === marked.length)
+          await d.execute(
+            `update part_events set kind = 'note', note = 'Moved with its plate object: ' || coalesce(note, to_status),
+                    from_status = null, to_status = null where id = ?`,
+            [ev.id],
+          )
+      }
+    }
+    if (sec.chosen === sectionId)
+      await d.execute('update job_parts set chosen_section_id = null where id = ? and shop_id = ?', [from, shopId])
+    await d.execute(`insert into part_events (part_id, job_id, kind, note, actor_id) values (?, ?, 'note', ?, ?)`, [
+      from,
+      jobId,
+      `${sec.label} on ${sec.file_name} moved to ${newName}${undone ? ` — ${undone} cop${undone === 1 ? 'y' : 'ies'} it marked put back as before` : ''}.`,
+      actorId,
+    ])
+  }
+  // 2. The object joins its part.
+  await d.execute('update slice_sections set part_id = ? where id = ?', [partId, sectionId])
+  // 3. The same prints mark copies there, in the order they happened.
+  let moved = 0
+  let unplaced = 0
+  for (const run of runs) {
+    const ok = run.outcome === 'success'
+    const n = await movePlate(
+      shopId,
+      jobId,
+      actorId,
+      sec.import_id,
+      run.id,
+      ok ? 'printed' : 'reprint',
+      ok ? null : run.failure_reason || 'The plate failed.',
+      partId,
+    )
+    if (n) moved += n
+    else unplaced++
+  }
+  if (from)
+    await d.execute(`insert into part_events (part_id, job_id, kind, note, actor_id) values (?, ?, 'note', ?, ?)`, [
+      partId,
+      jobId,
+      `${sec.label} on ${sec.file_name} sorted here from ${sec.old_label ?? 'another part'}.`,
+      actorId,
+    ])
+  return { partId, moved, unplaced }
 }
 
 /**
@@ -3698,7 +3862,26 @@ export async function importSlice(
     if (!label) continue
     const qty = Math.max(1, Math.floor(Number(sec.qty) || 1))
     const target = input.forPartId && input.sections.length === 1 ? input.forPartId : null
-    let partId = target ?? byLabel.get(label.toLowerCase()) ?? null
+    const assign = sec.assign ?? null
+    // Sorted by a person: an existing part of THIS project, or a new one.
+    // Otherwise the old rule, matched by name.
+    if (assign && 'partId' in assign && !existing.some((r) => r.id === assign.partId))
+      throw new Error('That part is not on this project.')
+    let partId =
+      target ??
+      (assign
+        ? 'partId' in assign
+          ? assign.partId
+          : 'label' in assign
+            ? (byLabel.get(assign.label.trim().toLowerCase()) ?? null)
+            : null
+        : (byLabel.get(label.toLowerCase()) ?? null))
+    const newLabel =
+      assign && 'newLabel' in assign
+        ? uniqueLabel(assign.newLabel.trim() || label, byLabel.keys())
+        : assign && 'label' in assign
+          ? assign.label.trim() || label
+          : label
 
     if (partId) partsMatched++
     else {
@@ -3706,14 +3889,14 @@ export async function importSlice(
       await d.execute(
         `insert into job_parts (id, shop_id, job_id, label, qty, sort)
          values (?, ?, ?, ?, ?, ?)`,
-        [partId, shopId, jobId, label, qty, sort++],
+        [partId, shopId, jobId, newLabel, qty, sort++],
       )
       await d.execute(
         `insert into part_events (part_id, job_id, kind, to_status, note, actor_id)
          values (?, ?, 'status', 'pending', ?, ?)`,
         [partId, jobId, `Imported from ${input.fileName}`, actorId],
       )
-      byLabel.set(label.toLowerCase(), partId)
+      byLabel.set(newLabel.toLowerCase(), partId)
       partsAdded++
     }
 

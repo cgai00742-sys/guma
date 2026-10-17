@@ -18,7 +18,7 @@ import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
-import { describeHolds, quoteBases } from './data.types'
+import { describeHolds, quoteBases, uniqueLabel, type SectionAssign, type SectionMoveResult } from './data.types'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, describeRunCorrection, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
@@ -2362,6 +2362,7 @@ async function movePlate(
   runId: string | null,
   to: 'printed' | 'reprint',
   note: string | null,
+  onlyPart: string | null = null,
 ): Promise<number> {
   const { data, error } = await supabase
     .from('slice_sections')
@@ -2395,6 +2396,7 @@ async function movePlate(
   if (qErr) throw qErr
   let moved = 0
   for (const [partId, { perPlate, p }] of byPart) {
+    if (onlyPart && partId !== onlyPart) continue
     const states = statesOf({ qty: Number(p.qty), printedN: Number(p.printed_n), passedN: Number(p.passed_n), reprintN: Number(p.reprint_n), copyStates: p.copy_states })
     const pick = plateCopies(
       states,
@@ -2404,9 +2406,175 @@ async function movePlate(
     )
     if (!pick.length) continue
     await setCopyStates(shopId, partId, actorId, pick, to, note, runId)
-    moved++
+    moved += onlyPart ? pick.length : 1
   }
   return moved
+}
+
+/** See data.local.ts's stateBefore. */
+async function stateBefore(partId: string, c: number, beforeId: number): Promise<PartStatus> {
+  const { data, error } = await supabase
+    .from('part_events')
+    .select('id, to_status, copies')
+    .eq('part_id', partId)
+    .eq('kind', 'status')
+    .not('to_status', 'is', null)
+    .lt('id', beforeId)
+    .order('id', { ascending: false })
+  if (error) throw error
+  for (const e of (data ?? []) as { to_status: PartStatus; copies: string | null }[]) {
+    if (e.copies == null || parseCopyList(e.copies).includes(c)) return e.to_status
+  }
+  return 'pending'
+}
+
+async function partNote(partId: string, jobId: string, note: string, actorId: string | null) {
+  const { error } = await supabase.from('part_events').insert({ part_id: partId, job_id: jobId, kind: 'note', note, actor_id: actorId })
+  if (error) throw error
+}
+
+/** See data.local.ts's moveSliceSection. */
+export async function moveSliceSection(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sectionId: string,
+  to: SectionAssign,
+): Promise<SectionMoveResult> {
+  const { data: secRow, error: sErr } = await supabase
+    .from('slice_sections')
+    .select('import_id, part_id, label, qty, slice_imports!inner ( job_id, shop_id, file_name )')
+    .eq('id', sectionId)
+    .maybeSingle()
+  if (sErr) throw sErr
+  const imp = (secRow as any)?.slice_imports
+  if (!secRow || !imp || imp.job_id !== jobId || imp.shop_id !== shopId) throw new Error('That object is not on a plate of this project.')
+  const sec = secRow as { import_id: string; part_id: string | null; label: string; qty: number }
+  const fileName = imp.file_name as string
+  const { data: partRows, error: pErr } = await supabase
+    .from('job_parts')
+    .select('id, label, sort, chosen_section_id')
+    .eq('job_id', jobId)
+    .eq('shop_id', shopId)
+  if (pErr) throw pErr
+  const parts = (partRows ?? []) as { id: string; label: string; sort: number; chosen_section_id: string | null }[]
+  const old = parts.find((x) => x.id === sec.part_id) ?? null
+  let partId: string
+  let newName: string
+  if ('label' in to) {
+    const want = to.label.trim().toLowerCase()
+    const named = parts.find((x) => x.label.trim().toLowerCase() === want)
+    to = named ? { partId: named.id } : { newLabel: to.label }
+  }
+  if ('partId' in to) {
+    const p = parts.find((x) => x.id === to.partId)
+    if (!p) throw new Error('That part is not on this project.')
+    partId = p.id
+    newName = p.label
+  } else {
+    newName = uniqueLabel(to.newLabel.trim() || sec.label, parts.map((x) => x.label))
+    const sort = Math.max(-1, ...parts.map((x) => Number(x.sort ?? -1))) + 1
+    const { data: made, error: mErr } = await supabase
+      .from('job_parts')
+      .insert({ shop_id: shopId, job_id: jobId, label: newName, qty: Math.max(1, Number(sec.qty) || 1), sort })
+      .select('id')
+      .single()
+    if (mErr) throw mErr
+    partId = made.id as string
+    const { error: evErr } = await supabase.from('part_events').insert({
+      part_id: partId,
+      job_id: jobId,
+      kind: 'status',
+      to_status: 'pending',
+      note: `Sorted from ${fileName}`,
+      actor_id: actorId,
+    })
+    if (evErr) throw evErr
+  }
+  const from = sec.part_id
+  if (from === partId) return { partId, moved: 0, unplaced: 0 }
+
+  const { data: runRows, error: rErr } = await supabase
+    .from('print_runs')
+    .select('id, outcome, failure_reason, started_at, consumed_at')
+    .eq('slice_import_id', sec.import_id)
+    .eq('shop_id', shopId)
+    .order('started_at', { ascending: true })
+    .order('consumed_at', { ascending: true, nullsFirst: true })
+  if (rErr) throw rErr
+  const runs = (runRows ?? []) as { id: string; outcome: string; failure_reason: string | null }[]
+
+  let undone = 0
+  if (from) {
+    for (const run of [...runs].reverse()) {
+      const { data: evs, error: eErr } = await supabase
+        .from('part_events')
+        .select('id, to_status, copies, note')
+        .eq('run_id', run.id)
+        .eq('part_id', from)
+        .eq('kind', 'status')
+        .not('copies', 'is', null)
+        .order('id', { ascending: false })
+      if (eErr) throw eErr
+      for (const ev of (evs ?? []) as { id: number; to_status: PartStatus; copies: string | null; note: string | null }[]) {
+        const cur = await readCopies(shopId, from)
+        const states = [...cur.states]
+        const marked = parseCopyList(ev.copies)
+        let back = 0
+        for (const c of marked) {
+          if (states[c - 1] !== ev.to_status) continue
+          states[c - 1] = await stateBefore(from, c, ev.id)
+          back++
+        }
+        if (back) {
+          const n = countsOf(states)
+          const { error: uErr } = await supabase
+            .from('job_parts')
+            .update({
+              copy_states: JSON.stringify(states),
+              printed_n: n.printed,
+              passed_n: n.passed,
+              reprint_n: n.reprint,
+              status: statusOf(n),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', from)
+            .eq('shop_id', shopId)
+          if (uErr) throw uErr
+          undone += back
+        }
+        if (back === marked.length) {
+          const { error: nErr } = await supabase
+            .from('part_events')
+            .update({ kind: 'note', note: `Moved with its plate object: ${ev.note ?? ev.to_status}`, from_status: null, to_status: null })
+            .eq('id', ev.id)
+          if (nErr) throw nErr
+        }
+      }
+    }
+    if (old?.chosen_section_id === sectionId) {
+      const { error: cErr } = await supabase.from('job_parts').update({ chosen_section_id: null }).eq('id', from).eq('shop_id', shopId)
+      if (cErr) throw cErr
+    }
+    await partNote(
+      from,
+      jobId,
+      `${sec.label} on ${fileName} moved to ${newName}${undone ? ` — ${undone} cop${undone === 1 ? 'y' : 'ies'} it marked put back as before` : ''}.`,
+      actorId,
+    )
+  }
+  const { error: mvErr } = await supabase.from('slice_sections').update({ part_id: partId }).eq('id', sectionId)
+  if (mvErr) throw mvErr
+  let moved = 0
+  let unplaced = 0
+  for (const run of runs) {
+    const ok = run.outcome === 'success'
+    const n = await movePlate(shopId, jobId, actorId, sec.import_id, run.id, ok ? 'printed' : 'reprint', ok ? null : run.failure_reason || 'The plate failed.', partId)
+    if (n) moved += n
+    else unplaced++
+  }
+  if (from) await partNote(partId, jobId, `${sec.label} on ${fileName} sorted here from ${old?.label ?? 'another part'}.`, actorId)
+  return { partId, moved, unplaced }
 }
 
 /** See data.local.ts's choosePartVariant. */
@@ -3041,13 +3209,31 @@ export async function importSlice(
     if (!label) continue
     const qty = Math.max(1, Math.floor(Number(sec.qty) || 1))
     const target = input.forPartId && input.sections.length === 1 ? input.forPartId : null
-    let partId = target ?? byLabel.get(label.toLowerCase()) ?? null
+    // See data.local.ts: sorted by a person, or matched by name.
+    const assign = sec.assign ?? null
+    if (assign && 'partId' in assign && !(existing ?? []).some((r) => r.id === assign.partId))
+      throw new Error('That part is not on this project.')
+    let partId: string | null =
+      target ??
+      (assign
+        ? 'partId' in assign
+          ? assign.partId
+          : 'label' in assign
+            ? (byLabel.get(assign.label.trim().toLowerCase()) ?? null)
+            : null
+        : (byLabel.get(label.toLowerCase()) ?? null))
+    const newLabel =
+      assign && 'newLabel' in assign
+        ? uniqueLabel(assign.newLabel.trim() || label, byLabel.keys())
+        : assign && 'label' in assign
+          ? assign.label.trim() || label
+          : label
 
     if (partId) partsMatched++
     else {
       const { data: part, error: partErr } = await supabase
         .from('job_parts')
-        .insert({ shop_id: shopId, job_id: jobId, label, qty, sort: sort++ })
+        .insert({ shop_id: shopId, job_id: jobId, label: newLabel, qty, sort: sort++ })
         .select('id')
         .single()
       if (partErr) throw partErr
@@ -3061,7 +3247,7 @@ export async function importSlice(
         actor_id: actorId,
       })
       if (evErr) throw evErr
-      byLabel.set(label.toLowerCase(), partId)
+      byLabel.set(newLabel.toLowerCase(), partId)
       partsAdded++
     }
 

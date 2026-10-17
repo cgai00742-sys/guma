@@ -689,6 +689,18 @@ export async function movePartCopies(
   return (await backend()).movePartCopies(shopId, partId, actorId, to, n, note)
 }
 
+/** Move one object of a plate to another part, or a new one; the copies its
+ *  prints marked move with it (CG, 16 Oct). */
+export async function moveSliceSection(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sectionId: string,
+  to: import('./data.types').SectionAssign,
+): Promise<import('./data.types').SectionMoveResult> {
+  return (await backend()).moveSliceSection(shopId, jobId, actorId, sectionId, to)
+}
+
 export async function markPlatePrinted(
   shopId: string,
   jobId: string,
