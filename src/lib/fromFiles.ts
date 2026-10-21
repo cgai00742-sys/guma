@@ -57,6 +57,35 @@ export function groupSliceFiles(slices: SliceImportRow[], runs: PrintRunRow[]): 
   return groups
 }
 
+/**
+ * Plates newest first, by when they were printed (CG, 20 Oct: "organize the
+ * imported files based on when the part was printed ... the top of the list
+ * is the most recent"). A plate not printed yet is the work in hand, so it
+ * sits above them all, newest import first. Two prints on one day keep the
+ * order they were recorded in -- `runs` arrives newest first.
+ */
+export function newestFirst(groups: FileGroup[], runs: PrintRunRow[]): FileGroup[] {
+  const latest = (g: FileGroup) => {
+    let best = -1
+    for (const r of g.runs) {
+      const i = runs.indexOf(r)
+      if (i >= 0 && (best < 0 || i < best)) best = i
+    }
+    return best
+  }
+  return [...groups].sort((a, b) => {
+    const la = latest(a)
+    const lb = latest(b)
+    if (la < 0 || lb < 0) {
+      if (la < 0 && lb < 0) return b.first.importedAt.localeCompare(a.first.importedAt)
+      return la < 0 ? -1 : 1
+    }
+    const da = runs[la].startedAt ?? ''
+    const db = runs[lb].startedAt ?? ''
+    return da === db ? la - lb : db.localeCompare(da)
+  })
+}
+
 /** The machine a file's print goes against without asking: the one the
  *  file matched, or the shop's only machine. Null means someone must pick. */
 export function machineFor(group: FileGroup, printers: { id: string }[]): string | null {

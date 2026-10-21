@@ -1439,8 +1439,7 @@ describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
 
     // Sorted: the small plate's object is its own part.
     const plates = screen.getByRole('region', { name: /^plates$/i })
-    const sortButtons = within(plates).getAllByRole('button', { name: /^sort parts$/i })
-    await user.click(sortButtons[sortButtons.length - 1])
+    await user.click(within(plates).getByRole('button', { name: /^sort parts of small\.gcode$/i }))
     const box = await screen.findByRole('group', { name: /sort the parts of small\.gcode/i })
     await user.selectOptions(within(box).getByLabelText(/where cap goes/i), 'new')
     const nm = within(box).getByLabelText(/name the new part for cap/i)

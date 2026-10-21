@@ -135,7 +135,7 @@ import {
 } from '../lib/parts'
 import { makeMoney } from '../lib/pricing'
 import { todayISO, formatDate } from '../lib/dates'
-import { groupSliceFiles, machineFor, type FileGroup } from '../lib/fromFiles'
+import { groupSliceFiles, newestFirst, machineFor, type FileGroup } from '../lib/fromFiles'
 import { seriesAncestors, seriesPath } from '../lib/series'
 import {
   canImport,
@@ -2812,7 +2812,7 @@ function SliceRuns({
 
   if (detail.slices.length === 0) return null
 
-  const groups = groupSliceFiles(detail.slices, detail.runs)
+  const groups = newestFirst(groupSliceFiles(detail.slices, detail.runs), detail.runs)
   /** Plates with numbers, a machine to put them on, and nothing recorded. */
   const ready = groups.filter(
     (g) => !g.recorded && (g.first.estGrams != null || g.first.estMinutes != null) && machineFor(g, ctx.printers) != null,
@@ -3073,6 +3073,7 @@ function SliceRuns({
                     className="btn sm"
                     disabled={busy || saving}
                     aria-expanded={sorting === s.id}
+                    aria-label={`Sort parts of ${s.fileName}`}
                     title="Which part each object on this plate is. A print's copies move with its object."
                     onClick={() => {
                       setSortDraft({})
@@ -3235,7 +3236,7 @@ function SliceRuns({
             )}
             {runs.length > 0 && (
               <div className="plateprints" role="list" aria-label={`Prints of ${s.fileName}`}>
-                {[...runs].reverse().map((r) => (
+                {runs.map((r) => (
                   <PrintLine
                     key={r.id}
                     run={r}
@@ -6083,7 +6084,7 @@ function FromTheFiles({
   onChanged: () => Promise<void>
   setError: (m: string | null) => void
 }) {
-  const groups = groupSliceFiles(detail.slices, detail.runs)
+  const groups = newestFirst(groupSliceFiles(detail.slices, detail.runs), detail.runs)
   const [picked, setPicked] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   if (groups.length === 0 || !canPrint(detail.phase, detail.facts.kind)) return null
