@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import { bgcodeText, meatpackDecode, progressAt, walkGcode } from './gcodeWalk'
+import { bgcodeText, decodeProgress, encodeProgress, meatpackDecode, progressAt, walkGcode } from './gcodeWalk'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const inflate = async (d: Uint8Array) => new Uint8Array(inflateSync(d))
@@ -87,6 +87,19 @@ describe('walking the moves', () => {
     expect(Object.keys(a.objects)).toEqual(['Peg id:0 copy 0'])
     const b = await walkGcode(['M83\nEXCLUDE_OBJECT_START NAME=Peg_1\nG1 X1 E5\nEXCLUDE_OBJECT_END NAME=Peg_1\n'])
     expect(Object.keys(b.objects)).toEqual(['Peg_1'])
+  })
+
+  it('counts what went down outside every object -- purge line, skirt -- at each mark (CG, 20 Oct)', async () => {
+    const g = (mm: number) => (mm * Math.PI * 0.875 ** 2 * 1.24) / 1000
+    const w = await walkGcode([
+      'M83\nM73 P0 R10\nG1 X1 E8\n; printing object Peg id:0 copy 0\nG1 X2 E20\nM73 P50 R5\n; stop printing object Peg id:0 copy 0\nG1 X3 E2\nM73 P100 R0\n',
+    ])
+    expect(w.progress.map((p) => Math.round((p.waste ?? -1) * 1000) / 1000)).toEqual([0, g(8), g(10)].map((x) => Math.round(x * 1000) / 1000))
+    expect(encodeProgress(w.progress)).toContain(',')
+    expect(decodeProgress(encodeProgress(w.progress))![2].waste).toBeCloseTo(g(10), 2)
+    // A file that names no objects says nothing about waste.
+    const plain = await walkGcode(['M83\nM73 P0 R1\nG1 X1 E8\nM73 P100 R0\n'])
+    expect(plain.progress[1].waste).toBeUndefined()
   })
 
   it('absolute extrusion and G92 resets', async () => {

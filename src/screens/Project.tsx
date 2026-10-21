@@ -126,7 +126,6 @@ import {
   buildingPhase,
   chosenVariant,
   isOnSharedPlate,
-  failureTally,
   reprintCount,
   reprintNote,
   reprintReason,
@@ -2185,7 +2184,7 @@ function SliceImport({
     if (p.sorts.some((g) => g.choice.kind === 'new' && !g.choice.label.trim())) return 'Name the new part above'
     const printedNow = printing && p.printed
     if (printedNow && !p.printerId) return 'Pick the machine above to record the print'
-    if (printedNow && p.howWent !== 'success' && !!p.read.progress && !p.stop) return 'Say how long it ran, above'
+    if (printedNow && p.howWent !== 'success' && !p.stop) return 'Say how long it ran and what it weighs, above'
     return null
   }
 
@@ -4195,7 +4194,6 @@ function BuildSheet({
   /** The sliced file a part was imported from, if any. */
   const fileOf = (partId: string) =>
     detail.slices.find((sl) => sl.sections.some((sec) => sec.partId === partId))?.fileName ?? null
-  const tally = failureTally(detail.parts, detail.runs)
 
   /**
    * Send a part back, Voltage's way: why it failed, how to make the next
@@ -4372,27 +4370,9 @@ function BuildSheet({
         setError={setError}
       />
 
-      {tally && (
-        <div
-          className="hint"
-          role="note"
-          aria-label="Failures on this project"
-          style={{ marginTop: 12, color: 'var(--red)' }}
-        >
-          Failures so far:{' '}
-          {[
-            tally.sentBack > 0 &&
-              `${tally.sentBack} send-back${tally.sentBack === 1 ? '' : 's'} across ${tally.partsAffected} part${tally.partsAffected === 1 ? '' : 's'}`,
-            tally.failedRuns > 0 &&
-              `${tally.failedRuns} failed or stopped plate${tally.failedRuns === 1 ? '' : 's'} (${tally.unitsLost} g, ${fmtHours(tally.hoursLost)} lost)`,
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-          {tally.repeatReason && ` · same reason more than once: “${tally.repeatReason}” — likely a design or setup problem, not luck`}
-          .
-        </div>
-      )}
-
+      {/* No separate failures line (CG, 20 Oct: "still is confusing ... just
+          eliminate that section"). Each failure is on its plate's print, and
+          What it took totals what failures cost. */}
       {detail.parts.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--txt-2)', marginTop: 14 }}>
           Nothing listed yet — import a sliced file above, or add parts by hand below. A build
@@ -7349,10 +7329,21 @@ function StoppedPrint({
 }) {
   // Hours, typed as hours and minutes (CG, 14 Oct).
   const [ran, setRan] = useState<number | null>(null)
-  const [flow, setFlow] = useState<number | null>(null)
+  /**
+   * What the failed print WEIGHS (CG, 20 Oct: "how much does the failed
+   * print weigh to input, not at what point the filament stopped"). A scale
+   * knows what a ghost print or a clog really left; the file only knows
+   * what the printer pushed. Plus the purge and skirt that went down
+   * outside the print -- weighing the part misses those.
+   */
+  const [weighed, setWeighed] = useState('')
+  const [waste, setWaste] = useState<string | null>(null)
   const [progress, setProgress] = useState<ProgressPoint[] | null>(slice.progress)
   const [reading, setReading] = useState(false)
+  const [readOnce, setReadOnce] = useState(false)
   const [readErr, setReadErr] = useState<string | null>(null)
+  // Read before Guma separated purge from the print: worth reading again.
+  const noWaste = !!progress?.length && progress.every((p) => p.waste == null)
 
   /** A kept file imported before Guma read the moves: read them now, once. */
   async function readMoves() {
@@ -7364,121 +7355,138 @@ function StoppedPrint({
       if (!row) throw new Error('That file was not kept.')
       const bytes = await unpackFile(row.content)
       const parsed = await parseSliceFile(new File([bytes as unknown as BlobPart], slice.fileName))
-      if (!parsed.progress) throw new Error('No progress marks in this file — enter the grams by hand, or weigh it.')
+      if (!parsed.progress) throw new Error('No progress marks in this file — the weight and the hours are enough.')
       await setSliceProgress(ctx.shop.id, slice.id, parsed.progress)
       setProgress(parsed.progress)
     } catch (e) {
       setReadErr(e instanceof Error ? e.message : String(e))
     } finally {
       setReading(false)
+      setReadOnce(true)
     }
   }
 
   const total = slice.estMinutes
   const toMin = (h: number | null) => (h == null || h <= 0 ? null : Math.round(h * 60))
   const ranMin = toMin(ran)
-  const flowMin = toMin(flow)
   const at = progress && ranMin != null ? progressAt(progress, ranMin, slice.estGrams) : null
-  const flowAt = progress && flowMin != null && ranMin != null && flowMin < ranMin ? progressAt(progress, flowMin, slice.estGrams) : null
   const layerTop = progress?.length ? progress[progress.length - 1].z : null
+  // The file's own purge-and-skirt by then, as the starting figure; a typed
+  // one wins.
+  const fileWaste = at?.waste != null ? Math.round(at.waste * 10) / 10 : null
+  const num = (t: string) => {
+    const v = Number(t.trim())
+    return t.trim() && Number.isFinite(v) && v >= 0 ? v : null
+  }
+  const wasteG = waste != null ? num(waste) : fileWaste
+  const weighedG = num(weighed)
+  // What comes off the shelf: the weighed print plus the waste; unweighed,
+  // what the file says the printer pushed by then.
+  const charge = weighedG != null ? weighedG + (wasteG ?? 0) : at ? at.grams : null
 
-  function apply(r: number | null, f: number | null) {
+  function apply(r: number | null, w: string, ws: string | null) {
     const rm = toMin(r)
-    if (rm == null || !progress) return
-    const fm = toMin(f)
-    const a = progressAt(progress, rm, slice.estGrams)
-    if (!a) return
-    const b = fm != null && fm < rm ? progressAt(progress, fm, slice.estGrams) : null
-    const used = b ?? a
+    if (rm == null) return
+    const a = progress ? progressAt(progress, rm, slice.estGrams) : null
+    const fw = a?.waste != null ? Math.round(a.waste * 10) / 10 : null
+    const wg = num(w)
+    const xg = ws != null ? num(ws) : fw
+    const g = wg != null ? wg + (xg ?? 0) : a ? a.grams : null
+    if (g == null) return
     const note =
       `From ${slice.fileName} — stopped at ${fmtMinutes(rm)}` +
       (total ? ` of ${fmtMinutes(total)}` : '') +
-      ` (${a.pct}%, layer ${a.z.toFixed(2)} mm)` +
-      (b && fm != null ? `; filament stopped at ${fmtMinutes(fm)} — ghost print after` : '') +
+      (a ? ` (${a.pct}%, layer ${a.z.toFixed(2)} mm)` : '') +
+      (wg != null
+        ? `; weighed ${trimG(wg)} ${unit}${xg ? ` + ${trimG(xg)} ${unit} purge and skirt` : ''}`
+        : '; not weighed — the file’s figure for what the printer pushed') +
       '.'
     // Two decimals is 36 seconds: 15h 20m is stored 15.33 and reads back 15h 20m.
-    onApply(Math.round((rm / 60) * 100) / 100, Math.round(used.grams), note)
+    onApply(Math.round((rm / 60) * 100) / 100, Math.round(g), note)
   }
 
   return (
     <div className="stoppedprint" role="group" aria-label="Where the print stopped">
-      {!progress ? (
-        slice.id == null ? (
-          <div className="hint" style={{ margin: 0 }}>
-            This file has no progress marks to read. Record it, then use “Correct this print” on the plate
-            to put in the grams and hours by hand — a weighed figure if you have one.
-          </div>
-        ) : slice.keptBytes != null ? (
-          <div className="btnrow" style={{ margin: 0, alignItems: 'center' }}>
-            <button type="button" className="btn sm" disabled={reading} onClick={() => void readMoves()}>
-              {reading ? 'Reading the moves…' : 'Read the file to see where it stopped'}
-            </button>
-            <span className="hint" style={{ margin: 0 }}>
-              Imported before Guma read the moves — a few seconds, once.
-            </span>
-          </div>
-        ) : (
-          <div className="hint" style={{ margin: 0 }}>
-            This file was not kept, so Guma cannot read where the print got to — enter the grams by hand,
-            or weigh the spool before and after.
-          </div>
-        )
-      ) : (
-        <>
-          <div className="grid3" style={{ marginTop: 0 }}>
-            <div className="fld" style={{ margin: 0 }}>
-              <label className="lbl" htmlFor={`sp-ran-${slice.id}`}>
-                Machine ran for{total ? ` (of ${fmtMinutes(total)})` : ''}
-              </label>
-              <HoursInput
-                id={`sp-ran-${slice.id}`}
-                label="Machine ran for"
-                value={ran}
-                onChange={(h) => {
-                  setRan(h)
-                  apply(h, flow)
-                }}
-              />
-            </div>
-            <div className="fld" style={{ margin: 0 }}>
-              <label className="lbl" htmlFor={`sp-flow-${slice.id}`}>
-                Filament stopped at (if earlier)
-              </label>
-              <HoursInput
-                id={`sp-flow-${slice.id}`}
-                label="Filament stopped at"
-                value={flow}
-                onChange={(h) => {
-                  setFlow(h)
-                  apply(ran, h)
-                }}
-              />
-            </div>
-          </div>
-          {at && ranMin != null && (
-            <div className="hint" data-testid="stopped-at" style={{ marginTop: 6 }}>
+      <div className="grid3" style={{ marginTop: 0 }}>
+        <div className="fld" style={{ margin: 0 }}>
+          <label className="lbl" htmlFor={`sp-ran-${slice.id}`}>
+            Machine ran for{total ? ` (of ${fmtMinutes(total)})` : ''}
+          </label>
+          <HoursInput
+            id={`sp-ran-${slice.id}`}
+            label="Machine ran for"
+            value={ran}
+            onChange={(h) => {
+              setRan(h)
+              apply(h, weighed, waste)
+            }}
+          />
+        </div>
+        <div className="fld" style={{ margin: 0 }}>
+          <label className="lbl" htmlFor={`sp-weight-${slice.id}`}>
+            The failed print weighs ({unit})
+          </label>
+          <input
+            id={`sp-weight-${slice.id}`}
+            inputMode="decimal"
+            value={weighed}
+            placeholder="on the scale"
+            onChange={(e) => {
+              setWeighed(e.target.value)
+              apply(ran, e.target.value, waste)
+            }}
+          />
+        </div>
+        <div className="fld" style={{ margin: 0 }}>
+          <label className="lbl" htmlFor={`sp-waste-${slice.id}`}>
+            Plus purge and skirt ({unit})
+          </label>
+          <input
+            id={`sp-waste-${slice.id}`}
+            inputMode="decimal"
+            value={waste ?? (fileWaste != null ? String(fileWaste) : '')}
+            placeholder={progress ? 'from the file' : 'if you know it'}
+            onChange={(e) => {
+              setWaste(e.target.value)
+              apply(ran, weighed, e.target.value)
+            }}
+          />
+        </div>
+      </div>
+      {ranMin != null && (
+        <div className="hint" data-testid="stopped-at" style={{ marginTop: 6 }}>
+          {at ? (
+            <>
               By {fmtMinutes(ranMin)} the plate was <b>{at.pct}%</b> through, at layer {at.z.toFixed(2)}
-              {layerTop ? ` of ${layerTop.toFixed(2)}` : ''} mm, and the printer had pushed{' '}
-              <b>
-                {Math.round(at.grams)} {unit}
-              </b>
+              {layerTop ? ` of ${layerTop.toFixed(2)}` : ''} mm; the printer had pushed {Math.round(at.grams)} {unit}
+              {fileWaste != null ? `, ${trimG(fileWaste)} ${unit} of it purge and skirt` : ''}.{' '}
+            </>
+          ) : null}
+          {weighedG != null ? (
+            <>
+              Charged: <b>{trimG(charge ?? 0)} {unit}</b> — the {trimG(weighedG)} {unit} it weighs
+              {wasteG ? ` plus ${trimG(wasteG)} ${unit} purge and skirt` : ''}
+              {at && at.grams - (charge ?? 0) > 1
+                ? `. The other ${Math.round(at.grams - (charge ?? 0))} ${unit} the file expected never came out — a clog or ghost printing`
+                : ''}
               .
-              {flowAt && flowMin != null ? (
-                <>
-                  {' '}
-                  Filament stopped at {fmtMinutes(flowMin)}: <b>{Math.round(flowAt.grams)} {unit}</b> left the
-                  spool — the last {fmtMinutes(ranMin - flowMin)} moved nothing.
-                </>
-              ) : null}{' '}
-              Filled in above; a weighed figure is better still.
-            </div>
+            </>
+          ) : at ? (
+            <>Weigh it if you can — until then the file&rsquo;s {Math.round(at.grams)} {unit} is charged, which overstates a ghost print.</>
+          ) : (
+            <>Put in what it weighs.</>
           )}
-          {flowMin != null && ranMin != null && flowMin >= ranMin && (
-            <div className="hint" style={{ marginTop: 4, color: 'var(--warn)' }}>
-              Filament can only have stopped before the machine did.
-            </div>
-          )}
-        </>
+        </div>
+      )}
+      {(!progress || noWaste) && !readOnce && slice.id != null && slice.keptBytes != null && (
+        <div className="btnrow" style={{ margin: '6px 0 0', alignItems: 'center' }}>
+          <button type="button" className="btn sm" disabled={reading} onClick={() => void readMoves()}>
+            {reading ? 'Reading the moves…' : progress ? 'Read the file for the purge' : 'Read the file to see where it stopped'}
+          </button>
+          <span className="hint" style={{ margin: 0 }}>
+            Optional — {progress ? 'imported before Guma separated purge and skirt from the print' : 'shows how far it got and the purge; imported before Guma read the moves'}. A few seconds, once.
+          </span>
+        </div>
       )}
       {readErr && (
         <div className="hint" role="alert" style={{ color: 'var(--red)', marginTop: 4 }}>
@@ -7488,6 +7496,9 @@ function StoppedPrint({
     </div>
   )
 }
+
+/** Grams to one decimal, without a trailing ".0". */
+const trimG = (g: number) => String(Math.round(g * 10) / 10)
 
 /** What the price and the spool hold become with a different build sheet. */
 export interface WhatIf {

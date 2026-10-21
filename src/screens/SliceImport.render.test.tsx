@@ -669,7 +669,7 @@ describe('a plate is one print, and the whole plate comes off it', () => {
 })
 
 describe('a print stopped part way, costed from where it got to (CG, 13 Oct)', () => {
-  it('reads the plate progress: machine time and when filament stopped are two figures', async () => {
+  it('charges what the failed print weighs, plus purge, with the file for reference (CG, 20 Oct)', async () => {
     const { ctx, jobId, data } = await seedShop()
     const user = userEvent.setup()
     for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
@@ -681,32 +681,33 @@ describe('a print stopped part way, costed from where it got to (CG, 13 Oct)', (
       materialText: 'PLA', materialId: ctx.materials[0].id, estMinutes: 986, estGrams: 354.92, notes: [],
       sections: [{ label: 'Maui BATHY 3x', qty: 1, estMinutes: 986, estGrams: 354.92, material: 'PLA' }],
       progress: [
-        { min: 0, pct: 0, grams: 0, z: 0 },
-        { min: 300, pct: 30, grams: 189.92, z: 13.773 },
-        { min: 540, pct: 54, grams: 270, z: 29.5 },
-        { min: 900, pct: 91, grams: 334.16, z: 39.615 },
-        { min: 985, pct: 100, grams: 354.92, z: 40.315 },
+        { min: 0, pct: 0, grams: 0, z: 0, waste: 0 },
+        { min: 300, pct: 30, grams: 189.92, z: 13.773, waste: 1.2 },
+        { min: 540, pct: 54, grams: 270, z: 29.5, waste: 1.2 },
+        { min: 900, pct: 91, grams: 334.16, z: 39.615, waste: 1.2 },
+        { min: 985, pct: 100, grams: 354.92, z: 40.315, waste: 1.2 },
       ],
     })
     await renderProject(jobId, ctx)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'cancelled')
     await user.type(hoursBox(screen, /machine ran for/i), '15')
-    expect((await screen.findByTestId('stopped-at')).textContent).toMatch(/By 15h 0m the plate was 91% through, at layer 39.62 of 40.31 mm, and the printer had pushed 334 g/)
-    // Ghost printing from 9h: only what left the spool by then is charged.
-    await user.type(hoursBox(screen, /filament stopped at/i), '9')
-    expect(screen.getByTestId('stopped-at').textContent).toMatch(/Filament stopped at 9h 0m: 270 g left the spool — the last 6h 0m moved nothing/)
-    expect((screen.getByLabelText(/g off the spool/i) as HTMLInputElement).value).toBe('270')
+    expect((await screen.findByTestId('stopped-at')).textContent).toMatch(/By 15h 0m the plate was 91% through, at layer 39.62 of 40.31 mm; the printer had pushed 334 g, 1.2 g of it purge and skirt/)
+    // The purge comes from the file; the weight from the scale.
+    expect((screen.getByLabelText(/plus purge and skirt/i) as HTMLInputElement).value).toBe('1.2')
+    await user.type(screen.getByLabelText(/the failed print weighs/i), '264')
+    expect(screen.getByTestId('stopped-at').textContent).toMatch(/Charged: 265.2 g — the 264 g it weighs plus 1.2 g purge and skirt. The other 69 g the file expected never came out/)
+    expect((screen.getByLabelText(/g off the spool/i) as HTMLInputElement).value).toBe('265')
     expect(hoursBox(screen, /^machine time$/i).value).toBe('15')
     expect(minutesBox(screen, 'Machine time').value).toBe('0')
     await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
     await waitFor(() =>
       expect(currentDb.sqlite.prepare('select units_used, hours, outcome, note from print_runs').get()).toEqual({
-        units_used: 270,
+        units_used: 265,
         hours: 15,
         outcome: 'cancelled',
-        note: 'From Maui_BATHY_3x.bgcode — stopped at 15h 0m of 16h 26m (91%, layer 39.62 mm); filament stopped at 9h 0m — ghost print after.',
+        note: 'From Maui_BATHY_3x.bgcode — stopped at 15h 0m of 16h 26m (91%, layer 39.62 mm); weighed 264 g + 1.2 g purge and skirt.',
       }),
     )
     // And the copy it was printing is failed, with the reason.
@@ -874,8 +875,8 @@ describe('a failed part, Voltage-style', () => {
     // The fixed file is kept and matched to the existing parts, not duplicated.
     expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 2 })
     expect(currentDb.sqlite.prepare('select count(*) as n from job_parts').get()).toEqual({ n: 2 })
-    const note = await screen.findByRole('note', { name: /failures on this project/i })
-    expect(note.textContent).toMatch(/1 send-back across 1 part/)
+    // No separate failures line (CG, 20 Oct): the failure is on the part's copy.
+    expect(screen.queryByRole('note', { name: /failures on this project/i })).toBeNull()
   })
 })
 
@@ -1214,7 +1215,7 @@ describe('a plate imported before Guma read the moves (CG, 13 Oct)', () => {
     await user.type(minutesBox(within(region), 'Machine ran for'), '40')
     // 5000 of 6000 mm by minute 40, scaled to the slicer's 72 g: 60 g. A
     // straight line would have said 28.8 g.
-    expect(within(region).getByTestId('stopped-at').textContent).toMatch(/40% through, at layer 0.20 of 5.00 mm, and the printer had pushed 60 g/)
+    expect(within(region).getByTestId('stopped-at').textContent).toMatch(/40% through, at layer 0.20 of 5.00 mm; the printer had pushed 60 g/)
     expect(currentDb.sqlite.prepare("select progress is not null as kept from slice_imports where id = 'old'").get()).toEqual({ kept: 1 })
   })
 })
@@ -1257,7 +1258,7 @@ describe('a print recorded as clean that had stopped part way (CG, 14 Oct)', () 
     expect(await screen.findByText(/Correcting the print recorded 2026-10-14/)).toBeDefined()
     expect((screen.getByLabelText(/how it went/i) as HTMLSelectElement).value).toBe('cancelled')
     await user.type(hoursBox(screen, /machine ran for/i), '15')
-    await user.type(hoursBox(screen, /filament stopped at/i), '9')
+    await user.type(screen.getByLabelText(/the failed print weighs/i), '264')
     const why = screen.getByLabelText(/what went wrong/i)
     await user.clear(why)
     await user.type(why, 'Ghost printing — Nextruder motor')
@@ -1265,14 +1266,14 @@ describe('a print recorded as clean that had stopped part way (CG, 14 Oct)', () 
 
     await waitFor(() =>
       expect(currentDb.sqlite.prepare('select units_used, hours, outcome, failure_reason from print_runs').get()).toEqual({
-        units_used: 270,
+        units_used: 264,
         hours: 15,
         outcome: 'cancelled',
         failure_reason: 'Ghost printing — Nextruder motor',
       }),
     )
-    // 85 g back on the shelf, and still only one run.
-    expect(currentDb.sqlite.prepare('select on_hand from materials').get()).toEqual({ on_hand: 730 })
+    // 91 g back on the shelf -- it weighed 264 g, not 355 -- and still only one run.
+    expect(currentDb.sqlite.prepare('select on_hand from materials').get()).toEqual({ on_hand: 736 })
     expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 1 })
     await waitFor(() => expect(screen.queryByTestId(`plate-disagrees-${imp.importId}`)).toBeNull())
   })
@@ -1370,6 +1371,8 @@ describe('several files at once, and each print said once (CG, 15 Oct)', () => {
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
     await user.type(screen.getByLabelText(/what went wrong/i), 'Clog')
+    await user.type(hoursBox(screen, /machine ran for/i), '1')
+    await user.type(screen.getByLabelText(/the failed print weighs/i), '40')
     await user.click(screen.getByRole('button', { name: /record where it stopped/i }))
     await screen.findByText('failed')
     // ...and a re-sliced file printed its copies.

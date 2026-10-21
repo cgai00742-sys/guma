@@ -40,6 +40,9 @@ export interface ProgressPoint {
   pct: number
   grams: number
   z: number
+  /** Of `grams`, what went outside every object by then -- purge line,
+   *  skirt, wipe tower. Only when the file names its objects. */
+  waste?: number
 }
 
 export interface GcodeWalk {
@@ -211,11 +214,15 @@ export async function walkGcode(
   const perMin = new Map<string, number>()
   let overheadMin = 0
   let carry = ''
+  // Filament pushed while no object was printing: purge, skirt, wipe.
+  let outside = 0
+  const outsideAt: number[] = []
 
   // Net filament -- pushes less retractions -- so an object's grams are
   // what stayed in it, and the objects add up to the plate.
   const addE = (mm: number) => {
     e += mm
+    if (!current) outside += mm
     if (current) {
       perE.set(current, (perE.get(current) ?? 0) + mm)
       intervalE.set(current, (intervalE.get(current) ?? 0) + mm)
@@ -291,6 +298,7 @@ export async function walkGcode(
         closeInterval(now - elapsed)
         elapsed = Math.max(elapsed, now)
         marks.push({ min: now, pct: parseInt(p[1], 10), grams: e * mmToG, z: layer })
+        outsideAt.push(outside * mmToG)
       }
     }
   }
@@ -320,6 +328,9 @@ export async function walkGcode(
     objects[k] = { grams: v * mmToG, minutes: (perMin.get(k) ?? 0) + overheadMin * share }
   }
 
+  // What went outside the objects means something only when the file names
+  // its objects; otherwise every move is "outside".
+  if (perE.size) marks.forEach((m, i) => (m.waste = Math.max(0, outsideAt[i])))
   return { totalMinutes: total, measuredGrams: e * mmToG, progress: thin(marks, 400), objects }
 }
 
@@ -341,12 +352,13 @@ export function progressAt(
   progress: ProgressPoint[],
   minutes: number,
   slicerGrams?: number | null,
-): { pct: number; grams: number; z: number } | null {
+): { pct: number; grams: number; z: number; waste: number | null } | null {
   if (!progress.length) return null
   const last = progress[progress.length - 1]
   const scale = slicerGrams && last.grams > 0 ? slicerGrams / last.grams : 1
-  if (minutes <= progress[0].min) return { pct: progress[0].pct, grams: progress[0].grams * scale, z: progress[0].z }
-  if (minutes >= last.min) return { pct: last.pct, grams: last.grams * scale, z: last.z }
+  const w = (p: ProgressPoint) => (p.waste == null ? null : p.waste * scale)
+  if (minutes <= progress[0].min) return { pct: progress[0].pct, grams: progress[0].grams * scale, z: progress[0].z, waste: w(progress[0]) }
+  if (minutes >= last.min) return { pct: last.pct, grams: last.grams * scale, z: last.z, waste: w(last) }
   let lo = 0
   let hi = progress.length - 1
   while (hi - lo > 1) {
@@ -362,13 +374,20 @@ export function progressAt(
     grams: (a.grams + (b.grams - a.grams) * t) * scale,
     // The layer is a step, not a slope: the one reached by the earlier mark.
     z: a.z,
+    waste: a.waste == null || b.waste == null ? null : (a.waste + (b.waste - a.waste) * t) * scale,
   }
 }
 
 /** Stored as [[minutes, percent, grams, layer], ...] -- a few KB a plate. */
 export function encodeProgress(points: ProgressPoint[] | null | undefined): string | null {
   if (!points || !points.length) return null
-  return JSON.stringify(points.map((p) => [p.min, p.pct, Math.round(p.grams * 100) / 100, Math.round(p.z * 1000) / 1000]))
+  return JSON.stringify(
+    points.map((p) => {
+      const row = [p.min, p.pct, Math.round(p.grams * 100) / 100, Math.round(p.z * 1000) / 1000]
+      if (p.waste != null) row.push(Math.round(p.waste * 100) / 100)
+      return row
+    }),
+  )
 }
 
 export function decodeProgress(text: string | null | undefined): ProgressPoint[] | null {
@@ -378,7 +397,7 @@ export function decodeProgress(text: string | null | undefined): ProgressPoint[]
     if (!Array.isArray(rows)) return null
     const out = rows
       .filter((r): r is number[] => Array.isArray(r) && r.length >= 4 && r.every((x) => typeof x === 'number'))
-      .map(([min, pct, grams, z]) => ({ min, pct, grams, z }))
+      .map(([min, pct, grams, z, waste]) => (waste == null ? { min, pct, grams, z } : { min, pct, grams, z, waste }))
     return out.length ? out : null
   } catch {
     return null
