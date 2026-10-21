@@ -4154,6 +4154,23 @@ function BuildSheet({
   const [addWhy, setAddWhy] = useState('')
   const [saving, setSaving] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
+  /** "A part with no file" -- the exception, so folded until asked for. */
+  const [byHand, setByHand] = useState(false)
+  /**
+   * The plates that make each part (CG, 21 Oct: the parts list was a second
+   * list that drifted from the plates). A part a plate makes is counted from
+   * that plate's prints; only a part with no plate is marked by hand.
+   */
+  const groupsAll = groupSliceFiles(detail.slices, detail.runs)
+  const platesOf = (partId: string) =>
+    groupsAll.filter((g) => detail.slices.find((x) => x.id === g.first.id)?.sections.some((sec) => sec.partId === partId))
+  /** Objects on a plate that no part on this list counts -- their part was
+   *  removed, or never made. Counting them is one click. */
+  const uncounted = groupsAll.flatMap((g) =>
+    (detail.slices.find((x) => x.id === g.first.id)?.sections ?? [])
+      .filter((sec) => !sec.partId || !detail.parts.some((p) => p.id === sec.partId))
+      .map((sec) => ({ sec, g })),
+  )
   /**
    * How many rows arrived from the last import, so the build sheet can say
    * which ones they are. Counted rather than keyed by id because the parts
@@ -4362,26 +4379,16 @@ function BuildSheet({
         </div>
       )}
 
-      <SliceRuns
-        ctx={ctx}
-        detail={detail}
-        busy={busy || saving}
-        onChanged={onChanged}
-        setError={setError}
-      />
-
       {/* No separate failures line (CG, 20 Oct: "still is confusing ... just
           eliminate that section"). Each failure is on its plate's print, and
           What it took totals what failures cost. */}
-      {detail.parts.length === 0 ? (
+      {detail.parts.length === 0 && uncounted.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--txt-2)', marginTop: 14 }}>
-          Nothing listed yet — import a sliced file above, or add parts by hand below. A build
-          sheet is worth keeping when a project is more than one object —
-          it is what turns &ldquo;is it done?&rdquo; into a countable answer, and it is where a part
-          that keeps coming back stops looking like bad luck. A project that does not need one is not
-          penalised: the checks that read the build sheet stand aside while it is empty.
+          Nothing here yet — drop the sliced files above. Each one becomes a plate, and what is on it
+          is listed here as what this project makes. Something with no file can be added by hand
+          below.
         </div>
-      ) : (
+      ) : detail.parts.length === 0 ? null : (
         <>
         {picked.size > 0 && (
           <CopiesBar
@@ -4424,7 +4431,14 @@ function BuildSheet({
             {bulkSaid}
           </div>
         )}
-        <div className="sheetwrap" style={{ maxHeight: 'none' }}>
+        <div className="sechead" style={{ marginTop: 14 }}>
+          <h4>What this makes</h4>
+          <span className="sub">
+            Worked out from the plates below: a plate&rsquo;s prints mark its parts. Change how many you
+            need with edit.
+          </span>
+        </div>
+        <div className="sheetwrap" style={{ maxHeight: 'none' }} role="region" aria-label="What this makes">
           <table>
             <thead>
               <tr>
@@ -4499,13 +4513,23 @@ function BuildSheet({
                           {reprintCount(p) > 1 && ` · sent back ${reprintCount(p)} times`}
                         </div>
                       )}
-                      <PartVariants
-                        ctx={ctx}
-                        part={p}
-                        busy={busy || saving}
-                        onChanged={onChanged}
-                        setError={setError}
-                      />
+                      {(() => {
+                        const made = platesOf(p.id)
+                        // Before anything prints, which file the estimate comes
+                        // from is a choice worth showing; after, where the part
+                        // comes from is all that matters.
+                        if (!canPrint(detail.phase, detail.facts.kind) && p.variants.length > 1)
+                          return (
+                            <PartVariants ctx={ctx} part={p} busy={busy || saving} onChanged={onChanged} setError={setError} />
+                          )
+                        return made.length ? (
+                          <div className="pmeta" data-testid={`made-by-${p.id}`}>
+                            from {made.map((g) => g.first.fileName).join(' · ')}
+                          </div>
+                        ) : (
+                          <div className="pmeta">no file — marked by hand</div>
+                        )
+                      })()}
                     </td>
                     <td>
                       {(() => {
@@ -4564,6 +4588,10 @@ function BuildSheet({
                       ) : (
                         <div className="partacts">
                           {allowedStatuses(detail.phase, detail.facts.kind)
+                            // A part a plate makes is marked printed by that plate's
+                            // prints -- one place to record, not two. Failing a copy
+                            // found bad after it came off, and checking, stay here.
+                            .filter((st) => !(st === 'printed' && platesOf(p.id).length > 0))
                             .filter((st) => movable(copiesOf(p), st) > 0)
                             .map((st) => {
                               const c = copiesOf(p)
@@ -4648,6 +4676,22 @@ function BuildSheet({
                     <tr>
                       <td colSpan={6} style={{ background: 'var(--panel-3)' }}>
                         <div className="attn crit" style={{ margin: 0 }}>
+                          {platesOf(p.id).length > 0 ? (
+                            <>
+                              <b>{p.label} is made by {platesOf(p.id).map((g) => g.first.fileName).join(' and ')}.</b>
+                              <div style={{ marginTop: 4, fontSize: 12 }}>
+                                Removing it here would leave the plate printing something this list no longer counts —
+                                the mismatch this list used to have. Use <b>Sort parts</b> on the plate to put its object
+                                on another part, or remove the plate itself.
+                              </div>
+                              <div className="btnrow" style={{ marginTop: 8 }}>
+                                <button type="button" className="btn sm" onClick={() => setRemoveId(null)}>
+                                  OK
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                          <>
                           <b>
                             Remove “{p.label}” ×{p.qty} from the build sheet?
                           </b>
@@ -4690,6 +4734,8 @@ function BuildSheet({
                               Keep it
                             </button>
                           </div>
+                          </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -4820,6 +4866,68 @@ function BuildSheet({
         </>
       )}
 
+      {detail.parts.length > 0 && (
+        <div className="sheetsum">
+          <span>One box per copy: amber = printed · green = passed · red = going back · dashed = reprint queued</span>
+          <span style={{ marginLeft: 'auto' }}>
+            {detail.facts.parts} part{detail.facts.parts === 1 ? '' : 's'} ·{' '}
+            {(() => {
+              const n = detail.parts.reduce((a, p) => a + p.qty, 0)
+              return `${n} cop${n === 1 ? 'y' : 'ies'}`
+            })()}
+            {detail.facts.reprintsEver > 0 && (
+              <span style={{ color: 'var(--warn)' }}>
+                {' '}
+                · sent back {detail.facts.reprintsEver} time
+                {detail.facts.reprintsEver === 1 ? '' : 's'} so far
+              </span>
+            )}
+          </span>
+        </div>
+      )}
+
+      {/* Objects on a plate this list does not count: their part was removed
+          before plates and parts were one list (CG's Maui: LAND FLUSH and
+          MauiNui printed, but the sheet said 2 of 2). One click counts them,
+          from their prints. */}
+      {uncounted.length > 0 && (
+        <div className="attn warn" role="note" aria-label="Not counted" style={{ marginTop: 10 }}>
+          <div style={{ flex: 1 }}>
+            <b>
+              {uncounted.length === 1 ? 'A plate makes something' : `Plates make ${uncounted.length} things`} this list
+              does not count.
+            </b>
+            {uncounted.map(({ sec, g }) => (
+              <div key={sec.id} style={{ fontSize: 12, marginTop: 4 }}>
+                {sec.label} — on {g.first.fileName}
+                {g.runs.length ? `, printed ${g.runs.length} time${g.runs.length === 1 ? '' : 's'}` : ''}
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="btn sm primary"
+            disabled={busy || saving}
+            onClick={() =>
+              void guard(async () => {
+                for (const { sec } of uncounted)
+                  await moveSliceSection(ctx.shop.id, detail.jobId, ctx.profile.id, sec.id, { label: sec.label })
+              })
+            }
+          >
+            Count {uncounted.length === 1 ? 'it' : 'them'}
+          </button>
+        </div>
+      )}
+
+      <SliceRuns
+        ctx={ctx}
+        detail={detail}
+        busy={busy || saving}
+        onChanged={onChanged}
+        setError={setError}
+      />
+
       {/* Once building, Estimated build is gone from the page -- so a build
           sheet that no longer matches the agreed quote says so here, with
           the same one-click revision (CG, 12 Oct: fewer copies in In build
@@ -4860,30 +4968,21 @@ function BuildSheet({
         )
       })()}
 
-      {detail.parts.length > 0 && (
-        <div className="sheetsum">
-          <span>One box per copy: amber = printed · green = passed · red = going back · dashed = reprint queued</span>
-          <span style={{ marginLeft: 'auto' }}>
-            {detail.facts.parts} part{detail.facts.parts === 1 ? '' : 's'} ·{' '}
-            {(() => {
-              const n = detail.parts.reduce((a, p) => a + p.qty, 0)
-              return `${n} cop${n === 1 ? 'y' : 'ies'}`
-            })()}
-            {detail.facts.reprintsEver > 0 && (
-              <span style={{ color: 'var(--warn)' }}>
-                {' '}
-                · sent back {detail.facts.reprintsEver} time
-                {detail.facts.reprintsEver === 1 ? '' : 's'} so far
-              </span>
-            )}
-          </span>
-        </div>
-      )}
-
       {/* Parts can be added at any stage. Before Review it is just a list
           being built. From Review on the list has been checked, so adding to
           it needs a reason, which goes in Activity -- CG: "allow projects
           to be editable in terms of adding more pieces". */}
+      {!byHand && !(detail.parts.length === 0 && detail.slices.length === 0) ? (
+        <button
+          type="button"
+          className="linkbtn"
+          style={{ marginTop: 10, width: 'auto', fontSize: 12 }}
+          onClick={() => setByHand(true)}
+        >
+          + A part with no file
+        </button>
+      ) : (
+      <>
       <div className="btnrow" style={{ marginTop: 10, alignItems: 'flex-end' }}>
         <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
           <label className="lbl" htmlFor="part-label">
@@ -4949,6 +5048,8 @@ function BuildSheet({
           not printed and is logged with your reason. If it still has to be printed, move the project
           back a stage at the top.
         </div>
+      )}
+      </>
       )}
 
     </div>

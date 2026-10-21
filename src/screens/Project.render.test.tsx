@@ -515,7 +515,10 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
   })
 
   it('print one, fail it, reprint it, then the rest -- all from the row', async () => {
+    // A part with no file is marked by hand (CG, 21 Oct: a part a plate makes
+    // is marked by that plate's prints instead).
     const { ctx, jobId, partId } = await inBuild()
+    currentDb.sqlite.exec('delete from slice_sections')
     await renderProject(jobId, ctx)
     const user = userEvent.setup()
     const line = () => screen.getByTestId(`copies-${partId}`).textContent

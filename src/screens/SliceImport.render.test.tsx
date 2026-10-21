@@ -983,6 +983,7 @@ describe('adding parts after the sheet was checked', () => {
     }
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
+    await user.click(await screen.findByRole('button', { name: /a part with no file/i }))
     await user.type(await screen.findByLabelText(/add another part/i), 'Maui Base')
     const add = screen.getByRole('button', { name: /^add$/i })
     expect((add as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
@@ -1453,5 +1454,51 @@ describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
     const small = currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Small cap'").get() as { copy_states: string }
     expect(JSON.parse(small.copy_states)).toEqual(['printed'])
     expect(JSON.parse(cap().copy_states)).toEqual(['printed'])
+  })
+})
+
+describe('one list: what the plates make is what the project makes (CG, 21 Oct)', () => {
+  it('a part a plate makes is marked by its prints, not by hand, and cannot be removed out from under the plate', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await addAsEstimate(user)
+    const list = await screen.findByRole('region', { name: /what this makes/i })
+    const row = (await within(list).findByText('Cap')).closest('tr')!
+    expect(within(row).queryByRole('button', { name: /^printed cap$/i })).toBeNull()
+    expect(within(row).getByText(/from Reef buoy_sliced\.gcode/)).toBeDefined()
+    await user.click(within(row).getByRole('button', { name: /^remove cap$/i }))
+    expect(await screen.findByText(/Cap is made by Reef buoy_sliced\.gcode/)).toBeDefined()
+    expect(screen.queryByRole('button', { name: /^remove it$/i })).toBeNull()
+  })
+
+  it('counts a plate object whose part was removed, from its prints, in one click', async () => {
+    const { ctx, jobId, data } = await seedShop('inhouse')
+    const d = data as any
+    const imp = await d.importSlice(ctx.shop.id, jobId, ctx.profile.id, {
+      fileName: 'Sliced_Maui_LAND_FLUSH_6h18m.bgcode', kind: 'gcode', printerModel: 'Prusa XL', printerId: ctx.printers[0].id,
+      materialText: 'PETG', materialId: ctx.materials[0].id, estMinutes: 378, estGrams: 42, notes: [],
+      sections: [{ label: 'Maui LAND FLUSH 3x', qty: 1, estMinutes: 378, estGrams: 42, material: 'PETG' }],
+    })
+    const run = await d.recordPrintRun(ctx.shop.id, jobId, ctx.profile.id, {
+      printerId: ctx.printers[0].id, materialId: ctx.materials[0].id, unitsUsed: 42, hours: 6.3, outcome: 'success',
+      failureReason: null, note: null, startedAt: '2026-09-14', sliceImportId: imp.importId,
+    })
+    await d.markPlatePrinted(ctx.shop.id, jobId, ctx.profile.id, imp.importId, run)
+    // The old way: the part removed from the sheet, the plate left printing it.
+    const part = currentDb.sqlite.prepare('select id from job_parts').get() as { id: string }
+    await d.deletePart(ctx.shop.id, part.id, ctx.profile.id, null)
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    const note = await screen.findByRole('note', { name: /not counted/i })
+    expect(note.textContent).toMatch(/Maui LAND FLUSH 3x — on Sliced_Maui_LAND_FLUSH_6h18m\.bgcode, printed 1 time/)
+    await user.click(within(note).getByRole('button', { name: /^count it$/i }))
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select label, copy_states from job_parts').all()).toEqual([
+        { label: 'Maui LAND FLUSH 3x', copy_states: '["printed"]' },
+      ]),
+    )
+    await waitFor(() => expect(screen.queryByRole('note', { name: /not counted/i })).toBeNull())
   })
 })
