@@ -18,7 +18,7 @@ import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
-import { describeHolds, quoteBases, uniqueLabel, validateMadeItems, shelfNote, type SectionAssign, type SectionMoveResult, type MadeItemRow, type MadeItemInput, type AssemblyRow, type AssemblyInput, type ItemPlace, type MadeStatus } from './data.types'
+import { describeHolds, quoteBases, uniqueLabel, validateMadeItems, shelfNote, type SectionAssign, type SectionMoveResult, type MadeItemRow, type MadeItemInput, type AssemblyRow, type AssemblyInput, type ItemPlace, type MadeStatus, type ProductPatch } from './data.types'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, describeRunCorrection, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
@@ -2916,7 +2916,7 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
   const [products, stock] = await Promise.all([
     supabase
       .from('products')
-      .select('id, name, design_job_id, design_cost, design_hours, archived')
+      .select('id, name, design_job_id, design_cost, design_hours, archived, photo')
       .eq('shop_id', shopId)
       .order('archived')
       .order('name'),
@@ -2944,6 +2944,8 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
       revenue: Number(b.revenue),
       fees: Number(b.fees),
       cost_of_sold: Number(b.cost_of_sold),
+      shipping_charged: Number((b as { shipping_charged?: number }).shipping_charged ?? 0),
+      shipping_cost: Number((b as { shipping_cost?: number }).shipping_cost ?? 0),
       estimated: (parent?.job_id ?? null) === null,
     }
   })
@@ -2955,6 +2957,7 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
     design_cost: p.design_cost === null ? null : Number(p.design_cost),
     design_hours: p.design_hours === null ? null : Number(p.design_hours),
     archived: p.archived ? 1 : 0,
+    photo: (p as { photo?: string | null }).photo ?? null,
     batches: batches.filter((b) => b.product_id === String(p.id)),
   }))
 }
@@ -3027,7 +3030,7 @@ export async function saveBatch(shopId: string, next: BatchInput): Promise<strin
 export async function listSales(shopId: string, batchId?: string): Promise<SaleRow[]> {
   let query = supabase
     .from('sales')
-    .select('id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note, channels ( name )')
+    .select('id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note, shipping_charged, shipping_cost, channels ( name )')
     .eq('shop_id', shopId)
   if (batchId) query = query.eq('batch_id', batchId)
   const { data, error } = await query
@@ -3051,11 +3054,15 @@ export async function listSales(shopId: string, batchId?: string): Promise<SaleR
     fee_total: Number(s.fee_total),
     sold_on: String(s.sold_on),
     note: s.note ?? null,
+    shipping_charged: Number((s as { shipping_charged?: number }).shipping_charged ?? 0),
+    shipping_cost: Number((s as { shipping_cost?: number }).shipping_cost ?? 0),
   }))
 }
 
 export async function recordSale(shopId: string, next: SaleInput): Promise<string> {
   if (!Number.isFinite(next.units) || next.units < 1) throw new Error('A sale is at least one unit.')
+  for (const v of [next.shippingCharged, next.shippingCost])
+    if (v != null && (!Number.isFinite(Number(v)) || Number(v) < 0)) throw new Error('Shipping cannot be negative.')
   if (!Number.isFinite(next.unitPrice) || next.unitPrice < 0) {
     throw new Error('A price cannot be negative.')
   }
@@ -3108,6 +3115,8 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
       fee_total: round2(fee),
       sold_on: next.soldOn,
       note: next.note ?? null,
+      shipping_charged: round2(Math.max(0, Number(next.shippingCharged ?? 0))),
+      shipping_cost: round2(Math.max(0, Number(next.shippingCost ?? 0))),
     })
     .select('id')
     .single()
@@ -3807,9 +3816,17 @@ export async function placeItems(shopId: string, jobId: string, ids: string[], t
     await set({ status: 'assembled', assembly_id: to.assemblyId, placed_at: now })
     return {}
   }
-  const productId =
-    to.productId ??
-    (await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null }))
+  let productId = to.productId
+  if (!productId) {
+    productId = await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null })
+    // See data.local.ts: a new product starts with its plate's picture.
+    const sec = rows.map((r) => r.section_id).find(Boolean)
+    if (sec) {
+      const { data: t } = await supabase.from('slice_sections').select('slice_imports ( thumbnail )').eq('id', sec).maybeSingle()
+      const thumb = (t as { slice_imports?: { thumbnail?: string | null } | null } | null)?.slice_imports?.thumbnail
+      if (thumb) await supabase.from('products').update({ photo: thumb }).eq('id', productId).eq('shop_id', shopId)
+    }
+  }
   const total = rows.reduce((a, r) => a + Number(r.unit_cost), 0)
   const batchId = await saveBatch(shopId, {
     productId,
@@ -3934,4 +3951,19 @@ export async function deleteProduct(shopId: string, productId: string): Promise<
   if ((count ?? 0) > 0) throw new Error('Take its batches off the shelf first.')
   const { error: dErr } = await supabase.from('products').delete().eq('id', productId).eq('shop_id', shopId)
   if (dErr) throw dErr
+}
+
+
+/** See data.local.ts's updateProduct. */
+export async function updateProduct(shopId: string, productId: string, patch: ProductPatch): Promise<void> {
+  const row: Record<string, unknown> = {}
+  if (patch.name !== undefined) {
+    const name = patch.name.trim()
+    if (!name) throw new Error('A product needs a name.')
+    row.name = name
+  }
+  if (patch.photo !== undefined) row.photo = patch.photo
+  if (!Object.keys(row).length) return
+  const { error } = await supabase.from('products').update(row).eq('id', productId).eq('shop_id', shopId)
+  if (error) throw error
 }

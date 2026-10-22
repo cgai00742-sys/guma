@@ -47,6 +47,7 @@ import {
   type AssemblyInput,
   type ItemPlace,
   type MadeStatus,
+  type ProductPatch,
   type SectionAssign,
   type SectionMoveResult,
   describeHolds,
@@ -3567,9 +3568,10 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
         design_cost: number | null
         design_hours: number | null
         archived: number
+        photo: string | null
       }[]
     >(
-      `select id, name, design_job_id, design_cost, design_hours, archived
+      `select id, name, design_job_id, design_cost, design_hours, archived, photo
        from products where shop_id = ? order by archived, name`,
       [shopId],
     ),
@@ -3578,7 +3580,7 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
     >(
       `select s.batch_id as id, s.product_id, b.job_id, s.units_made, s.unit_cost,
               s.made_on, b.note, s.units_sold, s.units_left, s.revenue, s.fees,
-              s.cost_of_sold
+              s.cost_of_sold, s.shipping_charged, s.shipping_cost
        from batch_stock s
        join batches b on b.id = s.batch_id
        where s.shop_id = ?
@@ -3693,7 +3695,7 @@ export async function listSales(shopId: string, batchId?: string): Promise<SaleR
   const params: unknown[] = batchId ? [shopId, batchId] : [shopId]
   return d.select<SaleRow[]>(
     `select s.id, s.batch_id, s.channel_id, c.name as channel_name, s.units,
-            s.unit_price, s.fee_total, s.sold_on, s.note
+            s.unit_price, s.fee_total, s.sold_on, s.note, s.shipping_charged, s.shipping_cost
      from sales s
      left join channels c on c.id = s.channel_id
      where s.shop_id = ? ${where}
@@ -3711,6 +3713,8 @@ export async function listSales(shopId: string, batchId?: string): Promise<SaleR
  */
 export async function recordSale(shopId: string, next: SaleInput): Promise<string> {
   if (!Number.isFinite(next.units) || next.units < 1) throw new Error('A sale is at least one unit.')
+  shipping(next.shippingCharged)
+  shipping(next.shippingCost)
   if (!Number.isFinite(next.unitPrice) || next.unitPrice < 0) {
     throw new Error('A price cannot be negative.')
   }
@@ -3749,8 +3753,8 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
 
   const id = next.id ?? uuid()
   await d.execute(
-    `insert into sales (id, shop_id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `insert into sales (id, shop_id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note, shipping_charged, shipping_cost)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       shopId,
@@ -3761,6 +3765,8 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
       round2(fee),
       next.soldOn,
       next.note ?? null,
+      round2(shipping(next.shippingCharged)),
+      round2(shipping(next.shippingCost)),
     ],
   )
   return id
@@ -4581,9 +4587,20 @@ export async function placeItems(shopId: string, jobId: string, ids: string[], t
     )
     return {}
   }
-  const productId =
-    to.productId ??
-    (await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null }))
+  let productId = to.productId
+  if (!productId) {
+    productId = await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null })
+    // A new product starts with the picture of the plate its pieces came off
+    // (CG, 22 Oct) -- replaceable on the Shelf with a real photo.
+    const sec = rows.map((r) => (r as { section_id?: string | null }).section_id).find(Boolean)
+    if (sec) {
+      const [t] = await d.select<{ thumbnail: string | null }[]>(
+        `select i.thumbnail from slice_sections s join slice_imports i on i.id = s.import_id where s.id = ?`,
+        [sec],
+      )
+      if (t?.thumbnail) await d.execute('update products set photo = ? where id = ? and shop_id = ?', [t.thumbnail, productId, shopId])
+    }
+  }
   const total = rows.reduce((a, r) => a + Number(r.unit_cost), 0)
   const batchId = await saveBatch(shopId, {
     productId,
@@ -4735,4 +4752,24 @@ export async function deleteProduct(shopId: string, productId: string): Promise<
   const n = await d.select<{ n: number }[]>('select count(*) as n from batches where product_id = ?', [productId])
   if (Number(n[0]?.n ?? 0) > 0) throw new Error('Take its batches off the shelf first.')
   await d.execute('delete from products where id = ? and shop_id = ?', [productId, shopId])
+}
+
+
+/** Shipping on a sale: a number, not below zero. */
+function shipping(v: number | undefined | null): number {
+  const n = Number(v ?? 0)
+  if (!Number.isFinite(n) || n < 0) throw new Error('Shipping cannot be negative.')
+  return n
+}
+
+/** Rename a product, or set or clear its picture (CG, 22 Oct). */
+export async function updateProduct(shopId: string, productId: string, patch: ProductPatch): Promise<void> {
+  const d = await db()
+  if (patch.name !== undefined) {
+    const name = patch.name.trim()
+    if (!name) throw new Error('A product needs a name.')
+    await d.execute('update products set name = ? where id = ? and shop_id = ?', [name, productId, shopId])
+  }
+  if (patch.photo !== undefined)
+    await d.execute('update products set photo = ? where id = ? and shop_id = ?', [patch.photo, productId, shopId])
 }

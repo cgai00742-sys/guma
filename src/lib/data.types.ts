@@ -1380,6 +1380,9 @@ export interface BatchRow {
   revenue: number
   fees: number
   cost_of_sold: number
+  /** Shipping the buyers paid, and what the labels cost (0041). */
+  shipping_charged?: number
+  shipping_cost?: number
   /**
    * True when the unit cost was typed rather than derived from logged runs
    * and hours -- stock that existed before Guma did. Guma still counts it,
@@ -1410,6 +1413,8 @@ export interface ProductRow {
   design_cost: number | null
   design_hours: number | null
   archived: number
+  /** A picture of it -- a data: URL (0041). */
+  photo?: string | null
   batches: BatchRow[]
 }
 
@@ -1432,6 +1437,15 @@ export interface SaleRow {
   fee_total: number
   sold_on: string
   note: string | null
+  /** What the buyer paid for shipping, and what the label cost (0041). */
+  shipping_charged?: number
+  shipping_cost?: number
+}
+
+/** Rename a product, or change or clear its picture. */
+export interface ProductPatch {
+  name?: string
+  photo?: string | null
 }
 
 export interface SaleInput {
@@ -1442,6 +1456,10 @@ export interface SaleInput {
   unitPrice: number
   soldOn: string
   note?: string | null
+  /** What the buyer paid for shipping (comes in) and what the label cost
+   *  you (goes out). Both default to 0. */
+  shippingCharged?: number
+  shippingCost?: number
 }
 
 /** A series: the shop's own body of work, holding projects the way a client

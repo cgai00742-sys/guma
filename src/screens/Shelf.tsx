@@ -39,6 +39,7 @@ import {
   recordSale,
   saveBatch,
   saveProduct,
+  updateProduct,
   type ChannelInput,
   type ChannelRow,
   type ProductRow,
@@ -64,6 +65,8 @@ function stockOf(products: ProductRow[]): BatchStock[] {
       fees: Number(b.fees),
       costOfSold: Number(b.cost_of_sold),
       madeOn: b.made_on,
+      shippingCharged: Number(b.shipping_charged ?? 0),
+      shippingCost: Number(b.shipping_cost ?? 0),
     })),
   )
 }
@@ -151,17 +154,47 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
     }
   }
 
-  async function sell(batchId: string, channelId: string | null, units: number, unitPrice: number) {
+  async function sell(
+    batchId: string,
+    channelId: string | null,
+    units: number,
+    unitPrice: number,
+    shippingCharged = 0,
+    shippingCost = 0,
+  ) {
     setBusy(true)
     setError(null)
     try {
-      await recordSale(ctx.shop.id, { batchId, channelId, units, unitPrice, soldOn: todayISO() })
+      await recordSale(ctx.shop.id, {
+        batchId,
+        channelId,
+        units,
+        unitPrice,
+        soldOn: todayISO(),
+        shippingCharged,
+        shippingCost,
+      })
       await reload()
       setSelling(null)
       setFlash(`${units} sold.`)
     } catch (e) {
       // recordSale's refusals carry the number that matters -- how many are
       // actually left -- so they are shown as written.
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Rename a product, or give it a picture (CG, 22 Oct). */
+  async function editProduct(productId: string, patch: { name?: string; photo?: string | null }, said: string) {
+    setBusy(true)
+    setError(null)
+    try {
+      await updateProduct(ctx.shop.id, productId, patch)
+      await reload()
+      setFlash(said)
+    } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
@@ -288,6 +321,7 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                 <th className="r">Left</th>
                 <th className="r">Took in</th>
                 <th className="r">Fees</th>
+                <th className="r" title="What buyers paid for postage, less what the labels cost you">Shipping</th>
                 <th className="r">Kept</th>
                 <th className="r">On the shelf</th>
                 <th>Design</th>
@@ -303,12 +337,28 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                       className="row click"
                       onClick={() => setOpenId(open ? null : r.productId)}
                     >
-                      <td>{r.name}</td>
+                      <td>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                          {product?.photo ? (
+                            <img
+                              src={product.photo}
+                              alt=""
+                              style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--line)' }}
+                            />
+                          ) : null}
+                          {r.name}
+                        </span>
+                      </td>
                       <td className="r">{r.unitsMade}</td>
                       <td className="r">{r.unitsSold}</td>
                       <td className="r">{r.unitsLeft}</td>
                       <td className="r">{money(r.revenue)}</td>
                       <td className="r">{r.fees > 0 ? `−${money(r.fees)}` : '—'}</td>
+                      <td className={`r ${r.shippingCharged - r.shippingCost < 0 ? 'neg' : ''}`}>
+                        {r.shippingCharged === 0 && r.shippingCost === 0
+                          ? '—'
+                          : money(r.shippingCharged - r.shippingCost)}
+                      </td>
                       <td className={`r ${r.grossProfit < 0 ? 'neg' : 'pos'}`}>{money(r.grossProfit)}</td>
                       <td className="r">{money(r.stockAtCost)}</td>
                       <td>
@@ -317,7 +367,19 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                     </tr>
                     {open && product && (
                       <tr>
-                        <td colSpan={9} style={{ background: 'var(--panel-2)' }}>
+                        <td colSpan={10} style={{ background: 'var(--panel-2)' }}>
+                          <ProductEdit
+                            key={`${product.id}:${product.name}`}
+                            product={product}
+                            busy={busy}
+                            onRename={(name) =>
+                              void editProduct(product.id, { name }, `Renamed to ${name.trim()}.`)
+                            }
+                            onPhoto={(photo) =>
+                              void editProduct(product.id, { photo }, photo ? 'Picture saved.' : 'Picture removed.')
+                            }
+                            onError={setError}
+                          />
                           <Batches
                             product={product}
                             sales={sales}
@@ -361,7 +423,9 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
           money={money}
           busy={busy}
           onCancel={() => setSelling(null)}
-          onSell={(channelId, units, price) => sell(selling.batchId, channelId, units, price)}
+          onSell={(channelId, units, price, shipIn, shipOut) =>
+            sell(selling.batchId, channelId, units, price, shipIn, shipOut)
+          }
         />
       )}
     </div>
@@ -514,9 +578,17 @@ function Batches({
                         <span className="k">
                           {s.units} at {money(Number(s.unit_price))}
                           {s.channel_name ? ` · ${s.channel_name}` : ''} · {s.sold_on}
+                          {Number(s.shipping_charged ?? 0) > 0 || Number(s.shipping_cost ?? 0) > 0
+                            ? ` · shipping ${money(Number(s.shipping_charged ?? 0))} in, ${money(Number(s.shipping_cost ?? 0))} out`
+                            : ''}
                         </span>
                         <span className="v">
-                          {money(Number(s.units) * Number(s.unit_price) - Number(s.fee_total))}
+                          {money(
+                            Number(s.units) * Number(s.unit_price) -
+                              Number(s.fee_total) +
+                              Number(s.shipping_charged ?? 0) -
+                              Number(s.shipping_cost ?? 0),
+                          )}
                           <button
                             type="button"
                             className="addnote"
@@ -536,6 +608,131 @@ function Batches({
           </div>
         )
       })}
+    </div>
+  )
+}
+
+/** Shrink a picture to a small JPEG kept in the database. A phone photo is
+ *  4 MB; 480px across is plenty for a row thumbnail and a listing preview,
+ *  and keeps the offline database small. */
+async function shrinkPhoto(file: File, max = 480): Promise<string> {
+  const url = URL.createObjectURL(file)
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image()
+      i.onload = () => resolve(i)
+      i.onerror = () => reject(new Error('That file is not a picture Guma can read.'))
+      i.src = url
+    })
+    const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight))
+    const w = Math.max(1, Math.round(img.naturalWidth * scale))
+    const h = Math.max(1, Math.round(img.naturalHeight * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const g = canvas.getContext('2d')
+    if (!g) throw new Error('Could not resize the picture.')
+    g.fillStyle = '#fff'
+    g.fillRect(0, 0, w, h)
+    g.drawImage(img, 0, 0, w, h)
+    return canvas.toDataURL('image/jpeg', 0.82)
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+/** The product's name and picture, editable in place. */
+function ProductEdit({
+  product,
+  busy,
+  onRename,
+  onPhoto,
+  onError,
+}: {
+  product: ProductRow
+  busy: boolean
+  onRename: (name: string) => void
+  onPhoto: (photo: string | null) => void
+  onError: (msg: string) => void
+}) {
+  const [renaming, setRenaming] = useState(false)
+  const [name, setName] = useState(product.name)
+  const inputId = `pe-photo-${product.id}`
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 2px 4px', flexWrap: 'wrap' }}>
+      {product.photo ? (
+        <img
+          src={product.photo}
+          alt={`Picture of ${product.name}`}
+          style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--line)' }}
+        />
+      ) : (
+        <div
+          style={{
+            width: 72, height: 72, borderRadius: 6, border: '1px dashed var(--line)',
+            display: 'grid', placeItems: 'center', fontSize: 10, color: 'var(--txt-3)',
+          }}
+        >
+          no picture
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {renaming ? (
+          <form
+            style={{ display: 'flex', gap: 6, alignItems: 'center' }}
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (!name.trim()) return
+              onRename(name)
+              setRenaming(false)
+            }}
+          >
+            <input
+              aria-label="Product name"
+              value={name}
+              autoFocus
+              onChange={(e) => setName(e.target.value)}
+              style={{ minWidth: 220 }}
+            />
+            <button type="submit" className="btn sm primary" disabled={busy || !name.trim()}>Save</button>
+            <button type="button" className="btn sm" onClick={() => { setName(product.name); setRenaming(false) }}>
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+            <b style={{ fontSize: 14 }}>{product.name}</b>
+            <button type="button" className="linkbtn" style={{ width: 'auto', fontSize: 11 }} disabled={busy} onClick={() => setRenaming(true)}>
+              rename
+            </button>
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 11 }}>
+          <label htmlFor={inputId} className="linkbtn" style={{ width: 'auto', fontSize: 11, cursor: 'pointer' }}>
+            {product.photo ? 'change picture' : 'add a picture'}
+          </label>
+          <input
+            id={inputId}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            disabled={busy}
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              e.target.value = ''
+              if (!f) return
+              shrinkPhoto(f)
+                .then(onPhoto)
+                .catch((err) => onError(err instanceof Error ? err.message : String(err)))
+            }}
+          />
+          {product.photo && (
+            <button type="button" className="linkbtn" style={{ width: 'auto', fontSize: 11 }} disabled={busy} onClick={() => onPhoto(null)}>
+              remove picture
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -627,9 +824,17 @@ function SellDialog({
   money: (n: number) => string
   busy: boolean
   onCancel: () => void
-  onSell: (channelId: string | null, units: number, unitPrice: number) => void
+  onSell: (
+    channelId: string | null,
+    units: number,
+    unitPrice: number,
+    shippingCharged: number,
+    shippingCost: number,
+  ) => void
 }) {
   const [units, setUnits] = useState('1')
+  const [shipIn, setShipIn] = useState('')
+  const [shipOut, setShipOut] = useState('')
   const [price, setPrice] = useState('')
   const [channelId, setChannelId] = useState<string>('')
 
@@ -637,6 +842,8 @@ function SellDialog({
   const p = Number(price) || 0
   const channel = channels.find((c) => c.id === channelId)
   const fee = channel ? (n * p * Number(channel.fee_pct)) / 100 + Number(channel.fee_flat) : 0
+  const si = Math.max(0, Number(shipIn) || 0)
+  const so = Math.max(0, Number(shipOut) || 0)
 
   return (
     <div className="pane" style={{ position: 'sticky', bottom: 12, marginTop: 12 }}>
@@ -665,6 +872,17 @@ function SellDialog({
           </select>
         </div>
       </div>
+      <div className="grid3" style={{ marginTop: 8 }}>
+        <div className="fld">
+          <label className="lbl" htmlFor="sd-shipin">Shipping the buyer paid</label>
+          <input id="sd-shipin" type="number" min="0" step="any" value={shipIn} placeholder="0" onChange={(e) => setShipIn(e.target.value)} />
+        </div>
+        <div className="fld">
+          <label className="lbl" htmlFor="sd-shipout">Shipping you paid</label>
+          <input id="sd-shipout" type="number" min="0" step="any" value={shipOut} placeholder="0" onChange={(e) => setShipOut(e.target.value)} />
+          <div className="hint">Label and packaging. Leave both empty for a hand-off.</div>
+        </div>
+      </div>
 
       {n > 0 && p > 0 && (
         <div className="guide" style={{ marginTop: 10 }}>
@@ -681,9 +899,21 @@ function SellDialog({
                   <span className="v">−{money(fee)}</span>
                 </div>
               )}
+              {si > 0 && (
+                <div className="guide-r">
+                  <span className="k">Plus shipping they paid</span>
+                  <span className="v">{money(si)}</span>
+                </div>
+              )}
+              {so > 0 && (
+                <div className="guide-r">
+                  <span className="k">Postage you paid</span>
+                  <span className="v">−{money(so)}</span>
+                </div>
+              )}
               <div className="guide-r">
                 <span className="k">You keep</span>
-                <span className="v">{money(n * p - fee)}</span>
+                <span className="v">{money(n * p - fee + si - so)}</span>
               </div>
             </div>
             {channel && (
@@ -703,7 +933,7 @@ function SellDialog({
           className="btn primary"
           disabled={busy || n < 1 || n > left || !(p >= 0) || price.trim() === ''}
           style={{ marginLeft: 'auto' }}
-          onClick={() => onSell(channelId || null, n, p)}
+          onClick={() => onSell(channelId || null, n, p, si, so)}
         >
           {busy ? 'Saving…' : 'Record it'}
         </button>

@@ -248,6 +248,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0040_slice_pictures.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 41,
+      description: "a picture for each product, and shipping on each sale",
+      sql: include_str!("../migrations/0041_shelf_photos_shipping.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

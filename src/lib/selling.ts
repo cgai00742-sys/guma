@@ -46,6 +46,10 @@ export interface BatchStock {
   /** unitCost x unitsSold. */
   costOfSold: number
   madeOn: string
+  /** Shipping the buyers paid on this batch's sales. Money in. */
+  shippingCharged?: number
+  /** What the shop paid to post them (labels, packaging). Money out. */
+  shippingCost?: number
 }
 
 export interface ProductResult {
@@ -57,7 +61,13 @@ export interface ProductResult {
   revenue: number
   fees: number
   costOfSold: number
-  /** revenue - fees - costOfSold. What the selling actually produced. */
+  /** Shipping the buyers paid. */
+  shippingCharged: number
+  /** Shipping the shop paid. */
+  shippingCost: number
+  /** revenue + shippingCharged - fees - shippingCost - costOfSold.
+   *  What the selling actually produced. Postage is real money either way:
+   *  "free shipping" is a cost the price has to carry. */
   grossProfit: number
   /** What is still on the shelf, at what it cost to make. Money out that
    *  has not come back. */
@@ -124,7 +134,9 @@ export function productResult(
   const revenue = round2(sum(mine.map((b) => b.revenue)))
   const fees = round2(sum(mine.map((b) => b.fees)))
   const costOfSold = round2(sum(mine.map((b) => b.costOfSold)))
-  const grossProfit = round2(revenue - fees - costOfSold)
+  const shippingCharged = round2(sum(mine.map((b) => b.shippingCharged ?? 0)))
+  const shippingCost = round2(sum(mine.map((b) => b.shippingCost ?? 0)))
+  const grossProfit = round2(revenue + shippingCharged - fees - shippingCost - costOfSold)
   const stockAtCost = round2(sum(mine.map((b) => b.unitsLeft * b.unitCost)))
 
   const designCost = product.designCost
@@ -140,6 +152,8 @@ export function productResult(
     revenue,
     fees,
     costOfSold,
+    shippingCharged,
+    shippingCost,
     grossProfit,
     stockAtCost,
     designCost,
@@ -155,6 +169,8 @@ export interface SellingSummary {
   revenue: number
   fees: number
   costOfSold: number
+  shippingCharged: number
+  shippingCost: number
   grossProfit: number
   /** Everything unsold, at what it cost to make. The shelf. */
   stockAtCost: number
@@ -171,6 +187,8 @@ export function summarize(results: ProductResult[]): SellingSummary {
     revenue: round2(sum(results.map((r) => r.revenue))),
     fees: round2(sum(results.map((r) => r.fees))),
     costOfSold: round2(sum(results.map((r) => r.costOfSold))),
+    shippingCharged: round2(sum(results.map((r) => r.shippingCharged))),
+    shippingCost: round2(sum(results.map((r) => r.shippingCost))),
     grossProfit: round2(sum(results.map((r) => r.grossProfit))),
     stockAtCost: round2(sum(results.map((r) => r.stockAtCost))),
     designOutstanding: round2(

@@ -2394,6 +2394,38 @@ describe('the shelf', () => {
     expect(Number(product.batches[0].revenue)).toBe(0)
   })
 
+  it('keeps shipping on the sale, in and out, and folds it into the batch', async () => {
+    const local = await import('./data.local')
+    const { shopId, channelId, batchId } = await shopWithStock(local)
+    await local.recordSale(shopId, {
+      batchId, channelId, units: 2, unitPrice: 9, soldOn: '2026-09-14',
+      shippingCharged: 4.5, shippingCost: 3.876,
+    })
+    const [sale] = await local.listSales(shopId)
+    expect(Number(sale.shipping_charged)).toBe(4.5)
+    expect(Number(sale.shipping_cost)).toBe(3.88)
+    const [product] = await local.listShelf(shopId)
+    expect(Number(product.batches[0].shipping_charged)).toBe(4.5)
+    expect(Number(product.batches[0].shipping_cost)).toBe(3.88)
+    await expect(
+      local.recordSale(shopId, { batchId, channelId, units: 1, unitPrice: 9, soldOn: '2026-09-14', shippingCost: -1 }),
+    ).rejects.toThrow(/negative/i)
+  })
+
+  it('renames a product and keeps a picture on it', async () => {
+    const local = await import('./data.local')
+    const { shopId, productId } = await shopWithStock(local)
+    await local.updateProduct(shopId, productId, { name: '  Hex keychain v2 ', photo: 'data:image/jpeg;base64,AAA' })
+    let [product] = await local.listShelf(shopId)
+    expect(product.name).toBe('Hex keychain v2')
+    expect(product.photo).toBe('data:image/jpeg;base64,AAA')
+    await local.updateProduct(shopId, productId, { photo: null })
+    ;[product] = await local.listShelf(shopId)
+    expect(product.photo).toBeNull()
+    expect(product.name).toBe('Hex keychain v2')
+    await expect(local.updateProduct(shopId, productId, { name: '  ' })).rejects.toThrow(/name/i)
+  })
+
   it('records stock that predates Guma, and says which number it is standing on', async () => {
     // A shop adopting this already has a shelf. Refusing to hear about it
     // would make the profit side useless until they printed something new.

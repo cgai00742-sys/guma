@@ -805,3 +805,7 @@ export async function deleteProduct(shopId: string, productId: string): Promise<
 export async function setSliceExtras(shopId: string, importId: string, thumbnail: string | null, slicedAt: string | null): Promise<void> {
   return (await backend()).setSliceExtras(shopId, importId, thumbnail, slicedAt)
 }
+
+export async function updateProduct(shopId: string, productId: string, patch: import('./data.types').ProductPatch): Promise<void> {
+  return (await backend()).updateProduct(shopId, productId, patch)
+}

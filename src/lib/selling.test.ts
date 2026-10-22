@@ -246,3 +246,26 @@ describe('a second batch from the same piece (CG, 13 Oct)', async () => {
     expect(unshelvedProduction(split, [{ unitsMade: 50, unitCost: 5 }])).toBe(0)
   })
 })
+
+describe('shipping', () => {
+  it('counts postage both ways in what was kept', async () => {
+    const { productResult, summarize } = await import('./selling')
+    const r = productResult({ id: 'p', name: 'X', designCost: null }, [
+      { batchId: 'b', productId: 'p', unitsMade: 10, unitsSold: 2, unitsLeft: 8, unitCost: 1,
+        revenue: 20, fees: 2, costOfSold: 2, madeOn: '2026-10-01', shippingCharged: 5, shippingCost: 4.2 },
+    ])
+    // 20 + 5 - 2 - 4.20 - 2 = 16.80
+    expect(r.grossProfit).toBe(16.8)
+    expect(r.shippingCharged).toBe(5)
+    expect(r.shippingCost).toBe(4.2)
+    expect(summarize([r]).shippingCost).toBe(4.2)
+  })
+  it('treats a batch with no shipping as none', async () => {
+    const { productResult } = await import('./selling')
+    const r = productResult({ id: 'p', name: 'X', designCost: null }, [
+      { batchId: 'b', productId: 'p', unitsMade: 1, unitsSold: 1, unitsLeft: 0, unitCost: 1,
+        revenue: 5, fees: 0, costOfSold: 1, madeOn: '2026-10-01' },
+    ])
+    expect(r.grossProfit).toBe(4)
+  })
+})

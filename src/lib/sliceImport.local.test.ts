@@ -676,6 +676,19 @@ describe('what each print made, and where it went (CG, 21 Oct)', () => {
     expect((await data.listAssemblies(SHOP, JOB))[0]).toMatchObject({ name: 'Buoy pair', status: 'done', needs: [{ label: 'Buoy shell', qty: 2 }] })
   })
 
+  it('a new product from printed pieces starts with the plate picture', async () => {
+    const data = await import('./data.local')
+    const imp = await data.importSlice(SHOP, JOB, ACTOR, BUOY)
+    await data.setSliceExtras(SHOP, imp.importId, 'data:image/png;base64,PLATE', null)
+    const sec = currentDb.sqlite.prepare('select id from slice_sections where import_id = ?').get(imp.importId) as { id: string }
+    const r = await run(data, imp.importId)
+    await data.recordMadeItems(SHOP, JOB, r, [{ sectionId: sec.id, label: 'Buoy shell', grams: 1, unitCost: 1, failed: false }])
+    const [it0] = await data.listMadeItems(SHOP, JOB)
+    await data.placeItems(SHOP, JOB, [it0.id], { kind: 'shelf', productId: null, name: 'Reef buoy', madeOn: '2026-10-22' })
+    const [p] = await data.listShelf(SHOP)
+    expect(p.photo).toBe('data:image/png;base64,PLATE')
+  })
+
   it('recording a print again replaces what it made, and removing an unplaced print removes it', async () => {
     const data = await import('./data.local')
     const imp = await data.importSlice(SHOP, JOB, ACTOR, BUOY)

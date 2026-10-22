@@ -29,13 +29,14 @@ const deleteSale = vi.fn(async () => {})
 const saveProduct = vi.fn(async () => 'prod-new')
 const saveBatch = vi.fn(async () => 'batch-new')
 const saveChannel = vi.fn(async () => channels[0])
+const updateProduct = vi.fn(async () => {})
 
 vi.mock('../lib/data', async () => {
   const types = await import('../lib/data.types')
   return {
     ...types,
     listShelf, listChannels, listSales, recordSale, deleteSale,
-    saveProduct, saveBatch, saveChannel,
+    saveProduct, saveBatch, saveChannel, updateProduct,
   }
 })
 
@@ -235,5 +236,65 @@ describe('stock that predates Guma', () => {
     await renderShelf()
     await user.click(await screen.findByText('Hex keychain'))
     expect(await screen.findByText(/cost estimated/i)).toBeDefined()
+  })
+})
+
+describe('editing a product', () => {
+  beforeEach(() => {
+    products = keychains()
+    channels = [ETSY]
+  })
+
+  it('renames it in place', async () => {
+    const user = userEvent.setup()
+    await renderShelf()
+    await user.click(await screen.findByText('Hex keychain'))
+    await user.click(await screen.findByRole('button', { name: /^rename$/i }))
+    const input = screen.getByLabelText(/product name/i)
+    await user.clear(input)
+    await user.type(input, 'Hex keychain, large')
+    await user.click(screen.getByRole('button', { name: /^save$/i }))
+    await waitFor(() => expect(updateProduct).toHaveBeenCalled())
+    const [, id, patch] = updateProduct.mock.calls[0] as unknown as [string, string, Record<string, unknown>]
+    expect(id).toBe('prod-1')
+    expect(patch).toEqual({ name: 'Hex keychain, large' })
+  })
+
+  it('shows the picture on the row once there is one', async () => {
+    products[0].photo = 'data:image/jpeg;base64,AAA'
+    await renderShelf()
+    const row = (await screen.findByText('Hex keychain')).closest('tr') as HTMLTableRowElement
+    expect(row.querySelector('img')?.getAttribute('src')).toBe('data:image/jpeg;base64,AAA')
+  })
+
+  it('offers a picture when there is none', async () => {
+    const user = userEvent.setup()
+    await renderShelf()
+    await user.click(await screen.findByText('Hex keychain'))
+    expect(await screen.findByText(/add a picture/i)).toBeDefined()
+  })
+})
+
+describe('shipping on a sale', () => {
+  beforeEach(() => {
+    products = keychains()
+    channels = [ETSY]
+  })
+
+  it('counts postage in what you keep, and sends both figures', async () => {
+    const user = userEvent.setup()
+    await renderShelf()
+    await user.click(await screen.findByText('Hex keychain'))
+    await user.click(await screen.findByRole('button', { name: /record a sale/i }))
+    await user.type(screen.getByLabelText(/price each/i), '20')
+    await user.type(screen.getByLabelText(/shipping the buyer paid/i), '5')
+    await user.type(screen.getByLabelText(/shipping you paid/i), '4')
+    // 20 in, +5 postage, -4 label = 21 kept (direct, no fee)
+    await waitFor(() => expect(screen.getByText(m(21), NB)).toBeDefined())
+    await user.click(screen.getByRole('button', { name: /record it/i }))
+    await waitFor(() => expect(recordSale).toHaveBeenCalled())
+    const [, input] = recordSale.mock.calls[0] as unknown as [string, Record<string, unknown>]
+    expect(input.shippingCharged).toBe(5)
+    expect(input.shippingCost).toBe(4)
   })
 })
