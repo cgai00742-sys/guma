@@ -72,6 +72,7 @@ import {
   setCopyStates,
   setPartsCopies,
   setSliceProgress,
+  setSliceExtras,
   skipCopy,
   markPlateFailed,
   markPlatePrinted,
@@ -170,6 +171,7 @@ import { fmtHours } from '../lib/duration'
 import { fmtMinutes, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
 import { sameSliceFile, type PrintRunRow, type SliceImportRow, type StockHoldRow } from '../lib/data.types'
 import { splitJobCost } from '../lib/selling'
+import { fileExtras, type FileExtras } from '../lib/fileExtras'
 import { gramsUsed, plateObjects, runCost, splitCost, assemblyStatus, type ObjectResult, type PlateObject } from '../lib/madeItems'
 import type { MadeItemRow, AssemblyRow, MadeItemInput } from '../lib/data.types'
 import { choiceFrom, choiceValue, guessSort, nameFromFile, partSizes, perCopyOf, toAssign, type BatchPart, type SortChoice, type SortGuess } from '../lib/sortParts'
@@ -2791,6 +2793,8 @@ interface PendingFile {
   /** Some objects on the plate failed (your own work): which, and weights. */
   partial: boolean
   results: ObjectResult[]
+  /** The plate's picture and when it was sliced, from the file. */
+  extras: FileExtras
 }
 
 function SliceImport({
@@ -2847,6 +2851,7 @@ function SliceImport({
       setReading(list.length > 1 ? `Reading ${file.name} (${fresh.length + errors.length + 1} of ${list.length})…` : `Reading ${file.name}…`)
       try {
         const parsed = await parseSliceFile(file)
+        const extras = await fileExtras(file)
         // Keep the file itself, not only what it said. Everything is worked
         // out BEFORE the card appears, so its buttons never act on a
         // half-read file (a 22 MB .bgcode takes a moment to pack).
@@ -2869,6 +2874,7 @@ function SliceImport({
           sorts: guessSort(parsed.sections, parsed.fileName, detail.parts, earlier),
           partial: false,
           results: [],
+          extras,
           key: `${file.name}-${crypto.randomUUID()}`,
           read: parsed,
           kept: packed,
@@ -2931,6 +2937,8 @@ function SliceImport({
       estGrams: read.totals.estGrams,
       notes: read.notes,
       progress: read.progress,
+      thumbnail: p.extras.thumbnail,
+      slicedAt: p.extras.slicedAt,
       sections: read.sections.map((sec, j) => ({
         label: sec.label,
         qty: sec.qty,
@@ -3135,7 +3143,9 @@ function SliceImport({
         return (
           <div className="pane" style={{ marginTop: 10 }} key={p.key} role="group" aria-label={`Review ${read.fileName}`}>
             <div className="sechead">
+              {p.extras.thumbnail && <img className="platethumb" src={p.extras.thumbnail} alt={`Preview of ${read.fileName}`} />}
               <h4>{read.fileName}</h4>
+              {p.extras.slicedAt && <span className="sub">sliced {p.extras.slicedAt.slice(0, 10)}</span>}
               <span className="sub">
                 {read.totals.sections} section{read.totals.sections === 1 ? '' : 's'} ·{' '}
                 {read.totals.units} cop{read.totals.units === 1 ? 'y' : 'ies'}
@@ -3431,6 +3441,41 @@ function SliceRuns({
   const [sorting, setSorting] = useState<string | null>(null)
   /** Your own work: what came off, object by object (CG, 21 Oct). */
   const mine = detail.facts.kind === 'inhouse'
+  /**
+   * Pictures and sliced dates for plates imported before Guma read them
+   * (CG, 22 Oct): each kept file is read once, quietly, one at a time.
+   */
+  const extrasTried = useRef(new Set<string>())
+  useEffect(() => {
+    const todo = detail.slices.filter(
+      (x) => !x.thumbnail && !x.slicedAt && x.keptBytes != null && !extrasTried.current.has(x.id),
+    )
+    if (!todo.length) return
+    let live = true
+    void (async () => {
+      let found = 0
+      for (const x of todo) {
+        if (!live) return
+        extrasTried.current.add(x.id)
+        try {
+          const row = await sliceFileContent(ctx.shop.id, x.id)
+          if (!row) continue
+          const bytes = await unpackFile(row.content)
+          const ex = await fileExtras(new File([bytes as unknown as BlobPart], x.fileName))
+          if (ex.thumbnail || ex.slicedAt) {
+            await setSliceExtras(ctx.shop.id, x.id, ex.thumbnail, ex.slicedAt)
+            found++
+          }
+        } catch {
+          // A picture is a nicety; leave the plate as it is.
+        }
+      }
+      if (live && found) await onChanged()
+    })()
+    return () => {
+      live = false
+    }
+  }, [detail.slices, ctx.shop.id, onChanged])
   const [results, setResults] = useState<ObjectResult[]>([])
   const [sortDraft, setSortDraft] = useState<Record<string, SortGuess>>({})
   const [sortMsg, setSortMsg] = useState<{ id: string; text: string } | null>(null)
@@ -3822,23 +3867,69 @@ function SliceRuns({
             ? { cls: 'ok', text: runs.length > 1 ? `printed · ${runs.length} prints` : 'printed' }
             : { cls: 'crit', text: latest.outcome === 'failed' ? 'failed' : 'stopped part way' }
         return (
-          <div className="plate" key={s.id}>
+          <div className="plate" key={s.id} data-testid={`plate-${s.id}`}>
             <div className="platehead">
+              {/* The slicer's own picture of the plate: the quickest way to
+                  tell two plates apart (CG, 22 Oct). */}
+              {s.thumbnail ? (
+                <img className="platethumb" src={s.thumbnail} alt={`Preview of ${s.fileName}`} />
+              ) : (
+                <div className="platethumb none" aria-hidden="true">
+                  no preview
+                </div>
+              )}
               <div className="platename">
                 {/* Named for what it makes: two plates can share a file name
                     and hold different parts (CG, 16 Oct). */}
                 <span className="pn">{makes.length ? makes.join(', ') : s.fileName}</span>
-                {makes.length > 0 && <span className="plfile">{s.fileName}</span>}
+                <span
+                  className="chip"
+                  data-testid={`plate-status-${s.id}`}
+                  style={{ color: status.cls === 'ok' ? 'var(--ok)' : status.cls === 'crit' ? 'var(--red)' : 'var(--txt-3)' }}
+                >
+                  {status.text}
+                </span>
                 {fixes.length > 0 && (
                   <span className="chip" style={{ color: 'var(--warn)' }} title="A replacement file for a failed copy.">
                     reprint · {fixes.join('; ')}
                   </span>
                 )}
+                {/* The three things to see at a glance: when it printed, how
+                    long it took, what it used -- the latest print, or the
+                    file's own estimate before it has printed. */}
+                <div className="platestats" data-testid={`plate-stats-${s.id}`}>
+                  <span>
+                    <i>Printed</i>
+                    <b>{runs[0]?.startedAt ? runs[0].startedAt.slice(0, 10) : 'not yet'}</b>
+                  </span>
+                  <span>
+                    <i>{runs[0] ? 'Took' : 'Will take'}</i>
+                    <b>{runs[0] ? fmtHours(runs[0].hours ?? 0) : s.estMinutes != null ? `~${hrs(s.estMinutes)}` : '—'}</b>
+                  </span>
+                  <span>
+                    <i>Filament</i>
+                    <b>
+                      {runs[0]
+                        ? `${Math.round(runs[0].unitsUsed ?? 0)} ${runs[0].unit ?? 'g'}`
+                        : s.estGrams != null
+                          ? `~${Math.round(s.estGrams)} g`
+                          : '—'}
+                    </b>
+                  </span>
+                  {runs.length > 1 && (
+                    <span>
+                      <i>Prints</i>
+                      <b>{runs.length}</b>
+                    </span>
+                  )}
+                </div>
+                {makes.length > 0 && <span className="plfile">{s.fileName}</span>}
                 <span className="plmeta">
+                  {s.slicedAt ? `sliced ${s.slicedAt.slice(0, 10)} · ` : ''}
                   {s.printerName ?? s.printerModel ?? 'machine not matched'}
                   {s.materialName ? ` · ${s.materialName}` : s.materialText ? ` · ${s.materialText}` : ''}
-                  {s.estGrams != null && ` · ~${Math.round(s.estGrams)} g`}
-                  {s.estMinutes != null && ` · ~${hrs(s.estMinutes)}`}
+                  {runs[0] && s.estMinutes != null ? ` · file says ~${hrs(s.estMinutes)}` : ''}
+                  {runs[0] && s.estGrams != null ? `, ~${Math.round(s.estGrams)} g` : ''}
                   {` · imported ${s.importedAt.slice(0, 10)}`}
                   {g.uploads > 1 ? ` · uploaded ${g.uploads} times — counted once` : ''}
                   {s.keptBytes != null ? ` · ${mb(s.keptBytes)} kept` : ''}
@@ -3852,13 +3943,6 @@ function SliceRuns({
                     file not stored
                   </span>
                 )}
-                <span
-                  className="chip"
-                  data-testid={`plate-status-${s.id}`}
-                  style={{ color: status.cls === 'ok' ? 'var(--ok)' : status.cls === 'crit' ? 'var(--red)' : 'var(--txt-3)' }}
-                >
-                  {status.text}
-                </span>
               </div>
               {openId !== s.id && (
                 <div className="btnrow" style={{ margin: 0 }}>

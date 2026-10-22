@@ -92,7 +92,7 @@ interface ZipEntry {
   lho: number
 }
 
-async function unzip(buf: ArrayBuffer) {
+export async function unzip(buf: ArrayBuffer) {
   const dv = new DataView(buf)
   const u8 = new Uint8Array(buf)
   const N = buf.byteLength
@@ -709,7 +709,7 @@ async function parseGcode(src: string, fileName: string): Promise<SliceFile> {
 // ---------- binary G-code (PrusaSlicer .bgcode) ----------
 
 /** zlib inflate without Blob.stream or Response, which not every runtime has. */
-async function inflateZlib(data: Uint8Array): Promise<Uint8Array> {
+export async function inflateZlib(data: Uint8Array): Promise<Uint8Array> {
   const ds = new DecompressionStream('deflate')
   const writer = ds.writable.getWriter()
   void writer.write(data as unknown as BufferSource).then(() => writer.close())

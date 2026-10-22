@@ -2712,6 +2712,17 @@ async function queuedBefore(ev: { id: number; part_id: string }, file: string | 
  * Save the progress read from a kept file that was imported before Guma
  * read the moves -- so a stopped print can be costed from it, once.
  */
+/** A plate's picture and sliced date, read from its kept file once (0040). */
+export async function setSliceExtras(shopId: string, importId: string, thumbnail: string | null, slicedAt: string | null): Promise<void> {
+  const d = await db()
+  await d.execute('update slice_imports set thumbnail = coalesce(thumbnail, ?), sliced_at = coalesce(sliced_at, ?) where id = ? and shop_id = ?', [
+    thumbnail,
+    slicedAt,
+    importId,
+    shopId,
+  ])
+}
+
 export async function setSliceProgress(shopId: string, importId: string, progress: ProgressPoint[]): Promise<void> {
   const d = await db()
   await d.execute('update slice_imports set progress = ? where id = ? and shop_id = ?', [encodeProgress(progress), importId, shopId])
@@ -3816,6 +3827,12 @@ export async function importSlice(
     // Read again with a newer reader: keep what it now knows.
     if (input.progress?.length)
       await d.execute('update slice_imports set progress = coalesce(progress, ?) where id = ?', [encodeProgress(input.progress), dup.id])
+    if (input.thumbnail || input.slicedAt)
+      await d.execute('update slice_imports set thumbnail = coalesce(thumbnail, ?), sliced_at = coalesce(sliced_at, ?) where id = ?', [
+        input.thumbnail ?? null,
+        input.slicedAt ?? null,
+        dup.id,
+      ])
     if (input.file && Number(dup.kept) === 0) {
       await d.execute(
         `insert into slice_files (import_id, byte_size, stored_size, encoding, content)
@@ -3830,8 +3847,8 @@ export async function importSlice(
   await d.execute(
     `insert into slice_imports
        (id, shop_id, job_id, file_name, kind, printer_model, printer_id,
-        material_text, material_id, est_minutes, est_grams, notes, progress)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        material_text, material_id, est_minutes, est_grams, notes, progress, thumbnail, sliced_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       importId,
       shopId,
@@ -3846,6 +3863,8 @@ export async function importSlice(
       input.estGrams,
       JSON.stringify(input.notes ?? []),
       encodeProgress(input.progress),
+      input.thumbnail ?? null,
+      input.slicedAt ?? null,
     ],
   )
 
@@ -4080,11 +4099,13 @@ export async function listSliceImports(
       imported_at: string
       kept_bytes: number | null
       progress: string | null
+      thumbnail: string | null
+      sliced_at: string | null
     }[]
   >(
     `select i.id, i.file_name, i.kind, i.printer_model, i.printer_id, p.name as printer_name,
             i.material_text, i.material_id, m.name as material_name,
-            i.est_minutes, i.est_grams, i.notes, i.imported_at, i.progress,
+            i.est_minutes, i.est_grams, i.notes, i.imported_at, i.progress, i.thumbnail, i.sliced_at,
             (select byte_size from slice_files f where f.import_id = i.id) as kept_bytes
        from slice_imports i
        left join printers p on p.id = i.printer_id
@@ -4151,6 +4172,8 @@ export async function listSliceImports(
     importedAt: h.imported_at,
     keptBytes: h.kept_bytes == null ? null : Number(h.kept_bytes),
     progress: decodeProgress(h.progress),
+    thumbnail: h.thumbnail,
+    slicedAt: h.sliced_at,
     sections: byImport.get(h.id) ?? [],
   }))
 }

@@ -2106,6 +2106,19 @@ async function queuedBefore(ev: { id: number; part_id: string }, file: string | 
 }
 
 /** See data.local.ts's setSliceProgress. */
+/** See data.local.ts's setSliceExtras. */
+export async function setSliceExtras(shopId: string, importId: string, thumbnail: string | null, slicedAt: string | null): Promise<void> {
+  const { data, error } = await supabase.from('slice_imports').select('thumbnail, sliced_at').eq('id', importId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  if (!data) return
+  const patch: Record<string, unknown> = {}
+  if (!data.thumbnail && thumbnail) patch.thumbnail = thumbnail
+  if (!data.sliced_at && slicedAt) patch.sliced_at = slicedAt
+  if (!Object.keys(patch).length) return
+  const { error: uErr } = await supabase.from('slice_imports').update(patch).eq('id', importId).eq('shop_id', shopId)
+  if (uErr) throw uErr
+}
+
 export async function setSliceProgress(shopId: string, importId: string, progress: ProgressPoint[]): Promise<void> {
   const { error } = await supabase
     .from('slice_imports')
@@ -3182,6 +3195,8 @@ export async function importSlice(
       // and both backends must mean the same thing on the way back out.
       notes: JSON.stringify(input.notes ?? []),
       progress: encodeProgress(input.progress),
+      thumbnail: input.thumbnail ?? null,
+      sliced_at: input.slicedAt ?? null,
     })
     .select('id')
     .single()
@@ -3298,7 +3313,7 @@ export async function listSliceImports(
     .from('slice_imports')
     .select(
       `id, file_name, kind, printer_model, printer_id, material_text, material_id,
-       est_minutes, est_grams, notes, imported_at, progress,
+       est_minutes, est_grams, notes, imported_at, progress, thumbnail, sliced_at,
        printers ( name ), materials ( name ),
        slice_files ( byte_size ),
        slice_sections ( id, part_id, label, qty, est_minutes, est_grams, material )`,
@@ -3339,6 +3354,8 @@ export async function listSliceImports(
       notes: parseNotes(r.notes as string | null),
       importedAt: r.imported_at as string,
       progress: decodeProgress(r.progress as string | null),
+      thumbnail: (r.thumbnail as string | null) ?? null,
+      slicedAt: (r.sliced_at as string | null) ?? null,
       keptBytes:
         (r.slice_files as { byte_size: number }[] | null)?.[0]?.byte_size == null
           ? null

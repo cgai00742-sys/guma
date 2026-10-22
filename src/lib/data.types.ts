@@ -1236,6 +1236,10 @@ export interface SliceImportRow {
   /** Progress marks read from the moves (lib/gcodeWalk.ts, 0036). Null for
    *  files imported before, or with no G-code in them. */
   progress: ProgressPoint[] | null
+  /** The slicer's picture of the plate (a data: URL), and when the file was
+   *  sliced (0040). Null for files that had neither, or came in before. */
+  thumbnail: string | null
+  slicedAt: string | null
 }
 
 export interface SliceSectionInput {
@@ -1302,6 +1306,9 @@ export interface SliceImportInput {
   forPartId?: string | null
   /** Progress marks read from the moves, kept with the import. */
   progress?: ProgressPoint[] | null
+  /** The plate's picture and when it was sliced, from the file (0040). */
+  thumbnail?: string | null
+  slicedAt?: string | null
 }
 
 /** What an import did, so the screen can say it rather than guess. */

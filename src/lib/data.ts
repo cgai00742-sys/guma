@@ -801,3 +801,7 @@ export async function deleteBatch(shopId: string, batchId: string): Promise<void
 export async function deleteProduct(shopId: string, productId: string): Promise<void> {
   return (await backend()).deleteProduct(shopId, productId)
 }
+
+export async function setSliceExtras(shopId: string, importId: string, thumbnail: string | null, slicedAt: string | null): Promise<void> {
+  return (await backend()).setSliceExtras(shopId, importId, thumbnail, slicedAt)
+}
