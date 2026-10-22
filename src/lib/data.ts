@@ -794,3 +794,10 @@ export async function finishAssembly(
 export async function deleteAssembly(shopId: string, assemblyId: string): Promise<void> {
   return (await backend()).deleteAssembly(shopId, assemblyId)
 }
+
+export async function deleteBatch(shopId: string, batchId: string): Promise<void> {
+  return (await backend()).deleteBatch(shopId, batchId)
+}
+export async function deleteProduct(shopId: string, productId: string): Promise<void> {
+  return (await backend()).deleteProduct(shopId, productId)
+}

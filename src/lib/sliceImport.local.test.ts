@@ -698,3 +698,32 @@ describe('what each print made, and where it went (CG, 21 Oct)', () => {
     expect(items().map((x) => [x.status, x.assembly_id])).toEqual([['made', null]])
   })
 })
+
+describe('taking a batch back off the shelf (CG, 22 Oct)', () => {
+  it('returns its pieces to the project, refuses once sold, and lets an empty product go', async () => {
+    const data = await import('./data.local')
+    const r = await data.recordPrintRun(SHOP, JOB, ACTOR, {
+      printerId: 'printer-1', materialId: 'material-1', unitsUsed: 10, hours: 1, outcome: 'success',
+      failureReason: null, note: null, startedAt: '2026-10-22', sliceImportId: null,
+    })
+    await data.recordMadeItems(SHOP, JOB, r, [
+      { sectionId: null, label: 'Maui', grams: 5, unitCost: 1, failed: false },
+      { sectionId: null, label: 'Maui', grams: 5, unitCost: 1, failed: false },
+    ])
+    const ids = (await data.listMadeItems(SHOP, JOB)).map((i) => i.id)
+    const { batchId } = await data.placeItems(SHOP, JOB, ids, { kind: 'shelf', productId: null, name: 'Maui tile', madeOn: '2026-10-22' })
+    const productId = (currentDb.sqlite.prepare('select product_id from batches').get() as { product_id: string }).product_id
+    await expect(data.deleteProduct(SHOP, productId)).rejects.toThrow(/batches off the shelf first/)
+    await data.recordSale(SHOP, { batchId: batchId!, channelId: null, units: 1, unitPrice: 20, soldOn: '2026-10-22' })
+    await expect(data.deleteBatch(SHOP, batchId!)).rejects.toThrow(/remove those sales first/)
+    const sale = currentDb.sqlite.prepare('select id from sales').get() as { id: string }
+    await data.deleteSale(SHOP, sale.id)
+    await data.deleteBatch(SHOP, batchId!)
+    expect((await data.listMadeItems(SHOP, JOB)).map((i) => [i.status, i.batchId])).toEqual([
+      ['made', null],
+      ['made', null],
+    ])
+    await data.deleteProduct(SHOP, productId)
+    expect(currentDb.sqlite.prepare('select count(*) as n from products').get()).toEqual({ n: 0 })
+  })
+})

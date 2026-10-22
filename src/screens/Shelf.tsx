@@ -26,7 +26,11 @@
  * number quietly becomes wrong -- see 0014_selling.sql.
  */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
+  deleteBatch,
+  deleteProduct,
+  listJobs,
   deleteSale,
   listChannels,
   saveChannel,
@@ -74,6 +78,10 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
   const [adding, setAdding] = useState(false)
   const [selling, setSelling] = useState<{ batchId: string; left: number; name: string } | null>(null)
   const [flash, setFlash] = useFlash()
+  /** Project titles, so each batch can say which project made it. */
+  const [jobTitles, setJobTitles] = useState<Record<string, string>>({})
+  /** The batch or product being removed, waiting for a yes. */
+  const [removing, setRemoving] = useState<string | null>(null)
 
   const { money } = useMemo(
     () => makeMoney(ctx.shop.currency, ctx.shop.locale),
@@ -91,6 +99,9 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
       setChannels(c)
       setSales(s)
       setError(null)
+      listJobs(ctx.shop.id)
+        .then((js) => setJobTitles(Object.fromEntries(js.map((j) => [j.jobId, j.title]))))
+        .catch(() => undefined)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -164,6 +175,35 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
       await saveChannel(ctx.shop.id, next)
       await reload()
       setFlash(`${next.name.trim()} saved.`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeBatch(batchId: string) {
+    setBusy(true)
+    try {
+      await deleteBatch(ctx.shop.id, batchId)
+      setRemoving(null)
+      await reload()
+      setFlash('Batch taken off the shelf. Its pieces are back in their project, ready to place again.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeProduct(productId: string, name: string) {
+    setBusy(true)
+    try {
+      await deleteProduct(ctx.shop.id, productId)
+      setRemoving(null)
+      setOpenId(null)
+      await reload()
+      setFlash(`${name} deleted.`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -287,6 +327,11 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                               setSelling({ batchId, left, name: product.name })
                             }
                             onUndo={undoSale}
+                            jobTitles={jobTitles}
+                            removing={removing}
+                            onAskRemove={setRemoving}
+                            onRemoveBatch={(id) => void removeBatch(id)}
+                            onRemoveProduct={() => void removeProduct(product.id, product.name)}
                           />
                         </td>
                       </tr>
@@ -356,6 +401,11 @@ function Batches({
   busy,
   onSell,
   onUndo,
+  jobTitles = {},
+  removing = null,
+  onAskRemove = () => undefined,
+  onRemoveBatch = () => undefined,
+  onRemoveProduct = () => undefined,
 }: {
   product: ProductRow
   sales: SaleRow[]
@@ -363,12 +413,34 @@ function Batches({
   busy: boolean
   onSell: (batchId: string, left: number) => void
   onUndo: (saleId: string) => void
+  jobTitles?: Record<string, string>
+  removing?: string | null
+  onAskRemove?: (id: string | null) => void
+  onRemoveBatch?: (batchId: string) => void
+  onRemoveProduct?: () => void
 }) {
   if (product.batches.length === 0) {
     return (
       <div style={{ padding: '10px 2px', fontSize: 12, color: 'var(--txt-2)' }}>
-        Nothing made yet. Record a batch from the in-house project that produced it, so the cost
-        comes from real runs and hours rather than a number somebody typed.
+        Nothing on the shelf. Pieces come here from an in-house project&rsquo;s <b>Made</b> section — pick
+        them and send them to the shelf — so the cost is what the prints really cost.
+        <div style={{ marginTop: 8 }}>
+          {removing === product.id ? (
+            <>
+              Delete {product.name}?{' '}
+              <button type="button" className="btn sm danger" disabled={busy} onClick={onRemoveProduct}>
+                Delete it
+              </button>{' '}
+              <button type="button" className="btn sm" onClick={() => onAskRemove(null)}>
+                Keep it
+              </button>
+            </>
+          ) : (
+            <button type="button" className="linkbtn" style={{ width: 'auto', fontSize: 11 }} onClick={() => onAskRemove(product.id)}>
+              delete this product
+            </button>
+          )}
+        </div>
       </div>
     )
   }
@@ -390,6 +462,13 @@ function Batches({
                   cost estimated
                 </span>
               )}
+              {/* Where it came from, one click away (CG, 22 Oct: the Shelf and
+                  the project should talk to each other). */}
+              {b.job_id && (
+                <Link to={`/project/${b.job_id}`} style={{ fontSize: 11 }}>
+                  from {jobTitles[b.job_id] ?? 'its project'} →
+                </Link>
+              )}
               <button
                 type="button"
                 className="btn sm"
@@ -399,6 +478,29 @@ function Batches({
               >
                 {Number(b.units_left) < 1 ? 'All sold' : 'Record a sale'}
               </button>
+              {mine.length === 0 &&
+                (removing === b.id ? (
+                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 11 }}>
+                    Take it off the shelf?
+                    <button type="button" className="btn sm danger" disabled={busy} onClick={() => onRemoveBatch(b.id)}>
+                      Remove it
+                    </button>
+                    <button type="button" className="btn sm" onClick={() => onAskRemove(null)}>
+                      Keep it
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="linkbtn"
+                    style={{ width: 'auto', fontSize: 11 }}
+                    aria-label={`Remove the batch of ${b.made_on}`}
+                    disabled={busy}
+                    onClick={() => onAskRemove(b.id)}
+                  >
+                    remove
+                  </button>
+                ))}
             </div>
             {b.note && (
               <div style={{ fontSize: 11, color: 'var(--txt-3)', marginTop: 2 }}>{b.note}</div>

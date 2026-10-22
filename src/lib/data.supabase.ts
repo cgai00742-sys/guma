@@ -3887,3 +3887,34 @@ export async function deleteAssembly(shopId: string, assemblyId: string): Promis
   const { error: dErr } = await supabase.from('assemblies').delete().eq('id', assemblyId)
   if (dErr) throw dErr
 }
+
+
+/** See data.local.ts's deleteBatch. */
+export async function deleteBatch(shopId: string, batchId: string): Promise<void> {
+  const { count, error } = await supabase.from('sales').select('id', { count: 'exact', head: true }).eq('batch_id', batchId)
+  if (error) throw error
+  if ((count ?? 0) > 0) throw new Error('Some of this batch has sold — remove those sales first.')
+  const { error: e1 } = await supabase
+    .from('made_items')
+    .update({ status: 'made', batch_id: null, placed_at: null })
+    .eq('batch_id', batchId)
+    .eq('shop_id', shopId)
+  if (e1) throw e1
+  const { error: e2 } = await supabase
+    .from('assemblies')
+    .update({ status: 'open', batch_id: null, done_at: null })
+    .eq('batch_id', batchId)
+    .eq('shop_id', shopId)
+  if (e2) throw e2
+  const { error: e3 } = await supabase.from('batches').delete().eq('id', batchId).eq('shop_id', shopId)
+  if (e3) throw e3
+}
+
+/** See data.local.ts's deleteProduct. */
+export async function deleteProduct(shopId: string, productId: string): Promise<void> {
+  const { count, error } = await supabase.from('batches').select('id', { count: 'exact', head: true }).eq('product_id', productId)
+  if (error) throw error
+  if ((count ?? 0) > 0) throw new Error('Take its batches off the shelf first.')
+  const { error: dErr } = await supabase.from('products').delete().eq('id', productId).eq('shop_id', shopId)
+  if (dErr) throw dErr
+}

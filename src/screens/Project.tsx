@@ -2728,7 +2728,12 @@ function MadeItems({
               <div key={i.id} className="histitem">
                 <span style={{ color: 'var(--ok)' }}>✓</span>
                 <span>
-                  {i.label} — {i.status === 'shelved' ? (products.find((p) => p.batches.some((b) => b.id === i.batchId))?.name ?? 'on the shelf') : 'kept'}
+                  {i.label} —{' '}
+                  {i.status === 'shelved' ? (
+                    <Link to="/shelf">{products.find((p) => p.batches.some((b) => b.id === i.batchId))?.name ?? 'on the shelf'} on the Shelf →</Link>
+                  ) : (
+                    'kept'
+                  )}
                 </span>
                 <span className="pmeta">
                   {money(i.unitCost)} · {i.placedAt?.slice(0, 10)}

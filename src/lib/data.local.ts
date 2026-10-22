@@ -4682,3 +4682,34 @@ export async function deleteAssembly(shopId: string, assemblyId: string): Promis
   await d.execute("update made_items set status = 'made', assembly_id = null, placed_at = null where assembly_id = ?", [assemblyId])
   await d.execute('delete from assemblies where id = ?', [assemblyId])
 }
+
+
+/**
+ * Take a batch off the shelf -- one put there by mistake, or to start again
+ * (CG, 22 Oct). Not once any of it has sold: remove those sales first, so
+ * revenue never points at a batch that is gone. Pieces it came from go back
+ * to "made" in their project, ready to place again; an assembly it came from
+ * reopens with its pieces still in it.
+ */
+export async function deleteBatch(shopId: string, batchId: string): Promise<void> {
+  const d = await db()
+  const sold = await d.select<{ n: number }[]>('select count(*) as n from sales where batch_id = ?', [batchId])
+  if (Number(sold[0]?.n ?? 0) > 0) throw new Error('Some of this batch has sold — remove those sales first.')
+  await d.execute(
+    "update made_items set status = 'made', batch_id = null, placed_at = null where batch_id = ? and shop_id = ?",
+    [batchId, shopId],
+  )
+  await d.execute("update assemblies set status = 'open', batch_id = null, done_at = null where batch_id = ? and shop_id = ?", [
+    batchId,
+    shopId,
+  ])
+  await d.execute('delete from batches where id = ? and shop_id = ?', [batchId, shopId])
+}
+
+/** A product with nothing on the shelf can go entirely. */
+export async function deleteProduct(shopId: string, productId: string): Promise<void> {
+  const d = await db()
+  const n = await d.select<{ n: number }[]>('select count(*) as n from batches where product_id = ?', [productId])
+  if (Number(n[0]?.n ?? 0) > 0) throw new Error('Take its batches off the shelf first.')
+  await d.execute('delete from products where id = ? and shop_id = ?', [productId, shopId])
+}
