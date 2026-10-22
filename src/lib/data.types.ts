@@ -1510,3 +1510,87 @@ export function quoteBases(
   const r = (n: number) => Math.round(n * 100) / 100
   return { preTax: r(preTax), listPrice: r(listPrice) }
 }
+
+/* ---- what each print made (0039) ------------------------------------- */
+
+/** Where one object off a print is: made and not yet placed, failed, on the
+ *  shelf, in an assembly, or kept (not for sale). */
+export type MadeStatus = 'made' | 'failed' | 'shelved' | 'assembled' | 'kept'
+
+export interface MadeItemRow {
+  id: string
+  jobId: string
+  runId: string | null
+  sectionId: string | null
+  label: string
+  grams: number | null
+  unitCost: number
+  status: MadeStatus
+  assemblyId: string | null
+  batchId: string | null
+  note: string | null
+  createdAt: string
+  placedAt: string | null
+  /** When the print it came off was printed, and from which file. */
+  printedOn: string | null
+  fileName: string | null
+}
+
+/** One object of a print, as recorded with the print. */
+export interface MadeItemInput {
+  sectionId: string | null
+  label: string
+  grams: number | null
+  unitCost: number
+  failed: boolean
+  note?: string | null
+}
+
+export interface AssemblyRow {
+  id: string
+  jobId: string
+  name: string
+  needs: { label: string; qty: number }[]
+  status: 'open' | 'done'
+  batchId: string | null
+  createdAt: string
+  doneAt: string | null
+}
+
+export interface AssemblyInput {
+  id?: string
+  name: string
+  needs: { label: string; qty: number }[]
+}
+
+/** Where items go: onto the shelf as a product (an existing one, or a new
+ *  one by name), into an open assembly, kept, or back to "made". */
+export type ItemPlace =
+  | {
+      kind: 'shelf'
+      productId: string | null
+      name?: string
+      madeOn: string
+      /** A new product carries the design that went into it, once. */
+      designCost?: number | null
+      designHours?: number | null
+    }
+  | { kind: 'assembly'; assemblyId: string }
+  | { kind: 'kept' }
+  | { kind: 'back' }
+
+/** What a print's objects must look like before they are written. */
+export function validateMadeItems(items: MadeItemInput[]): void {
+  for (const it of items) {
+    if (!it.label.trim()) throw new Error('Every object needs a name.')
+    if (!Number.isFinite(it.unitCost) || it.unitCost < 0) throw new Error('An object cannot cost less than nothing.')
+    if (it.grams != null && (!Number.isFinite(it.grams) || it.grams < 0)) throw new Error('Grams cannot be negative.')
+  }
+}
+
+/** The batch note for items shelved together: "2 × Maui BATHY 3x". */
+export function shelfNote(labels: string[]): string {
+  const by = new Map<string, number>()
+  for (const l of labels) by.set(l, (by.get(l) ?? 0) + 1)
+  return [...by].map(([l, n]) => `${n} × ${l}`).join(', ')
+}

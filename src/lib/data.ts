@@ -766,3 +766,31 @@ export async function skipCopy(
 ): Promise<void> {
   return (await backend()).skipCopy(shopId, partId, actorId, copy, note)
 }
+
+
+/* ---- what each print made (0039) ---- */
+export async function listMadeItems(shopId: string, jobId: string): Promise<import('./data.types').MadeItemRow[]> {
+  return (await backend()).listMadeItems(shopId, jobId)
+}
+export async function recordMadeItems(shopId: string, jobId: string, runId: string, items: import('./data.types').MadeItemInput[]): Promise<void> {
+  return (await backend()).recordMadeItems(shopId, jobId, runId, items)
+}
+export async function placeItems(shopId: string, jobId: string, ids: string[], to: import('./data.types').ItemPlace): Promise<{ batchId?: string }> {
+  return (await backend()).placeItems(shopId, jobId, ids, to)
+}
+export async function listAssemblies(shopId: string, jobId: string): Promise<import('./data.types').AssemblyRow[]> {
+  return (await backend()).listAssemblies(shopId, jobId)
+}
+export async function saveAssembly(shopId: string, jobId: string, next: import('./data.types').AssemblyInput): Promise<string> {
+  return (await backend()).saveAssembly(shopId, jobId, next)
+}
+export async function finishAssembly(
+  shopId: string,
+  assemblyId: string,
+  to: { kind: 'shelf'; productId: string | null; name?: string; madeOn: string } | { kind: 'kept' },
+): Promise<{ batchId?: string }> {
+  return (await backend()).finishAssembly(shopId, assemblyId, to)
+}
+export async function deleteAssembly(shopId: string, assemblyId: string): Promise<void> {
+  return (await backend()).deleteAssembly(shopId, assemblyId)
+}

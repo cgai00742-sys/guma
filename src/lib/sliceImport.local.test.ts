@@ -629,3 +629,72 @@ describe('sorting the objects of a plate onto parts (CG, 16 Oct)', () => {
     expect(currentDb.sqlite.prepare("select count(*) as n from part_events where part_id = ? and to_status = 'reprint'").get(left.id)).toEqual({ n: 0 })
   })
 })
+
+describe('what each print made, and where it went (CG, 21 Oct)', () => {
+  const run = async (data: any, importId: string | null, outcome = 'success') =>
+    data.recordPrintRun(SHOP, JOB, ACTOR, {
+      printerId: 'printer-1', materialId: 'material-1', unitsUsed: 86.5, hours: 2.05, outcome,
+      failureReason: outcome === 'success' ? null : 'x', note: null, startedAt: '2026-10-20', sliceImportId: importId,
+    })
+  const items = () => currentDb.sqlite.prepare('select label, status, unit_cost, batch_id, assembly_id from made_items order by rowid').all() as any[]
+
+  it('records the objects off a print, shelves some, assembles others, and keeps the books straight', async () => {
+    const data = await import('./data.local')
+    const imp = await data.importSlice(SHOP, JOB, ACTOR, BUOY)
+    const r = await run(data, imp.importId)
+    await data.recordMadeItems(SHOP, JOB, r, [
+      { sectionId: null, label: 'Buoy shell', grams: 28.85, unitCost: 1, failed: false },
+      { sectionId: null, label: 'Buoy shell', grams: 28.85, unitCost: 1, failed: false },
+      { sectionId: null, label: 'Cap', grams: 20, unitCost: 0.5, failed: true },
+    ])
+    const list = await data.listMadeItems(SHOP, JOB)
+    expect(list.map((x) => [x.label, x.status, x.printedOn, x.fileName])).toEqual([
+      ['Buoy shell', 'made', '2026-10-20', null],
+      ['Buoy shell', 'made', '2026-10-20', null],
+      ['Cap', 'failed', '2026-10-20', null],
+    ])
+    const [a, b, c] = list
+    // A failed object cannot be shelved.
+    await expect(data.placeItems(SHOP, JOB, [c.id], { kind: 'kept' })).rejects.toThrow(/failed print/)
+    // One onto the shelf as a new product, at its share.
+    const { batchId } = await data.placeItems(SHOP, JOB, [a.id], { kind: 'shelf', productId: null, name: 'Reef buoy', madeOn: '2026-10-21' })
+    expect(currentDb.sqlite.prepare('select units_made, unit_cost, note from batches where id = ?').get(batchId!)).toEqual({ units_made: 1, unit_cost: 1, note: '1 × Buoy shell' })
+    // One into an assembly that needs two.
+    const asm = await data.saveAssembly(SHOP, JOB, { name: 'Buoy pair', needs: [{ label: 'Buoy shell', qty: 2 }] })
+    await data.placeItems(SHOP, JOB, [b.id], { kind: 'assembly', assemblyId: asm })
+    expect(items().map((x) => x.status)).toEqual(['shelved', 'assembled', 'failed'])
+    // The print cannot be removed while what it made is placed.
+    await expect(data.deletePrintRun(SHOP, r, true)).rejects.toThrow(/take it back first/)
+    // Out of the assembly and back; the shelf does not give back.
+    await data.placeItems(SHOP, JOB, [b.id], { kind: 'back' })
+    await expect(data.placeItems(SHOP, JOB, [a.id], { kind: 'back' })).rejects.toThrow(/on the shelf/)
+    // Finish the assembly onto the shelf: one unit at the sum.
+    await data.placeItems(SHOP, JOB, [b.id], { kind: 'assembly', assemblyId: asm })
+    const done = await data.finishAssembly(SHOP, asm, { kind: 'shelf', productId: null, madeOn: '2026-10-21' })
+    expect(currentDb.sqlite.prepare('select b.units_made, b.unit_cost, p.name from batches b join products p on p.id = b.product_id where b.id = ?').get(done.batchId!)).toEqual({ units_made: 1, unit_cost: 1, name: 'Buoy pair' })
+    await expect(data.placeItems(SHOP, JOB, [b.id], { kind: 'back' })).rejects.toThrow(/finished assembly/)
+    expect((await data.listAssemblies(SHOP, JOB))[0]).toMatchObject({ name: 'Buoy pair', status: 'done', needs: [{ label: 'Buoy shell', qty: 2 }] })
+  })
+
+  it('recording a print again replaces what it made, and removing an unplaced print removes it', async () => {
+    const data = await import('./data.local')
+    const imp = await data.importSlice(SHOP, JOB, ACTOR, BUOY)
+    const r = await run(data, imp.importId)
+    await data.recordMadeItems(SHOP, JOB, r, [{ sectionId: null, label: 'Cap', grams: 1, unitCost: 1, failed: false }])
+    await data.recordMadeItems(SHOP, JOB, r, [{ sectionId: null, label: 'Cap', grams: 1, unitCost: 2, failed: false }])
+    expect(items().map((x) => x.unit_cost)).toEqual([2])
+    await data.deletePrintRun(SHOP, r, true)
+    expect(items()).toEqual([])
+  })
+
+  it('an open assembly can go, and what was in it is made again', async () => {
+    const data = await import('./data.local')
+    const r = await run(data, null)
+    await data.recordMadeItems(SHOP, JOB, r, [{ sectionId: null, label: 'Cap', grams: 1, unitCost: 1, failed: false }])
+    const [it] = await data.listMadeItems(SHOP, JOB)
+    const asm = await data.saveAssembly(SHOP, JOB, { name: 'Set', needs: [] })
+    await data.placeItems(SHOP, JOB, [it.id], { kind: 'assembly', assemblyId: asm })
+    await data.deleteAssembly(SHOP, asm)
+    expect(items().map((x) => [x.status, x.assembly_id])).toEqual([['made', null]])
+  })
+})

@@ -47,6 +47,14 @@ import {
   addPart,
   addProjectNote,
   importSlice,
+  listSliceImports,
+  listMadeItems,
+  recordMadeItems,
+  placeItems,
+  listAssemblies,
+  saveAssembly,
+  finishAssembly,
+  deleteAssembly,
   deleteSliceImport,
   sliceFileContent,
   archiveProject,
@@ -87,8 +95,6 @@ import {
   updateJobPhase,
   updateProjectFields,
   listShelf,
-  saveBatch,
-  saveProduct,
   type ProductRow,
   type PaymentInput,
   type PaymentKind,
@@ -163,11 +169,13 @@ import HoursInput from '../components/HoursInput'
 import { fmtHours } from '../lib/duration'
 import { fmtMinutes, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
 import { sameSliceFile, type PrintRunRow, type SliceImportRow, type StockHoldRow } from '../lib/data.types'
+import { splitJobCost } from '../lib/selling'
+import { gramsUsed, plateObjects, runCost, splitCost, assemblyStatus, type ObjectResult, type PlateObject } from '../lib/madeItems'
+import type { MadeItemRow, AssemblyRow, MadeItemInput } from '../lib/data.types'
 import { choiceFrom, choiceValue, guessSort, nameFromFile, partSizes, perCopyOf, toAssign, type BatchPart, type SortChoice, type SortGuess } from '../lib/sortParts'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
 import { changeCopies, copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
-import { splitJobCost, unitCostFrom, unshelvedProduction } from '../lib/selling'
 
 const DELIVERY_METHODS = [
   'Collected in person',
@@ -890,7 +898,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         onToggle={(e) => fold.set('build', e.currentTarget.open)}
       >
         <summary className="sechead">
-          <h4>Build sheet</h4>
+          <h4>{mine ? 'Plates and prints' : 'Build sheet'}</h4>
           <span
             className={`secstat ${
               detail.parts.length === 0
@@ -902,7 +910,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                     : ''
             }`}
           >
-            {detail.parts.length === 0
+            {mine
+              ? `${detail.slices.length} file${detail.slices.length === 1 ? '' : 's'} · ${detail.runs.length} print${detail.runs.length === 1 ? '' : 's'} recorded`
+              : detail.parts.length === 0
               ? mine
                 ? 'nothing on it yet'
                 : 'not used on this project'
@@ -1096,13 +1106,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       <>
       {/* ---- what it made, for the shop's own work ---- */}
       {detail.facts.kind === 'inhouse' && (
-        <MadeSection
-          ctx={ctx}
-          detail={detail}
-          money={money}
-          onSaved={reload}
-          setError={setError}
-        />
+        <MadeItems ctx={ctx} detail={detail} money={money} onChanged={reload} setError={setError} />
       )}
 
       </>
@@ -1196,6 +1200,15 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         </div>
       )}
 
+      {/* Your own work does not move through stages: it keeps taking plates
+          until you archive it (CG, 21 Oct: "The project doesn't close"). */}
+      {mine ? (
+        <div className="hint" style={{ marginTop: 12 }}>
+          Ongoing — upload plates, record what came off, and send pieces to the shelf or into an
+          assembly as they come. Archive it when you retire it.
+          {facts.archivedAt ? ' Archived.' : ''}
+        </div>
+      ) : (
       <div className="stepper" style={{ marginTop: 12, opacity: isDraft ? 0.45 : 1 }}>
         {ladder.map((p, i) => {
           // A stage behind this one that still has items outstanding was
@@ -1231,12 +1244,13 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           )
         })}
       </div>
+      )}
 
       {/* Moving backwards lives HERE, beside the stages, not inside the gate
           section -- which is folded shut on a finished project, and is
           exactly where CG never saw it. Voltage's rule: going back needs a
           reason, and the reason goes on the record. */}
-      {!isDraft && here > 0 && (
+      {!isDraft && !mine && here > 0 && (
         <div style={{ marginTop: 8 }}>
           {!backOpen ? (
             <button type="button" className="btn sm" disabled={busy} onClick={() => setBackOpen(true)}>
@@ -1446,7 +1460,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
       ))}
 
       {/* ---- the gate: last, so it is the thing the page ends on ---- */}
-      {detail.phase !== 'delivered' && (
+      {detail.phase !== 'delivered' && !mine && (
         <>
       {/* ---- the gate ---- */}
       <details className="sec fold" style={{ marginTop: 18 }}
@@ -1561,9 +1575,11 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
         }}
       >
         <span className="gatewhy" style={{ fontSize: 11, color: 'var(--txt-3)', maxWidth: '52ch' }}>
-          {!isDraft
-            ? liveGate.reason
-            : 'A draft has no gate to clear — nothing is being tracked against it until it is taken in.'}
+          {mine
+            ? 'Ongoing — it stays open for the next plate.'
+            : !isDraft
+              ? liveGate.reason
+              : 'A draft has no gate to clear — nothing is being tracked against it until it is taken in.'}
         </span>
         <span style={{ marginLeft: 'auto' }} />
         <PrioritySelect
@@ -1583,7 +1599,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             needs attention; a delivered project from March needs none, and
             leaving it there is how a board stops being read. Nothing is
             deleted and nothing stops counting. */}
-        {detail.phase === 'delivered' && (
+        {(detail.phase === 'delivered' || mine) && (
           <button
             type="button"
             className="btn"
@@ -1619,7 +1635,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           Back to projects
         </button>
         <DeleteProject detail={detail} busy={busy} onConfirm={destroy} />
-        {!isDraft && here > 0 && (
+        {!isDraft && !mine && here > 0 && (
           <button
             type="button"
             className="btn"
@@ -1633,7 +1649,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             ← Back to {label(ladder[here - 1])}
           </button>
         )}
-        {!isDraft ? (
+        {mine ? null : !isDraft ? (
           <button
             type="button"
             className="btn primary advance"
@@ -2048,6 +2064,706 @@ function SortPick({
   )
 }
 
+/**
+ * Each object on a plate, ticked when it came off (CG, 21 Oct: "if a
+ * specific part failed we can mark it with the appropriate information
+ * like weight"). Untick one and say what it weighs; the rest came off.
+ */
+function ObjectResults({
+  id,
+  results,
+  unit,
+  onChange,
+}: {
+  id: string
+  results: ObjectResult[]
+  unit: string
+  onChange: (r: ObjectResult[]) => void
+}) {
+  if (!results.length) return null
+  const set = (i: number, p: Partial<ObjectResult>) => onChange(results.map((r, k) => (k === i ? { ...r, ...p } : r)))
+  return (
+    <div className="objresults" role="group" aria-label="What came off the plate">
+      <div className="lbl" style={{ marginBottom: 4 }}>
+        What came off — untick anything that failed
+      </div>
+      {results.map((r, i) => (
+        <div key={`${r.label}-${i}`} className={`objrow ${r.failed ? 'failed' : ''}`.trim()}>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 1 }}>
+            <input
+              type="checkbox"
+              checked={!r.failed}
+              aria-label={`${r.label}${results.filter((x) => x.label === r.label).length > 1 ? ` #${results.slice(0, i + 1).filter((x) => x.label === r.label).length}` : ''} came off`}
+              onChange={(e) => set(i, { failed: !e.target.checked, weighed: e.target.checked ? null : r.weighed })}
+            />
+            <span>{r.label}</span>
+            <span className="pmeta">{r.grams != null ? `${Math.round(r.grams * 10) / 10} ${unit}` : ''}</span>
+          </label>
+          {r.failed && (
+            <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span className="pmeta" style={{ color: 'var(--red)' }}>failed · weighs</span>
+              <input
+                id={`${id}-w-${i}`}
+                aria-label={`What the failed ${r.label} weighs`}
+                inputMode="decimal"
+                style={{ width: 80 }}
+                value={r.weighed ?? ''}
+                placeholder={r.grams != null ? String(Math.round(r.grams)) : unit}
+                onChange={(e) => {
+                  const v = e.target.value.trim()
+                  const n = Number(v)
+                  set(i, { weighed: v && Number.isFinite(n) && n >= 0 ? n : null })
+                }}
+              />
+              <span className="pmeta">{unit}</span>
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** The objects of a saved plate, each copy once, named as sorted. */
+function objectsOf(slice: SliceImportRow, parts: PartRow[]): PlateObject[] {
+  return plateObjects(
+    slice.sections.map((sec) => ({
+      id: sec.id,
+      label: parts.find((p) => p.id === sec.partId)?.label ?? sec.label,
+      qty: sec.qty,
+      estGrams: sec.estGrams,
+    })),
+    slice.estGrams,
+  )
+}
+
+/**
+ * What one recorded print made, ready to write: every object with its share
+ * of the print's cost. A whole plate that failed fails every object, each at
+ * its share of what came off the spool.
+ */
+function madeFromPrint(
+  ctx: ShopContext,
+  run: PrintRunInput,
+  objects: PlateObject[],
+  results: ObjectResult[] | null,
+): MadeItemInput[] {
+  if (!objects.length) return []
+  const total = runCost(run, ctx.materials, ctx.printers, ctx.shop.electricity_rate_kwh == null ? null : Number(ctx.shop.electricity_rate_kwh))
+  let rs: ObjectResult[]
+  if (run.outcome === 'success') rs = results && results.length === objects.length ? results : objects.map((o) => ({ ...o, failed: false, weighed: null }))
+  else {
+    const g = objects.reduce((a, o) => a + (o.grams ?? 0), 0)
+    rs = objects.map((o) => ({ ...o, failed: true, weighed: g > 0 && o.grams != null ? (Number(run.unitsUsed) || 0) * (o.grams / g) : null }))
+  }
+  const split = splitCost(rs, total)
+  return rs.map((r, i) => ({
+    sectionId: r.sectionId,
+    label: r.label,
+    grams: split[i].grams == null ? null : Math.round(split[i].grams! * 10) / 10,
+    unitCost: split[i].unitCost,
+    failed: r.failed,
+    note: r.failed ? run.failureReason ?? null : null,
+  }))
+}
+
+/** One object of a file being read in, named as the card sorted it. */
+function objectsOfRead(read: SliceFile, sorts: SortGuess[], parts: PartRow[]): PlateObject[] {
+  return plateObjects(
+    read.sections.map((sec, j) => {
+      const c = sorts[j]?.choice
+      const label = !c ? sec.label : c.kind === 'part' ? (parts.find((p) => p.id === c.partId)?.label ?? sec.label) : c.label
+      return { id: `pending-${j}`, label, qty: sec.qty, estGrams: sec.estGrams }
+    }),
+    read.totals.estGrams,
+  ).map((o) => ({ ...o, sectionId: o.sectionId }))
+}
+
+/**
+ * What this project has made, piece by piece, and where each piece went
+ * (CG, 21 Oct: "upload the plate, sort the parts, and send them
+ * individually to the made section. The project doesn't close or end.").
+ *
+ * Every object off a recorded print is here at its share of that print's
+ * cost. Not placed yet, it can go to the shelf as a product (one batch, at
+ * the pieces' average cost), into an assembly -- "Maui display", with what
+ * it needs -- or be kept. A finished assembly goes to the shelf as one unit
+ * at the sum of what is in it. Katana's pattern (a sub-assembly is also a
+ * product), kept light.
+ */
+function MadeItems({
+  ctx,
+  detail,
+  money,
+  onChanged,
+  setError,
+}: {
+  ctx: ShopContext
+  detail: ProjectDetail
+  money: (n: number) => string
+  onChanged: () => Promise<void>
+  setError: (m: string | null) => void
+}) {
+  const [items, setItems] = useState<MadeItemRow[] | null>(null)
+  const [assemblies, setAssemblies] = useState<AssemblyRow[]>([])
+  const [products, setProducts] = useState<ProductRow[]>([])
+  const [picked, setPicked] = useState<Set<string>>(() => new Set())
+  const [dest, setDest] = useState('')
+  const [newName, setNewName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [said, setSaid] = useState<string | null>(null)
+  const [making, setMaking] = useState(false)
+  const [asmName, setAsmName] = useState('')
+  const [asmNeeds, setAsmNeeds] = useState<{ label: string; qty: string }[]>([{ label: '', qty: '1' }])
+  const [finishing, setFinishing] = useState<string | null>(null)
+  const [finishTo, setFinishTo] = useState('')
+  const [finishName, setFinishName] = useState('')
+  // Pieces from a print with no file -- an evening of keychains typed in by hand.
+  const [handRun, setHandRun] = useState('')
+  const [handName, setHandName] = useState('')
+  const [handN, setHandN] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      const [it, as, pr] = await Promise.all([
+        listMadeItems(ctx.shop.id, detail.jobId),
+        listAssemblies(ctx.shop.id, detail.jobId),
+        listShelf(ctx.shop.id).catch(() => [] as ProductRow[]),
+      ])
+      setItems(it)
+      setAssemblies(as)
+      setProducts(pr.filter((p) => !p.archived))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [ctx.shop.id, detail.jobId, setError])
+  // Read again whenever a print is recorded, corrected or removed.
+  const runKey = detail.runs.map((r) => `${r.id}:${r.unitsUsed}:${r.outcome}`).join('|')
+  useEffect(() => {
+    void load()
+  }, [load, runKey])
+
+  async function act(fn: () => Promise<unknown>, msg?: string) {
+    setBusy(true)
+    setError(null)
+    setSaid(null)
+    try {
+      await fn()
+      setPicked(new Set())
+      setDest('')
+      setNewName('')
+      await load()
+      await onChanged()
+      if (msg) setSaid(msg)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (items == null) return null
+  const unplaced = items.filter((i) => i.status === 'made')
+  const failed = items.filter((i) => i.status === 'failed')
+  const placed = items.filter((i) => i.status === 'shelved' || i.status === 'kept')
+  const open = assemblies.filter((a) => a.status === 'open')
+  const done = assemblies.filter((a) => a.status === 'done')
+  const inAsm = (id: string) => items.filter((i) => i.assemblyId === id)
+  const labels = [...new Set(items.map((i) => i.label))]
+
+  // Prints recorded before pieces were tracked: offer to make their pieces.
+  const withItems = new Set(items.map((i) => i.runId))
+  const older = detail.runs.filter((r) => !withItems.has(r.id) && r.sliceImportId && detail.slices.some((x) => x.id === r.sliceImportId))
+  const oldBatches = products.flatMap((p) => p.batches.filter((b) => b.job_id === detail.jobId))
+
+  const pick = (ids: string[], on: boolean) =>
+    setPicked((cur) => {
+      const next = new Set(cur)
+      for (const id of ids) on ? next.add(id) : next.delete(id)
+      return next
+    })
+  const chosen = unplaced.filter((i) => picked.has(i.id))
+  const chosenCost = chosen.reduce((a, i) => a + i.unitCost, 0)
+  const noFile = detail.runs.filter((r) => !withItems.has(r.id) && !r.sliceImportId)
+  // The design behind this work goes on the first product it makes, once --
+  // an investment to pay back, never folded into a unit cost.
+  const split = splitJobCost(
+    { actualCost: detail.facts.actualCost, designHours: detail.actuals.designHours },
+    Number(ctx.rateCard.design_hourly),
+  )
+  const designDone = products.some((p) => p.design_job_id === detail.jobId && p.design_cost != null)
+  const design = designDone || split.design <= 0 ? {} : { designCost: split.design, designHours: detail.actuals.designHours }
+
+  return (
+    <section className="sec" data-fold="made-items">
+      <div className="sechead">
+        <h4>Made</h4>
+        <span className="secstat">
+          {unplaced.length} not placed yet · {placed.filter((i) => i.status === 'shelved').length} on the shelf
+          {open.length ? ` · ${open.length} assembl${open.length === 1 ? 'y' : 'ies'} open` : ''}
+        </span>
+      </div>
+      <div className="pane" style={{ marginBottom: 0 }} role="region" aria-label="Made">
+        {older.length > 0 && (
+          <div className="attn warn" role="note" aria-label="Older prints" style={{ marginTop: 0, marginBottom: 10 }}>
+            <span style={{ flex: 1 }}>
+              {older.length} print{older.length === 1 ? '' : 's'} recorded before pieces were tracked.
+              Make their pieces from the plates — what came off clean is made, a failed plate&rsquo;s pieces
+              are failures.
+              {oldBatches.length > 0 &&
+                ` This project already put ${oldBatches.reduce((a, b) => a + Number(b.units_made), 0)} on the shelf the old way; mark those pieces Kept so they are not shelved twice.`}
+            </span>
+            <button
+              type="button"
+              className="btn sm"
+              disabled={busy}
+              onClick={() =>
+                void act(async () => {
+                  for (const r of older) {
+                    const slice = detail.slices.find((x) => x.id === r.sliceImportId)!
+                    const run: PrintRunInput = {
+                      printerId: r.printerId ?? '',
+                      materialId: r.materialId,
+                      unitsUsed: r.unitsUsed ?? 0,
+                      hours: r.hours ?? 0,
+                      outcome: r.outcome ?? 'success',
+                      failureReason: r.failureReason,
+                      note: r.note,
+                      startedAt: r.startedAt,
+                    }
+                    await recordMadeItems(ctx.shop.id, detail.jobId, r.id, madeFromPrint(ctx, run, objectsOf(slice, detail.parts), null))
+                  }
+                }, 'Pieces made from the older prints.')
+              }
+            >
+              Make their pieces
+            </button>
+          </div>
+        )}
+        {said && (
+          <div className="hint" role="status" style={{ marginTop: 0, marginBottom: 8, color: 'var(--ok)' }}>
+            {said}
+          </div>
+        )}
+
+        <div className="lbl">Not placed yet</div>
+        {unplaced.length === 0 ? (
+          <div className="hint" style={{ marginTop: 2 }}>
+            Nothing waiting. Record a plate above and what came off it lands here.
+          </div>
+        ) : (
+          <table className="madelist">
+            <tbody>
+              {unplaced.map((i) => (
+                <tr key={i.id}>
+                  <td style={{ width: 28 }}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Pick ${i.label} from ${i.printedOn ?? 'a print'}`}
+                      checked={picked.has(i.id)}
+                      onChange={(e) => pick([i.id], e.target.checked)}
+                    />
+                  </td>
+                  <td>
+                    <span className="pn">{i.label}</span>
+                    <span className="pmeta">
+                      {' '}
+                      · {i.printedOn ?? '—'}
+                      {i.fileName ? ` · ${i.fileName}` : ''}
+                    </span>
+                  </td>
+                  <td className="r mono">{i.grams != null ? `${Math.round(i.grams)} g` : ''}</td>
+                  <td className="r mono">{money(i.unitCost)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {noFile.length > 0 && (
+          <div className="btnrow" style={{ marginTop: 8, alignItems: 'flex-end' }} role="group" aria-label="Pieces from a print with no file">
+            <div className="fld" style={{ margin: 0, minWidth: 200 }}>
+              <label className="lbl" htmlFor="hand-run">
+                A print with no file made
+              </label>
+              <select id="hand-run" value={handRun} onChange={(e) => setHandRun(e.target.value)}>
+                <option value="">Choose the print…</option>
+                {noFile.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.startedAt?.slice(0, 10) ?? 'undated'} · {r.unitsUsed ?? 0} {r.unit ?? 'g'} · {fmtHours(r.hours ?? 0)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="fld" style={{ margin: 0, width: 90 }}>
+              <label className="lbl" htmlFor="hand-n">
+                How many
+              </label>
+              <input id="hand-n" type="number" min={1} value={handN} onChange={(e) => setHandN(e.target.value)} />
+            </div>
+            <div className="fld" style={{ margin: 0, flex: 1, minWidth: 160 }}>
+              <label className="lbl" htmlFor="hand-name">
+                Of what
+              </label>
+              <input id="hand-name" value={handName} placeholder="Hex keychain" onChange={(e) => setHandName(e.target.value)} />
+            </div>
+            <button
+              type="button"
+              className="btn sm"
+              disabled={busy || !handRun || !(Number(handN) >= 1) || !handName.trim()}
+              onClick={() => {
+                const r = noFile.find((x) => x.id === handRun)!
+                const n = Math.floor(Number(handN))
+                const run: PrintRunInput = {
+                  printerId: r.printerId ?? '',
+                  materialId: r.materialId,
+                  unitsUsed: r.unitsUsed ?? 0,
+                  hours: r.hours ?? 0,
+                  outcome: r.outcome ?? 'success',
+                  failureReason: r.failureReason,
+                  note: r.note,
+                  startedAt: r.startedAt,
+                }
+                const each = (r.unitsUsed ?? 0) / n
+                const objs = Array.from({ length: n }, () => ({ sectionId: null, label: handName.trim(), grams: each }))
+                void act(async () => {
+                  await recordMadeItems(ctx.shop.id, detail.jobId, r.id, madeFromPrint(ctx, run, objs, null))
+                  setHandRun('')
+                  setHandN('')
+                  setHandName('')
+                }, `${n} × ${handName.trim()} made.`)
+              }}
+            >
+              Make them
+            </button>
+          </div>
+        )}
+        {unplaced.length > 1 && (
+          <button
+            type="button"
+            className="linkbtn"
+            style={{ fontSize: 11, width: 'auto', marginTop: 2 }}
+            onClick={() => pick(unplaced.map((i) => i.id), picked.size !== unplaced.length)}
+          >
+            {picked.size === unplaced.length ? 'Pick none' : 'Pick all'}
+          </button>
+        )}
+        {chosen.length > 0 && (
+          <div className="gatebox" style={{ marginTop: 8 }} role="group" aria-label="Place the picked pieces">
+            <div className="btnrow" style={{ margin: 0, alignItems: 'flex-end' }}>
+              <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
+                <label className="lbl" htmlFor="made-dest">
+                  {chosen.length} picked · {money(chosenCost)} — send to
+                </label>
+                <select id="made-dest" value={dest} onChange={(e) => setDest(e.target.value)}>
+                  <option value="">Choose…</option>
+                  <optgroup label="The shelf, to sell">
+                    <option value="shelf:new">A new product…</option>
+                    {products.map((p) => (
+                      <option key={p.id} value={`shelf:${p.id}`}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {open.length > 0 && (
+                    <optgroup label="Into an assembly">
+                      {open.map((a) => (
+                        <option key={a.id} value={`asm:${a.id}`}>
+                          {a.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <option value="kept">Keep — not for sale</option>
+                </select>
+              </div>
+              {dest === 'shelf:new' && (
+                <div className="fld" style={{ margin: 0, flex: 1, minWidth: 180 }}>
+                  <label className="lbl" htmlFor="made-newname">
+                    Product name
+                  </label>
+                  <input
+                    id="made-newname"
+                    value={newName}
+                    placeholder={chosen[0]?.label}
+                    onChange={(e) => setNewName(e.target.value)}
+                  />
+                </div>
+              )}
+              <button
+                type="button"
+                className="btn sm primary"
+                disabled={busy || !dest}
+                onClick={() => {
+                  const ids = chosen.map((i) => i.id)
+                  if (dest === 'kept') return void act(() => placeItems(ctx.shop.id, detail.jobId, ids, { kind: 'kept' }), `${ids.length} kept.`)
+                  if (dest.startsWith('asm:'))
+                    return void act(
+                      () => placeItems(ctx.shop.id, detail.jobId, ids, { kind: 'assembly', assemblyId: dest.slice(4) }),
+                      `${ids.length} into ${open.find((a) => `asm:${a.id}` === dest)?.name}.`,
+                    )
+                  const productId = dest === 'shelf:new' ? null : dest.slice(6)
+                  const name = productId ? products.find((p) => p.id === productId)?.name : newName.trim() || chosen[0]?.label
+                  void act(
+                    () => placeItems(ctx.shop.id, detail.jobId, ids, { kind: 'shelf', productId, name, madeOn: todayISO(), ...(productId ? {} : design) }),
+                    `${ids.length} × ${name} on the shelf at ${money(chosenCost / ids.length)} each.`,
+                  )
+                }}
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="lbl" style={{ marginTop: 14 }}>
+          Assemblies
+        </div>
+        {open.map((a) => {
+          const inside = inAsm(a.id)
+          const st = assemblyStatus(a.needs, inside)
+          const cost = inside.reduce((t, i) => t + i.unitCost, 0)
+          return (
+            <div key={a.id} className="asm" role="group" aria-label={`Assembly ${a.name}`}>
+              <div className="asmhead">
+                <b>{a.name}</b>
+                <span className="pmeta">
+                  {inside.length} piece{inside.length === 1 ? '' : 's'} · {money(cost)}
+                  {a.needs.length ? (st.complete ? ' · has everything it needs' : ` · ${st.missing} still missing`) : ''}
+                </span>
+              </div>
+              {st.lines.length > 0 && (
+                <div className="asmneeds">
+                  {st.lines.map((l) => (
+                    <span key={l.label} className={`chip ${l.missing ? '' : 'on'}`.trim()} style={{ color: l.missing ? 'var(--warn)' : 'var(--ok)' }}>
+                      {l.label} {l.have}/{l.qty}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {inside.map((i) => (
+                <div key={i.id} className="histitem">
+                  <span>{i.label}</span>
+                  <span className="pmeta">{money(i.unitCost)}</span>
+                  <button
+                    type="button"
+                    className="linkbtn"
+                    style={{ marginLeft: 'auto', fontSize: 11, width: 'auto', marginTop: 0 }}
+                    disabled={busy}
+                    aria-label={`Take ${i.label} out of ${a.name}`}
+                    onClick={() => void act(() => placeItems(ctx.shop.id, detail.jobId, [i.id], { kind: 'back' }))}
+                  >
+                    take out
+                  </button>
+                </div>
+              ))}
+              {finishing === a.id ? (
+                <div className="btnrow" style={{ marginTop: 6, alignItems: 'flex-end' }}>
+                  <div className="fld" style={{ margin: 0, minWidth: 200 }}>
+                    <label className="lbl" htmlFor={`fin-${a.id}`}>
+                      Finished — it goes to
+                    </label>
+                    <select id={`fin-${a.id}`} value={finishTo} onChange={(e) => setFinishTo(e.target.value)}>
+                      <option value="shelf:new">The shelf, as a new product</option>
+                      {products.map((p) => (
+                        <option key={p.id} value={`shelf:${p.id}`}>
+                          The shelf, as {p.name}
+                        </option>
+                      ))}
+                      <option value="kept">Kept — not for sale</option>
+                    </select>
+                  </div>
+                  {finishTo === 'shelf:new' && (
+                    <div className="fld" style={{ margin: 0, minWidth: 180 }}>
+                      <label className="lbl" htmlFor={`fin-name-${a.id}`}>
+                        Product name
+                      </label>
+                      <input id={`fin-name-${a.id}`} value={finishName} onChange={(e) => setFinishName(e.target.value)} />
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="btn sm primary"
+                    disabled={busy || !inside.length}
+                    onClick={() =>
+                      void act(
+                        () =>
+                          finishAssembly(
+                            ctx.shop.id,
+                            a.id,
+                            finishTo === 'kept'
+                              ? { kind: 'kept' }
+                              : {
+                                  kind: 'shelf',
+                                  productId: finishTo === 'shelf:new' ? null : finishTo.slice(6),
+                                  name: finishName.trim() || a.name,
+                                  madeOn: todayISO(),
+                                },
+                          ).then(() => setFinishing(null)),
+                        finishTo === 'kept' ? `${a.name} finished and kept.` : `${a.name} on the shelf at ${money(cost)}.`,
+                      )
+                    }
+                  >
+                    Finish it
+                  </button>
+                  <button type="button" className="btn sm" onClick={() => setFinishing(null)}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div className="btnrow" style={{ marginTop: 6 }}>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={busy || !inside.length}
+                    title={inside.length ? undefined : 'Send pieces into it first.'}
+                    onClick={() => {
+                      setFinishing(a.id)
+                      setFinishTo('shelf:new')
+                      setFinishName(a.name)
+                    }}
+                  >
+                    Finish {a.name}
+                  </button>
+                  <button
+                    type="button"
+                    className="linkbtn"
+                    style={{ fontSize: 11, width: 'auto', marginTop: 0 }}
+                    disabled={busy}
+                    onClick={() => void act(() => deleteAssembly(ctx.shop.id, a.id))}
+                  >
+                    remove (pieces go back)
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })}
+        {!making ? (
+          <button type="button" className="btn sm" style={{ marginTop: 6 }} onClick={() => setMaking(true)}>
+            + New assembly
+          </button>
+        ) : (
+          <div className="gatebox" style={{ marginTop: 6 }} role="group" aria-label="New assembly">
+            <div className="fld" style={{ margin: 0 }}>
+              <label className="lbl" htmlFor="asm-name">
+                What it is
+              </label>
+              <input id="asm-name" value={asmName} placeholder="Maui display" onChange={(e) => setAsmName(e.target.value)} />
+            </div>
+            <div className="lbl" style={{ marginTop: 8 }}>
+              What it needs (optional — it then says what is still missing)
+            </div>
+            <datalist id="asm-labels">
+              {labels.map((l) => (
+                <option key={l} value={l} />
+              ))}
+            </datalist>
+            {asmNeeds.map((n, k) => (
+              <div key={k} className="btnrow" style={{ margin: '4px 0 0' }}>
+                <input
+                  aria-label={`Needs, line ${k + 1}`}
+                  list="asm-labels"
+                  value={n.label}
+                  placeholder="Maui BATHY 3x"
+                  style={{ flex: 1 }}
+                  onChange={(e) => setAsmNeeds((xs) => xs.map((x, j) => (j === k ? { ...x, label: e.target.value } : x)))}
+                />
+                <input
+                  aria-label={`How many, line ${k + 1}`}
+                  type="number"
+                  min={1}
+                  value={n.qty}
+                  style={{ width: 70 }}
+                  onChange={(e) => setAsmNeeds((xs) => xs.map((x, j) => (j === k ? { ...x, qty: e.target.value } : x)))}
+                />
+              </div>
+            ))}
+            <div className="btnrow" style={{ marginTop: 6 }}>
+              <button type="button" className="linkbtn" style={{ fontSize: 11, width: 'auto' }} onClick={() => setAsmNeeds((xs) => [...xs, { label: '', qty: '1' }])}>
+                + another
+              </button>
+            </div>
+            <div className="btnrow" style={{ marginTop: 6 }}>
+              <button
+                type="button"
+                className="btn sm primary"
+                disabled={busy || !asmName.trim()}
+                onClick={() =>
+                  void act(async () => {
+                    await saveAssembly(ctx.shop.id, detail.jobId, {
+                      name: asmName,
+                      needs: asmNeeds.map((n) => ({ label: n.label, qty: Number(n.qty) || 0 })),
+                    })
+                    setMaking(false)
+                    setAsmName('')
+                    setAsmNeeds([{ label: '', qty: '1' }])
+                  }, `${asmName.trim()} started.`)
+                }
+              >
+                Start it
+              </button>
+              <button type="button" className="btn sm" onClick={() => setMaking(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {(placed.length > 0 || done.length > 0 || failed.length > 0) && (
+          <details style={{ marginTop: 14 }}>
+            <summary className="lbl" style={{ cursor: 'pointer' }}>
+              Placed and failed — {placed.length + done.length} placed · {failed.length} failed
+            </summary>
+            {done.map((a) => (
+              <div key={a.id} className="histitem">
+                <span style={{ color: 'var(--ok)' }}>✓</span>
+                <span>
+                  {a.name} — {a.batchId ? 'on the shelf' : 'kept'} · {inAsm(a.id).length} pieces ·{' '}
+                  {money(inAsm(a.id).reduce((t, i) => t + i.unitCost, 0))}
+                </span>
+                <span className="pmeta">{a.doneAt?.slice(0, 10)}</span>
+              </div>
+            ))}
+            {placed.map((i) => (
+              <div key={i.id} className="histitem">
+                <span style={{ color: 'var(--ok)' }}>✓</span>
+                <span>
+                  {i.label} — {i.status === 'shelved' ? (products.find((p) => p.batches.some((b) => b.id === i.batchId))?.name ?? 'on the shelf') : 'kept'}
+                </span>
+                <span className="pmeta">
+                  {money(i.unitCost)} · {i.placedAt?.slice(0, 10)}
+                </span>
+                {i.status === 'kept' && (
+                  <button
+                    type="button"
+                    className="linkbtn"
+                    style={{ marginLeft: 'auto', fontSize: 11, width: 'auto', marginTop: 0 }}
+                    disabled={busy}
+                    onClick={() => void act(() => placeItems(ctx.shop.id, detail.jobId, [i.id], { kind: 'back' }))}
+                  >
+                    not kept after all
+                  </button>
+                )}
+              </div>
+            ))}
+            {failed.map((i) => (
+              <div key={i.id} className="histitem">
+                <span style={{ color: 'var(--red)' }}>✕</span>
+                <span>
+                  {i.label} failed · {i.grams != null ? `${Math.round(i.grams)} g · ` : ''}
+                  {money(i.unitCost)} lost
+                </span>
+                <span className="pmeta">{i.printedOn}</span>
+                {i.note && <div className="histnote">{i.note}</div>}
+              </div>
+            ))}
+          </details>
+        )}
+      </div>
+    </section>
+  )
+}
+
 /** One file read and waiting for a yes: everything the review card asks. */
 interface PendingFile {
   key: string
@@ -2067,6 +2783,9 @@ interface PendingFile {
   dupOf: string | null
   /** Where each object goes, one per section (CG, 16 Oct). */
   sorts: SortGuess[]
+  /** Some objects on the plate failed (your own work): which, and weights. */
+  partial: boolean
+  results: ObjectResult[]
 }
 
 function SliceImport({
@@ -2106,6 +2825,7 @@ function SliceImport({
   // Offered only where printing belongs (stagePlan.canPrint). Before In
   // build a file is read in to price and plan -- never as printed.
   const printing = canPrint(detail.phase, detail.facts.kind)
+  const mine = detail.facts.kind === 'inhouse'
   const fileRef = useRef<HTMLInputElement>(null)
 
   const patchOne = (key: string, p: Partial<PendingFile>) =>
@@ -2142,6 +2862,8 @@ function SliceImport({
         )
         fresh.push({
           sorts: guessSort(parsed.sections, parsed.fileName, detail.parts, earlier),
+          partial: false,
+          results: [],
           key: `${file.name}-${crypto.randomUUID()}`,
           read: parsed,
           kept: packed,
@@ -2223,24 +2945,39 @@ function SliceImport({
     if (alreadyRecorded) {
       recorded = 'Its print was already recorded, so nothing was counted twice — use “Print it again” on the plate if it really printed twice.'
     } else if (printedNow && printerId) {
-      const grams = read.totals.estGrams == null ? 0 : Math.round(read.totals.estGrams)
+      const partial = mine && p.partial && p.results.some((r) => r.failed)
+      const grams = partial
+        ? Math.round(gramsUsed(p.results))
+        : read.totals.estGrams == null
+          ? 0
+          : Math.round(read.totals.estGrams)
       const hours = read.totals.estMinutes == null ? 0 : Math.round((read.totals.estMinutes / 60) * 100) / 100
       const clean = howWent === 'success'
       const usedG = clean ? grams : Math.round(stop?.units ?? grams)
       const usedH = clean ? hours : (stop?.hours ?? hours)
       const why = stopWhy.trim() || (howWent === 'cancelled' ? 'Stopped part way.' : 'The plate failed.')
-      const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, {
+      const runInput: PrintRunInput = {
         printerId,
         materialId: materialId || null,
         unitsUsed: materialId ? usedG : 0,
         hours: usedH,
         outcome: howWent,
-        failureReason: clean ? null : why,
+        failureReason: clean ? (partial ? stopWhy.trim() || 'Some objects failed.' : null) : why,
         note: clean ? `From ${read.fileName}` : (stop?.note ?? `From ${read.fileName}`),
         startedAt: p.printedOn || todayISO(),
         sliceImportId: res.importId,
-      })
+      }
+      const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, runInput)
       recordedNow.add(res.importId)
+      // Your own work: what came off, piece by piece, each at its share of
+      // the print -- ready to send to the shelf or into an assembly.
+      if (mine) {
+        const saved = (await listSliceImports(ctx.shop.id, detail.jobId)).find((x) => x.id === res.importId)
+        const ids = saved ? objectsOf(saved, []).map((o) => o.sectionId) : []
+        const objs = objectsOfRead(read, p.sorts, detail.parts).map((o, k) => ({ ...o, sectionId: ids[k] ?? null }))
+        const rs = partial ? p.results.map((r, k) => ({ ...r, sectionId: ids[k] ?? null, label: objs[k]?.label ?? r.label })) : null
+        await recordMadeItems(ctx.shop.id, detail.jobId, runId, madeFromPrint(ctx, { ...runInput, unitsUsed: usedG }, objs, rs))
+      }
       // The plate came off: each part on it gains the copies the plate
       // holds. Or it did not, and those copies fail with it.
       const marked = clean
@@ -2518,16 +3255,50 @@ function SliceImport({
                 {printedNow && (
                   <select
                     aria-label="How it went"
-                    value={p.howWent}
                     style={{ width: 'auto' }}
-                    onChange={(e) => patchOne(p.key, { howWent: e.target.value as RunOutcome, stop: null })}
+                    value={p.partial ? 'partial' : p.howWent}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      if (v === 'partial')
+                        patchOne(p.key, {
+                          howWent: 'success',
+                          partial: true,
+                          stop: null,
+                          results: objectsOfRead(read, p.sorts, detail.parts).map((o) => ({ ...o, failed: false, weighed: null })),
+                        })
+                      else patchOne(p.key, { howWent: v as RunOutcome, partial: false, stop: null })
+                    }}
                   >
                     <option value="success">Came off clean</option>
+                    {mine && objectsOfRead(read, p.sorts, detail.parts).length > 1 && (
+                      <option value="partial">Some objects failed</option>
+                    )}
                     <option value="cancelled">Stopped part way</option>
                     <option value="failed">Failed</option>
                   </select>
                 )}
               </div>
+            )}
+            {printedNow && p.partial && (
+              <>
+                <ObjectResults
+                  id={`imp-obj${sfx}`}
+                  results={p.results}
+                  unit={ctx.materials.find((m) => m.id === p.materialId)?.unit ?? 'g'}
+                  onChange={(r) => patchOne(p.key, { results: r })}
+                />
+                <div className="fld" style={{ marginTop: 8, marginBottom: 0 }}>
+                  <label className="lbl" htmlFor={`imp-why${sfx}`}>
+                    What went wrong
+                  </label>
+                  <input
+                    id={`imp-why${sfx}`}
+                    value={p.stopWhy}
+                    placeholder="Knocked off the plate, warped corner…"
+                    onChange={(e) => patchOne(p.key, { stopWhy: e.target.value })}
+                  />
+                </div>
+              </>
             )}
             {printedNow && p.howWent !== 'success' && (
               <>
@@ -2653,6 +3424,9 @@ function SliceRuns({
   const [correcting, setCorrecting] = useState<PrintRunRow | null>(null)
   /** The plate whose objects are being sorted onto parts, and the draft. */
   const [sorting, setSorting] = useState<string | null>(null)
+  /** Your own work: what came off, object by object (CG, 21 Oct). */
+  const mine = detail.facts.kind === 'inhouse'
+  const [results, setResults] = useState<ObjectResult[]>([])
   const [sortDraft, setSortDraft] = useState<Record<string, SortGuess>>({})
   const [sortMsg, setSortMsg] = useState<{ id: string; text: string } | null>(null)
 
@@ -2839,6 +3613,21 @@ function SliceRuns({
           sliceImportId: g.first.id,
         })
         await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, g.first.id, runId)
+        if (mine) {
+          const slice = detail.slices.find((x) => x.id === g.first.id)
+          if (slice)
+            await recordMadeItems(
+              ctx.shop.id,
+              detail.jobId,
+              runId,
+              madeFromPrint(
+                ctx,
+                { printerId: machineFor(g, ctx.printers) as string, materialId: g.first.materialId, unitsUsed: g.estGrams ?? 0, hours: g.estHours ?? 0, outcome: 'success', failureReason: null, note: null, startedAt: todayISO() },
+                objectsOf(slice, detail.parts),
+                null,
+              ),
+            )
+        }
       }
       await onChanged()
     } catch (e) {
@@ -2853,6 +3642,7 @@ function SliceRuns({
 
   function openCorrect(s: (typeof detail.slices)[number], run: PrintRunRow, outcome?: RunOutcome) {
     setError(null)
+    setResults(mine ? objectsOf(s, detail.parts).map((o) => ({ ...o, failed: false, weighed: null })) : [])
     setOpenId(s.id)
     setCorrecting(run)
     setMarkParts(true)
@@ -2871,6 +3661,7 @@ function SliceRuns({
 
   function open(s: (typeof detail.slices)[number]) {
     setError(null)
+    setResults(mine ? objectsOf(s, detail.parts).map((o) => ({ ...o, failed: false, weighed: null })) : [])
     setCorrecting(null)
     setOpenId(s.id)
     setForm({
@@ -2906,7 +3697,14 @@ function SliceRuns({
     setSaving(true)
     setError(null)
     try {
+      const slice = form.sliceImportId ? detail.slices.find((x) => x.id === form.sliceImportId) : null
+      const made = (runInput: PrintRunInput) =>
+        mine && slice ? madeFromPrint(ctx, runInput, objectsOf(slice, detail.parts), results) : null
       if (correcting) {
+        // What it made is rewritten first: if any of it is already placed
+        // that refuses, and the print is left as it was.
+        const items = made({ ...form, printerId: correcting.printerId ?? form.printerId, materialId: correcting.materialId })
+        if (items) await recordMadeItems(ctx.shop.id, detail.jobId, correcting.id, items)
         await correctPrintRun(
           ctx.shop.id,
           correcting.id,
@@ -2927,6 +3725,8 @@ function SliceRuns({
         return
       }
       const runId = await recordPrintRun(ctx.shop.id, detail.jobId, ctx.profile.id, form)
+      const items = made(form)
+      if (items) await recordMadeItems(ctx.shop.id, detail.jobId, runId, items)
       // The plate came off, so every object on it came off -- or it failed,
       // and every copy it was printing failed with it, so the reprint
       // workflow starts on the build sheet (CG, 13 Oct). Either way the
@@ -2961,8 +3761,9 @@ function SliceRuns({
       <div className="sechead">
         <h4>Plates</h4>
         <span className="sub">
-          One per sliced file. When a plate comes off the bed, record it: its copies are marked
-          printed and the filament comes off the shelf.
+          {mine
+            ? 'One per sliced file, newest print first. Record a plate when it comes off: the filament comes off the shelf and what came off goes to Made below.'
+            : 'One per sliced file. When a plate comes off the bed, record it: its copies are marked printed and the filament comes off the shelf.'}
         </span>
         {canPrint(detail.phase, detail.facts.kind) && ready.length > 1 && (
           <button
@@ -3240,6 +4041,7 @@ function SliceRuns({
                     key={r.id}
                     run={r}
                     parts={detail.parts}
+                    hideMarks={mine}
                     busy={busy || saving}
                     onCorrect={openId === s.id ? undefined : () => openCorrect(s, r)}
                     onRemove={async (undo) => {
@@ -3400,7 +4202,20 @@ function SliceRuns({
                     </select>
                   </div>
                 </div>
-                {form.outcome !== 'success' && (
+                {mine && form.outcome === 'success' && results.length > 1 && (
+                  <ObjectResults
+                    id={`sr-obj-${s.id}`}
+                    results={results}
+                    unit={unit}
+                    onChange={(r) => {
+                      setResults(r)
+                      // What left the spool: what came off at the file's
+                      // grams, what failed at what it weighed.
+                      setForm((f) => f && { ...f, unitsUsed: Math.round(gramsUsed(r)) })
+                    }}
+                  />
+                )}
+                {(form.outcome !== 'success' || (mine && results.some((r) => r.failed))) && (
                   <div className="fld">
                     <label className="lbl" htmlFor={`sr-why-${s.id}`}>
                       What went wrong
@@ -4162,6 +4977,9 @@ function BuildSheet({
    * that plate's prints; only a part with no plate is marked by hand.
    */
   const groupsAll = groupSliceFiles(detail.slices, detail.runs)
+  /** Your own work is plates and what they made -- no parts list beside
+   *  them (CG, 21 Oct: "We can just use plates and what it took"). */
+  const plateOnly = detail.facts.kind === 'inhouse'
   const platesOf = (partId: string) =>
     groupsAll.filter((g) => detail.slices.find((x) => x.id === g.first.id)?.sections.some((sec) => sec.partId === partId))
   /** Objects on a plate that no part on this list counts -- their part was
@@ -4349,7 +5167,7 @@ function BuildSheet({
           something has to go back on a machine. Voltage offered the move
           rather than making it, because three other parts may still be
           being checked, and that is the behaviour kept here. */}
-      {shouldReturnToBuilding(detail.phase, detail.parts) && (
+      {!plateOnly && shouldReturnToBuilding(detail.phase, detail.parts) && (
         <div className="attn warn" style={{ marginBottom: 10 }}>
           <b>A part was sent back.</b>
           <div style={{ marginTop: 4, fontSize: 12 }}>
@@ -4382,7 +5200,7 @@ function BuildSheet({
       {/* No separate failures line (CG, 20 Oct: "still is confusing ... just
           eliminate that section"). Each failure is on its plate's print, and
           What it took totals what failures cost. */}
-      {detail.parts.length === 0 && uncounted.length === 0 ? (
+      {plateOnly ? null : detail.parts.length === 0 && uncounted.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--txt-2)', marginTop: 14 }}>
           Nothing here yet — drop the sliced files above. Each one becomes a plate, and what is on it
           is listed here as what this project makes. Something with no file can be added by hand
@@ -4866,7 +5684,7 @@ function BuildSheet({
         </>
       )}
 
-      {detail.parts.length > 0 && (
+      {detail.parts.length > 0 && !plateOnly && (
         <div className="sheetsum">
           <span>One box per copy: amber = printed · green = passed · red = going back · dashed = reprint queued</span>
           <span style={{ marginLeft: 'auto' }}>
@@ -4890,7 +5708,7 @@ function BuildSheet({
           before plates and parts were one list (CG's Maui: LAND FLUSH and
           MauiNui printed, but the sheet said 2 of 2). One click counts them,
           from their prints. */}
-      {uncounted.length > 0 && (
+      {uncounted.length > 0 && !plateOnly && (
         <div className="attn warn" role="note" aria-label="Not counted" style={{ marginTop: 10 }}>
           <div style={{ flex: 1 }}>
             <b>
@@ -4972,7 +5790,7 @@ function BuildSheet({
           being built. From Review on the list has been checked, so adding to
           it needs a reason, which goes in Activity -- CG: "allow projects
           to be editable in terms of adding more pieces". */}
-      {!byHand && !(detail.parts.length === 0 && detail.slices.length === 0) ? (
+      {plateOnly ? null : !byHand && !(detail.parts.length === 0 && detail.slices.length === 0) ? (
         <button
           type="button"
           className="linkbtn"
@@ -5072,10 +5890,12 @@ function BuildSheet({
  * their own time, and what failures cost of it.
  */
 function TookTotals({
+  ctx,
   detail,
   money,
   fromPlates,
 }: {
+  ctx: ShopContext
   detail: ProjectDetail
   money: (n: number) => string
   fromPlates: number
@@ -5086,7 +5906,25 @@ function TookTotals({
   const lostH = lost.reduce((t, r) => t + (r.hours ?? 0), 0)
   // From the prints themselves: a stopped print burned filament too, which
   // the actuals' failedUnits (failed outcomes only) leaves out.
-  const lostU = lost.reduce((t, r) => t + (r.unitsUsed ?? 0), 0)
+  const lostRunsU = lost.reduce((t, r) => t + (r.unitsUsed ?? 0), 0)
+  // And on your own work, the objects that failed on a plate that otherwise
+  // came off (CG, 21 Oct) -- each one's grams and its share of the print.
+  const [pieces, setPieces] = useState<MadeItemRow[]>([])
+  const runKey = detail.runs.map((r) => `${r.id}:${r.unitsUsed}:${r.outcome}`).join('|')
+  useEffect(() => {
+    if (detail.facts.kind !== 'inhouse') return
+    let live = true
+    listMadeItems(ctx.shop.id, detail.jobId)
+      .then((x) => live && setPieces(x))
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [ctx.shop.id, detail.jobId, detail.facts.kind, runKey])
+  const okRuns = new Set(detail.runs.filter((r) => r.outcome === 'success').map((r) => r.id))
+  const partFails = pieces.filter((p) => p.status === 'failed' && p.runId && okRuns.has(p.runId))
+  const lostU = lostRunsU + partFails.reduce((t, p) => t + (p.grams ?? 0), 0)
+  const lostN = lost.length + partFails.length
   const unit = detail.runs[0]?.unit ?? 'g'
   return (
     <div className="tooktot" data-testid="took-totals">
@@ -5112,11 +5950,18 @@ function TookTotals({
       </div>
       <div>
         <span className="lbl">Lost to failures</span>
-        <b style={{ color: lost.length ? 'var(--red)' : undefined }}>
-          {lost.length ? `${Math.round(lostU)} ${unit} · ${fmtHours(lostH)}` : 'none'}
+        <b style={{ color: lostN ? 'var(--red)' : undefined }}>
+          {lostN ? `${Math.round(lostU)} ${unit}${lostH > 0 ? ` · ${fmtHours(lostH)}` : ''}` : 'none'}
         </b>
         <span className="sub">
-          {lost.length ? `${lost.length} print${lost.length === 1 ? '' : 's'} that did not finish` : 'every print came off'}
+          {lostN
+            ? [
+                lost.length ? `${lost.length} print${lost.length === 1 ? '' : 's'} that did not finish` : null,
+                partFails.length ? `${partFails.length} object${partFails.length === 1 ? '' : 's'} failed on a plate` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')
+            : 'every print came off'}
         </span>
       </div>
     </div>
@@ -5403,7 +6248,7 @@ function RunLog({
 
       {(detail.runs.length > 0 || detail.work.length > 0) && (
         <div style={{ marginTop: 12 }}>
-          <TookTotals detail={detail} money={money} fromPlates={fromPlates.length} />
+          <TookTotals ctx={ctx} detail={detail} money={money} fromPlates={fromPlates.length} />
           {looseRuns.map((r) => (
             <PrintLine
               key={r.id}
@@ -5748,273 +6593,6 @@ function PrioritySelect({
 // import honest means a future "what will this stage ask for?" preview has
 // the definitions to hand without another round of plumbing.
 void GATES
-
-/**
- * What this job actually produced.
- *
- * Only on in-house work, because that is the only kind where the answer is
- * units on a shelf rather than a delivery to somebody. A shop that prints
- * two hundred keychains has turned a job's cost into stock, and until this
- * existed the cost was recorded and the stock was not, so the job read as
- * pure expense forever.
- *
- * The unit cost is frozen here, from what the job actually recorded --
- * material at what the shop paid, machine, wear and the hands-on hours --
- * divided by the units made. Design hours are deliberately left OUT and
- * carried on the product instead. Design in both places would tell the shop
- * the thing costs more than it does AND that it has recovered less than it
- * has. See splitJobCost.
- */
-function MadeSection({
-  ctx,
-  detail,
-  money,
-  onSaved,
-  setError,
-}: {
-  ctx: ShopContext
-  detail: ProjectDetail
-  money: (n: number) => string
-  onSaved: () => void
-  setError: (m: string | null) => void
-}) {
-  const [products, setProducts] = useState<ProductRow[]>([])
-  const [productId, setProductId] = useState('')
-  const [name, setName] = useState('')
-  const [units, setUnits] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  /** Read the shelf -- on open, and again after every batch, so the next
-   *  batch knows what this piece has already put there (and what cost has
-   *  already gone with it). */
-  const loadShelf = useCallback(async () => {
-    try {
-      const rows = await listShelf(ctx.shop.id)
-      setProducts(rows.filter((p) => !p.archived))
-    } catch {
-      // The shelf being unreadable must not take the project page down
-      // with it. The form still works; it just cannot offer existing
-      // products to add to.
-    }
-  }, [ctx.shop.id])
-  useEffect(() => {
-    void loadShelf()
-  }, [loadShelf])
-
-  /** Batches already recorded against THIS job, so the section says what it
-   *  has done rather than offering to do it again from scratch. */
-  const already = useMemo(
-    () =>
-      products.flatMap((p) =>
-        p.batches.filter((b) => b.job_id === detail.jobId).map((b) => ({ product: p, batch: b })),
-      ),
-    [products, detail.jobId],
-  )
-
-  const split = splitJobCost(
-    { actualCost: detail.facts.actualCost, designHours: detail.actuals.designHours },
-    Number(ctx.rateCard.design_hourly),
-  )
-  // A piece can put batch after batch on the shelf from Working (CG, 13 Oct).
-  // Each batch carries only the cost logged since the last -- the whole
-  // job's cost every time made the second batch pay for the first.
-  const unshelved = unshelvedProduction(
-    split,
-    already.map(({ batch }) => ({ unitsMade: Number(batch.units_made), unitCost: Number(batch.unit_cost) })),
-  )
-  const n = Number(units) || 0
-  const unitCost = unitCostFrom({ ...split, production: unshelved }, n)
-  const [saved, setSaved] = useState<string | null>(null)
-  // The next batch of a piece is usually more of the same thing.
-  const lastProduct = already.length ? already[already.length - 1].product.id : ''
-  useEffect(() => {
-    if (lastProduct) setProductId((cur) => cur || lastProduct)
-  }, [lastProduct])
-  const isNew = productId === ''
-
-  async function record() {
-    setBusy(true)
-    setError(null)
-    try {
-      const id = isNew
-        ? await saveProduct(ctx.shop.id, {
-            name,
-            designJobId: detail.jobId,
-            // The design investment, recorded once, on the product. Null
-            // rather than zero when nothing was logged: "not tracked" and
-            // "free" are different answers and the payback says so.
-            designCost: split.design > 0 ? split.design : null,
-            designHours: detail.actuals.designHours > 0 ? detail.actuals.designHours : null,
-          })
-        : productId
-      await saveBatch(ctx.shop.id, {
-        productId: id,
-        jobId: detail.jobId,
-        unitsMade: n,
-        unitCost,
-        madeOn: todayISO(),
-      })
-      const what = isNew ? name.trim() : (products.find((p) => p.id === productId)?.name ?? 'it')
-      setUnits('')
-      setName('')
-      // Stay here: a piece in Working puts batch after batch on the shelf,
-      // and being thrown to the Shelf page after each one is the long way round.
-      setSaved(`${n} × ${what} on the shelf at ${money(unitCost)} each.`)
-      await loadShelf()
-      onSaved()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <section className="sec">
-      <div className="sechead">
-        <h4>What this made</h4>
-        <span className="secstat">
-          {already.length > 0
-            ? `${already.reduce((t, a) => t + Number(a.batch.units_made), 0)} on the shelf` +
-              (unshelved > 0 ? ` · ${money(unshelved)} not shelved yet` : '')
-            : detail.facts.hasActuals
-              ? `${money(split.production)} of production recorded`
-              : 'nothing recorded yet'}
-        </span>
-      </div>
-      <div className="pane" style={{ marginBottom: 0 }}>
-        {already.length > 0 && (
-          <div className="guide" style={{ marginTop: 0, marginBottom: 12 }}>
-            {already.map(({ product, batch }) => (
-              <div className="guide-g" key={batch.id}>
-                <div className="guide-h">
-                  <span className="guide-tag alt">Recorded</span>
-                  <Link to="/shelf" className="addnote" style={{ marginLeft: 'auto' }}>
-                    on the shelf
-                  </Link>
-                </div>
-                <div className="guide-kv">
-                  <div className="guide-r">
-                    <span className="k">
-                      {batch.units_made} × {product.name}
-                    </span>
-                    <span className="v">{money(Number(batch.unit_cost))} each</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {!detail.facts.hasActuals ? (
-          <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>
-            Log the runs and hours above first. The cost of what this made comes from what was
-            actually recorded, not from a number typed here.
-          </div>
-        ) : (
-          <>
-            {saved && (
-              <div className="hint" role="status" style={{ color: 'var(--ok)', marginTop: 0, marginBottom: 8 }}>
-                {saved}{' '}
-                <Link to="/shelf" className="addnote">
-                  See the shelf
-                </Link>
-              </div>
-            )}
-            <div style={{ fontSize: 12, color: 'var(--txt-2)', marginBottom: 10 }}>
-              {already.length > 0
-                ? `Another batch takes the cost logged since the last one — ${money(unshelved)} so far. Put units on the shelf as they come off; the rest of the cost stays here until they do.`
-                : 'This has cost real money so far. Units you can sell carry their share onto the shelf instead of sitting here as pure expense — put them there as they come off, a batch at a time.'}
-            </div>
-            <div className="grid3">
-              <div className="fld">
-                <label className="lbl" htmlFor="md-product">What did it make</label>
-                <select
-                  id="md-product"
-                  value={productId}
-                  onChange={(e) => setProductId(e.target.value)}
-                >
-                  <option value="">Something new</option>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-              </div>
-              {isNew && (
-                <div className="fld">
-                  <label className="lbl" htmlFor="md-name">Call it</label>
-                  <input
-                    id="md-name"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Hex keychain"
-                  />
-                </div>
-              )}
-              <div className="fld">
-                <label className="lbl" htmlFor="md-units">How many usable units</label>
-                <input
-                  id="md-units"
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={units}
-                  onChange={(e) => setUnits(e.target.value)}
-                />
-                <div className="hint">Failed prints stay a cost. Only count what you can sell.</div>
-              </div>
-            </div>
-
-            {n > 0 && (
-              <div className="guide" style={{ marginTop: 10 }}>
-                <div className="guide-g">
-                  <div className="guide-h"><span className="guide-tag">Yours</span></div>
-                  <div className="guide-kv">
-                    <div className="guide-r">
-                      <span className="k">
-                        {already.length > 0 ? 'Production logged since the last batch' : 'Production recorded on this job'}
-                      </span>
-                      <span className="v">{money(unshelved)}</span>
-                    </div>
-                    <div className="guide-r">
-                      <span className="k">Each one cost you</span>
-                      <span className="v">{money(unitCost)}</span>
-                    </div>
-                    {split.design > 0 && (
-                      <div className="guide-r">
-                        <span className="k">
-                          Design, {fmtHours(detail.actuals.designHours)} — carried on the product
-                        </span>
-                        <span className="v">{money(split.design)}</span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="guide-note">
-                    Frozen at today. Filament costing what it costs now is what these units cost,
-                    whatever a spool costs next year.
-                    {split.design > 0 &&
-                      ' Design is kept off the unit cost and reported as a payback instead, so making more of them never rewrites what the first batch cost.'}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-              <button
-                type="button"
-                className="btn primary"
-                disabled={busy || n < 1 || (isNew && !name.trim())}
-                onClick={record}
-              >
-                {busy ? 'Saving…' : 'Put them on the shelf'}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </section>
-  )
-}
 
 /**
  * The project's name, renamable from the header at any stage.
@@ -7280,9 +7858,12 @@ function PrintLine({
   onRemove,
   onCorrect,
   showFile,
+  hideMarks = false,
 }: {
   run: PrintRunRow
   parts: PartRow[]
+  /** Your own work tracks pieces in Made, not copies on a parts list. */
+  hideMarks?: boolean
   busy: boolean
   onRemove: (undoCopies: boolean) => Promise<void>
   onCorrect?: () => void
@@ -7291,9 +7872,16 @@ function PrintLine({
 }) {
   const [removing, setRemoving] = useState(false)
   const [undoCopies, setUndoCopies] = useState(true)
-  const marked = runMarks(parts, r.id)
+  const marked = hideMarks ? [] : runMarks(parts, r.id)
   const n = marked.reduce((a, m) => a + m.copies.length, 0)
-  const how = r.outcome === 'success' ? 'came off clean' : r.outcome === 'failed' ? 'failed' : 'stopped part way'
+  const how =
+    r.outcome === 'success'
+      ? r.failureReason
+        ? 'came off, some objects failed'
+        : 'came off clean'
+      : r.outcome === 'failed'
+        ? 'failed'
+        : 'stopped part way'
   // The note "From <file>" says nothing under the file's own heading.
   const note = r.note && r.note !== r.failureReason && !/^From [^—]*$/.test(r.note.trim()) ? r.note : null
   return (

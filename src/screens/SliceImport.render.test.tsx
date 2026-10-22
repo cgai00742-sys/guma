@@ -377,10 +377,11 @@ describe("the shop's own work", () => {
    * precisely the work most likely to be sliced and re-sliced. No test saw
    * it, because every test that touched the build sheet used a client job.
    */
-  it('has a build sheet at all', async () => {
+  it('has its plates and prints, and what they made (CG, 21 Oct)', async () => {
     const { ctx, jobId } = await seedShop('inhouse')
     await renderProject(jobId, ctx)
-    expect(screen.getByRole('heading', { name: /build sheet/i })).toBeDefined()
+    expect(screen.getByRole('heading', { name: /plates and prints/i })).toBeDefined()
+    expect(screen.getByRole('heading', { name: /^made$/i })).toBeDefined()
   })
 
   it('still hides money and the handover, which really do not apply', async () => {
@@ -417,7 +418,7 @@ describe("the shop's own work", () => {
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
-    await screen.findByText('Buoy shell')
+    await within(await screen.findByRole('region', { name: /^plates$/i })).findByText('Buoy shell ×2, Cap')
 
     // In-house work has no quote to compare against, so its actual cost is
     // the only number it has. Polluting that would be worse here, not less
@@ -945,7 +946,8 @@ describe("CG's Maui: one G-code uploaded several times, project at Made", () => 
 
 describe('moving a project backwards', () => {
   it('is offered beside the stages on a Done project, needs a reason, and logs it', async () => {
-    const { ctx, jobId, data } = await seedShop('inhouse')
+    const { ctx, jobId, data } = await seedShop()
+    // A client job: your own work no longer has stages (CG, 21 Oct).
     for (const to of ['review', 'delivered'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
     }
@@ -957,8 +959,8 @@ describe('moving a project backwards', () => {
     // Every earlier stage can be chosen, the nearest first-selected.
     const to = screen.getByLabelText(/^move back to$/i) as HTMLSelectElement
     expect(to.value).toBe('review')
-    await user.selectOptions(to, 'design')
-    const move = screen.getByRole('button', { name: /^move back to working/i })
+    await user.selectOptions(to, 'building')
+    const move = screen.getByRole('button', { name: /^move back to /i })
     expect((move as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
     await user.type(screen.getByLabelText(/what needs fixing/i), 'Coastline off by a layer')
     await user.click(move)
@@ -968,7 +970,7 @@ describe('moving a project backwards', () => {
         phase: string
         archived_at: string | null
       }
-      expect(j).toEqual({ phase: 'design', archived_at: null })
+      expect(j).toEqual({ phase: 'building', archived_at: null })
     })
     await screen.findByText(/Moved back from .* to .*\. Why: Coastline off by a layer/)
   })
@@ -976,7 +978,7 @@ describe('moving a project backwards', () => {
 
 describe('adding parts after the sheet was checked', () => {
   it('lets a project at Made take another piece, with a reason in Activity', async () => {
-    const { ctx, jobId, data } = await seedShop('inhouse')
+    const { ctx, jobId, data } = await seedShop()
     await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Maui Top', qty: 1 })
     for (const to of ['review'] as const) {
       await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
@@ -1085,7 +1087,7 @@ describe("CG's PrusaSlicer .bgcode, imported and recorded", () => {
 
 describe('removing a part that is wrong', () => {
   it('asks first, removes it, and records it in Activity', async () => {
-    const { ctx, jobId, data } = await seedShop('inhouse')
+    const { ctx, jobId, data } = await seedShop()
     await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Maui Top', qty: 1 })
     await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Wrong piece', qty: 2 })
     const user = userEvent.setup()
@@ -1102,7 +1104,7 @@ describe('removing a part that is wrong', () => {
   })
 
   it('works on a project at Made too, with a reason', async () => {
-    const { ctx, jobId, data } = await seedShop('inhouse')
+    const { ctx, jobId, data } = await seedShop()
     await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Maui Top', qty: 1 })
     await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Duplicate', qty: 1 })
     for (const to of ['review'] as const) {
@@ -1459,7 +1461,7 @@ describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
 
 describe('one list: what the plates make is what the project makes (CG, 21 Oct)', () => {
   it('a part a plate makes is marked by its prints, not by hand, and cannot be removed out from under the plate', async () => {
-    const { ctx, jobId } = await seedShop('inhouse')
+    const { ctx, jobId } = await seedShop()
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
@@ -1474,7 +1476,7 @@ describe('one list: what the plates make is what the project makes (CG, 21 Oct)'
   })
 
   it('counts a plate object whose part was removed, from its prints, in one click', async () => {
-    const { ctx, jobId, data } = await seedShop('inhouse')
+    const { ctx, jobId, data } = await seedShop()
     const d = data as any
     const imp = await d.importSlice(ctx.shop.id, jobId, ctx.profile.id, {
       fileName: 'Sliced_Maui_LAND_FLUSH_6h18m.bgcode', kind: 'gcode', printerModel: 'Prusa XL', printerId: ctx.printers[0].id,
@@ -1500,5 +1502,71 @@ describe('one list: what the plates make is what the project makes (CG, 21 Oct)'
       ]),
     )
     await waitFor(() => expect(screen.queryByRole('note', { name: /not counted/i })).toBeNull())
+  })
+})
+
+describe('plates, what came off, and where it went (CG, 21 Oct)', () => {
+  it('records a plate where one object failed, then assembles the good pieces onto the shelf', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    // No parts list on your own work: plates, what they made, what it took.
+    expect(screen.queryByRole('region', { name: /what this makes/i })).toBeNull()
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'partial')
+    const off = screen.getByRole('group', { name: /what came off the plate/i })
+    await user.click(within(off).getByRole('checkbox', { name: /^cap came off$/i }))
+    await user.type(within(off).getByLabelText(/what the failed cap weighs/i), '5')
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Knocked off')
+    await user.click(screen.getByRole('button', { name: /record the print/i }))
+
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select label, status from made_items order by rowid').all()).toEqual([
+        { label: 'Buoy shell', status: 'made' },
+        { label: 'Buoy shell', status: 'made' },
+        { label: 'Cap', status: 'failed' },
+      ]),
+    )
+    // Off the spool: the two shells at the file's grams, and the cap at what it weighed.
+    const run = currentDb.sqlite.prepare('select units_used, outcome, failure_reason from print_runs').get() as any
+    const shells = currentDb.sqlite.prepare("select sum(grams) as g from made_items where label = 'Buoy shell'").get() as { g: number }
+    expect(run).toEqual({ units_used: Math.round(shells.g + 5), outcome: 'success', failure_reason: 'Knocked off' })
+    // Each piece carries its share; the shares add up to the print.
+    const sum = currentDb.sqlite.prepare('select sum(unit_cost) as c from made_items').get() as { c: number }
+    expect(sum.c).toBeGreaterThan(0)
+
+    // An assembly that needs both shells.
+    const made = await screen.findByRole('region', { name: /^made$/i })
+    await user.click(within(made).getByRole('button', { name: /new assembly/i }))
+    await user.type(within(made).getByLabelText(/what it is/i), 'Buoy set')
+    await user.type(within(made).getByLabelText(/needs, line 1/i), 'Buoy shell')
+    await user.clear(within(made).getByLabelText(/how many, line 1/i))
+    await user.type(within(made).getByLabelText(/how many, line 1/i), '2')
+    await user.click(within(made).getByRole('button', { name: /start it/i }))
+    const asm = await within(made).findByRole('group', { name: /assembly buoy set/i })
+    expect(within(asm).getByText(/Buoy shell 0\/2/)).toBeDefined()
+    for (const box of within(made).getAllByRole('checkbox', { name: /pick buoy shell/i })) await user.click(box)
+    await user.selectOptions(within(made).getByLabelText(/send to/i), within(made).getByRole('option', { name: 'Buoy set' }))
+    await user.click(within(made).getByRole('button', { name: /^send$/i }))
+    expect(await within(asm).findByText(/has everything it needs/)).toBeDefined()
+
+    // The print cannot be removed now: what it made is in an assembly.
+    const plates = screen.getByRole('region', { name: /^plates$/i })
+    await user.click(within(plates).getByRole('button', { name: /^remove the print of/i }))
+    await user.click(screen.getByRole('button', { name: /^remove it$/i }))
+    expect(await screen.findAllByText(/take it back first/)).not.toHaveLength(0)
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 1 })
+
+    // Finished onto the shelf: one unit, at the sum of the two shells.
+    await user.click(within(asm).getByRole('button', { name: /finish buoy set/i }))
+    await user.click(within(asm).getByRole('button', { name: /finish it/i }))
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select p.name, b.units_made from batches b join products p on p.id = b.product_id').all()).toEqual([
+        { name: 'Buoy set', units_made: 1 },
+      ]),
+    )
+    const b = currentDb.sqlite.prepare('select unit_cost from batches').get() as { unit_cost: number }
+    const pieces = currentDb.sqlite.prepare("select sum(unit_cost) as c from made_items where label = 'Buoy shell'").get() as { c: number }
+    expect(b.unit_cost).toBeCloseTo(pieces.c, 5)
   })
 })

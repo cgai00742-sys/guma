@@ -39,6 +39,14 @@ import {
   CHANGE_CAUSE_LABEL,
   sameSliceFile,
   uniqueLabel,
+  validateMadeItems,
+  shelfNote,
+  type MadeItemRow,
+  type MadeItemInput,
+  type AssemblyRow,
+  type AssemblyInput,
+  type ItemPlace,
+  type MadeStatus,
   type SectionAssign,
   type SectionMoveResult,
   describeHolds,
@@ -2608,6 +2616,14 @@ export async function correctPrintRun(
  *  book, and a mistyped run skews every figure downstream of it. */
 export async function deletePrintRun(shopId: string, runId: string, undoCopies = false): Promise<number> {
   const d = await db()
+  // What it made and has been placed -- on the shelf, in an assembly, kept --
+  // has to come back first, or the shelf would hold units no print made.
+  const placed = await d.select<{ n: number }[]>(
+    "select count(*) as n from made_items where run_id = ? and status in ('shelved', 'assembled', 'kept')",
+    [runId],
+  )
+  if (Number(placed[0]?.n ?? 0) > 0)
+    throw new Error('Some of what this print made is already on the shelf, in an assembly or kept — take it back first.')
   let undone = 0
   if (undoCopies) {
     const [run] = await d.select<{ job_id: string; slice_import_id: string | null }[]>(
@@ -4398,4 +4414,271 @@ export async function skipCopy(
     [partId, before.jobId, String(copy + 1), body, actorId],
   )
   await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [before.jobId, actorId, body])
+}
+
+
+/* ---- what each print made (0039) --------------------------------------
+ * One row per object off a print, carrying its share of the print's cost,
+ * and where it went -- shelf, assembly, kept (CG, 21 Oct). lib/madeItems.ts
+ * does the arithmetic; this keeps the rows.
+ */
+
+interface MadeSql {
+  id: string
+  job_id: string
+  run_id: string | null
+  section_id: string | null
+  label: string
+  grams: number | null
+  unit_cost: number
+  status: MadeStatus
+  assembly_id: string | null
+  batch_id: string | null
+  note: string | null
+  created_at: string
+  placed_at: string | null
+  printed_on: string | null
+  file_name: string | null
+}
+
+const madeRow = (r: MadeSql): MadeItemRow => ({
+  id: r.id,
+  jobId: r.job_id,
+  runId: r.run_id,
+  sectionId: r.section_id,
+  label: r.label,
+  grams: r.grams == null ? null : Number(r.grams),
+  unitCost: Number(r.unit_cost),
+  status: r.status,
+  assemblyId: r.assembly_id,
+  batchId: r.batch_id,
+  note: r.note,
+  createdAt: r.created_at,
+  placedAt: r.placed_at,
+  printedOn: r.printed_on ? String(r.printed_on).slice(0, 10) : null,
+  fileName: r.file_name,
+})
+
+export async function listMadeItems(shopId: string, jobId: string): Promise<MadeItemRow[]> {
+  const d = await db()
+  const rows = await d.select<MadeSql[]>(
+    `select m.*, r.started_at as printed_on, i.file_name
+       from made_items m
+       left join print_runs r on r.id = m.run_id
+       left join slice_sections s on s.id = m.section_id
+       left join slice_imports i on i.id = s.import_id
+      where m.shop_id = ? and m.job_id = ?
+      order by coalesce(r.started_at, m.created_at) desc, r.rowid desc, m.rowid`,
+    [shopId, jobId],
+  )
+  return rows.map(madeRow)
+}
+
+/**
+ * Write what one print made. Recording again replaces what it made before,
+ * unless any of that has been placed -- then it refuses, rather than leave
+ * the shelf holding something the print no longer says it made.
+ */
+export async function recordMadeItems(shopId: string, jobId: string, runId: string, items: MadeItemInput[]): Promise<void> {
+  validateMadeItems(items)
+  const d = await db()
+  const [run] = await d.select<{ job_id: string }[]>('select job_id from print_runs where id = ? and shop_id = ?', [runId, shopId])
+  if (!run || run.job_id !== jobId) throw new Error('That print is not on this project.')
+  const placed = await d.select<{ n: number }[]>(
+    "select count(*) as n from made_items where run_id = ? and status in ('shelved', 'assembled', 'kept')",
+    [runId],
+  )
+  if (Number(placed[0]?.n ?? 0) > 0) throw new Error('Some of what this print made is already placed — take it back first.')
+  await d.execute('delete from made_items where run_id = ?', [runId])
+  for (const it of items) {
+    await d.execute(
+      `insert into made_items (id, shop_id, job_id, run_id, section_id, label, grams, unit_cost, status, note)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [uuid(), shopId, jobId, runId, it.sectionId, it.label.trim(), it.grams, it.unitCost, it.failed ? 'failed' : 'made', it.note ?? null],
+    )
+  }
+}
+
+async function itemsFor(shopId: string, ids: string[]): Promise<MadeSql[]> {
+  if (!ids.length) return []
+  const d = await db()
+  return d.select<MadeSql[]>(
+    `select m.*, null as printed_on, null as file_name from made_items m
+      where m.shop_id = ? and m.id in (${ids.map(() => '?').join(',')})`,
+    [shopId, ...ids],
+  )
+}
+
+/**
+ * Put items somewhere. The shelf takes them as one batch of a product at
+ * their average cost (the batch's cost is frozen, like every batch); an
+ * assembly takes them while it is open; kept means not for sale; back
+ * returns them to "made" -- from an open assembly or from kept, never from
+ * the shelf, where they may already have sold.
+ */
+export async function placeItems(shopId: string, jobId: string, ids: string[], to: ItemPlace): Promise<{ batchId?: string }> {
+  const d = await db()
+  const rows = await itemsFor(shopId, ids)
+  if (rows.length !== ids.length || rows.some((r) => r.job_id !== jobId)) throw new Error('Those items are not all on this project.')
+  if (!rows.length) return {}
+  if (to.kind === 'back') {
+    for (const r of rows) {
+      if (r.status === 'shelved') throw new Error(`${r.label} is on the shelf and may have sold — it cannot come back from there.`)
+      if (r.status === 'failed') throw new Error(`${r.label} failed; it stays a failure.`)
+      if (r.assembly_id) {
+        const [a] = await d.select<{ status: string }[]>('select status from assemblies where id = ?', [r.assembly_id])
+        if (a?.status === 'done') throw new Error(`${r.label} is in a finished assembly.`)
+      }
+    }
+    await d.execute(
+      `update made_items set status = 'made', assembly_id = null, placed_at = null
+        where shop_id = ? and id in (${ids.map(() => '?').join(',')})`,
+      [shopId, ...ids],
+    )
+    return {}
+  }
+  const bad = rows.find((r) => r.status !== 'made')
+  if (bad) throw new Error(`${bad.label} is ${bad.status === 'failed' ? 'a failed print' : 'already placed'}.`)
+  const now = new Date().toISOString()
+  if (to.kind === 'kept') {
+    await d.execute(
+      `update made_items set status = 'kept', placed_at = ? where shop_id = ? and id in (${ids.map(() => '?').join(',')})`,
+      [now, shopId, ...ids],
+    )
+    return {}
+  }
+  if (to.kind === 'assembly') {
+    const [a] = await d.select<{ job_id: string; status: string }[]>('select job_id, status from assemblies where id = ? and shop_id = ?', [to.assemblyId, shopId])
+    if (!a || a.job_id !== jobId) throw new Error('That assembly is not on this project.')
+    if (a.status !== 'open') throw new Error('That assembly is finished.')
+    await d.execute(
+      `update made_items set status = 'assembled', assembly_id = ?, placed_at = ?
+        where shop_id = ? and id in (${ids.map(() => '?').join(',')})`,
+      [to.assemblyId, now, shopId, ...ids],
+    )
+    return {}
+  }
+  const productId =
+    to.productId ??
+    (await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null }))
+  const total = rows.reduce((a, r) => a + Number(r.unit_cost), 0)
+  const batchId = await saveBatch(shopId, {
+    productId,
+    jobId,
+    unitsMade: rows.length,
+    unitCost: Math.round((total / rows.length) * 1e6) / 1e6,
+    madeOn: to.madeOn,
+    note: shelfNote(rows.map((r) => r.label)),
+  })
+  await d.execute(
+    `update made_items set status = 'shelved', batch_id = ?, placed_at = ?
+      where shop_id = ? and id in (${ids.map(() => '?').join(',')})`,
+    [batchId, now, shopId, ...ids],
+  )
+  return { batchId }
+}
+
+interface AssemblySql {
+  id: string
+  job_id: string
+  name: string
+  needs: string
+  status: 'open' | 'done'
+  batch_id: string | null
+  created_at: string
+  done_at: string | null
+}
+const assemblyRow = (r: AssemblySql): AssemblyRow => ({
+  id: r.id,
+  jobId: r.job_id,
+  name: r.name,
+  needs: parseNeedsText(r.needs),
+  status: r.status,
+  batchId: r.batch_id,
+  createdAt: r.created_at,
+  doneAt: r.done_at,
+})
+
+function parseNeedsText(t: string | null): { label: string; qty: number }[] {
+  try {
+    const v = JSON.parse(t || '[]')
+    return Array.isArray(v) ? v.filter((x) => x && typeof x.label === 'string' && Number(x.qty) > 0).map((x) => ({ label: String(x.label), qty: Math.floor(Number(x.qty)) })) : []
+  } catch {
+    return []
+  }
+}
+
+function cleanNeeds(needs: { label: string; qty: number }[]) {
+  return needs
+    .map((n) => ({ label: n.label.trim(), qty: Math.floor(Number(n.qty)) }))
+    .filter((n) => n.label && n.qty > 0)
+}
+
+export async function listAssemblies(shopId: string, jobId: string): Promise<AssemblyRow[]> {
+  const d = await db()
+  const rows = await d.select<AssemblySql[]>(
+    'select * from assemblies where shop_id = ? and job_id = ? order by status, created_at desc',
+    [shopId, jobId],
+  )
+  return rows.map(assemblyRow)
+}
+
+export async function saveAssembly(shopId: string, jobId: string, next: AssemblyInput): Promise<string> {
+  const name = next.name.trim()
+  if (!name) throw new Error('An assembly needs a name.')
+  const d = await db()
+  const needs = JSON.stringify(cleanNeeds(next.needs))
+  if (next.id) {
+    const [a] = await d.select<{ status: string }[]>('select status from assemblies where id = ? and shop_id = ?', [next.id, shopId])
+    if (!a) throw new Error('That assembly no longer exists.')
+    await d.execute('update assemblies set name = ?, needs = ? where id = ? and shop_id = ?', [name, needs, next.id, shopId])
+    return next.id
+  }
+  const id = uuid()
+  await d.execute('insert into assemblies (id, shop_id, job_id, name, needs) values (?, ?, ?, ?, ?)', [id, shopId, jobId, name, needs])
+  return id
+}
+
+/**
+ * Finish an assembly: onto the shelf as ONE unit at the sum of what is in
+ * it, or kept. Its items stay "assembled" -- they are in it.
+ */
+export async function finishAssembly(
+  shopId: string,
+  assemblyId: string,
+  to: { kind: 'shelf'; productId: string | null; name?: string; madeOn: string } | { kind: 'kept' },
+): Promise<{ batchId?: string }> {
+  const d = await db()
+  const [a] = await d.select<AssemblySql[]>('select * from assemblies where id = ? and shop_id = ?', [assemblyId, shopId])
+  if (!a) throw new Error('That assembly no longer exists.')
+  if (a.status === 'done') throw new Error('That assembly is already finished.')
+  const items = await d.select<{ label: string; unit_cost: number }[]>(
+    'select label, unit_cost from made_items where assembly_id = ?',
+    [assemblyId],
+  )
+  if (!items.length) throw new Error('Nothing is in it yet.')
+  let batchId: string | null = null
+  if (to.kind === 'shelf') {
+    const productId = to.productId ?? (await saveProduct(shopId, { name: to.name || a.name, designJobId: a.job_id }))
+    batchId = await saveBatch(shopId, {
+      productId,
+      jobId: a.job_id,
+      unitsMade: 1,
+      unitCost: Math.round(items.reduce((t, i) => t + Number(i.unit_cost), 0) * 1e6) / 1e6,
+      madeOn: to.madeOn,
+      note: `${a.name}: ${shelfNote(items.map((i) => i.label))}`,
+    })
+  }
+  await d.execute("update assemblies set status = 'done', batch_id = ?, done_at = ? where id = ?", [batchId, new Date().toISOString(), assemblyId])
+  return batchId ? { batchId } : {}
+}
+
+/** An open assembly can go; what was in it goes back to "made". */
+export async function deleteAssembly(shopId: string, assemblyId: string): Promise<void> {
+  const d = await db()
+  const [a] = await d.select<{ status: string }[]>('select status from assemblies where id = ? and shop_id = ?', [assemblyId, shopId])
+  if (!a) return
+  if (a.status === 'done') throw new Error('A finished assembly stays — it is on the shelf or kept.')
+  await d.execute("update made_items set status = 'made', assembly_id = null, placed_at = null where assembly_id = ?", [assemblyId])
+  await d.execute('delete from assemblies where id = ?', [assemblyId])
 }

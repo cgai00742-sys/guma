@@ -18,7 +18,7 @@ import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
-import { describeHolds, quoteBases, uniqueLabel, type SectionAssign, type SectionMoveResult } from './data.types'
+import { describeHolds, quoteBases, uniqueLabel, validateMadeItems, shelfNote, type SectionAssign, type SectionMoveResult, type MadeItemRow, type MadeItemInput, type AssemblyRow, type AssemblyInput, type ItemPlace, type MadeStatus } from './data.types'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, describeRunCorrection, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
   NeedsSetup,
@@ -2016,6 +2016,17 @@ export async function correctPrintRun(
 
 /** See data.local.ts's deletePrintRun. */
 export async function deletePrintRun(shopId: string, runId: string, undoCopies = false): Promise<number> {
+  // See data.local.ts: what it made and has placed comes back first.
+  {
+    const { count, error } = await supabase
+      .from('made_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('run_id', runId)
+      .in('status', ['shelved', 'assembled', 'kept'])
+    if (error) throw error
+    if ((count ?? 0) > 0)
+      throw new Error('Some of what this print made is already on the shelf, in an assembly or kept — take it back first.')
+  }
   let undone = 0
   if (undoCopies) {
     const { data: run, error: rErr } = await supabase
@@ -3671,4 +3682,208 @@ export async function skipCopy(
   if (pErr) throw pErr
   const { error: jErr } = await supabase.from('job_events').insert({ job_id: before.jobId, actor_id: actorId, kind: 'edit', body })
   if (jErr) throw jErr
+}
+
+
+/* ---- what each print made (0043) -- see data.local.ts ----------------- */
+
+const madeFromRow = (r: any): MadeItemRow => ({
+  id: r.id,
+  jobId: r.job_id,
+  runId: r.run_id,
+  sectionId: r.section_id,
+  label: r.label,
+  grams: r.grams == null ? null : Number(r.grams),
+  unitCost: Number(r.unit_cost),
+  status: r.status as MadeStatus,
+  assemblyId: r.assembly_id,
+  batchId: r.batch_id,
+  note: r.note,
+  createdAt: r.created_at,
+  placedAt: r.placed_at,
+  printedOn: r.print_runs?.started_at ? String(r.print_runs.started_at).slice(0, 10) : null,
+  fileName: r.slice_sections?.slice_imports?.file_name ?? null,
+})
+
+export async function listMadeItems(shopId: string, jobId: string): Promise<MadeItemRow[]> {
+  const { data, error } = await supabase
+    .from('made_items')
+    .select('*, print_runs ( started_at ), slice_sections ( slice_imports ( file_name ) )')
+    .eq('shop_id', shopId)
+    .eq('job_id', jobId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as any[])
+    .map(madeFromRow)
+    .sort((a, b) => (b.printedOn ?? b.createdAt).localeCompare(a.printedOn ?? a.createdAt))
+}
+
+async function placedCount(runId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('made_items')
+    .select('id', { count: 'exact', head: true })
+    .eq('run_id', runId)
+    .in('status', ['shelved', 'assembled', 'kept'])
+  if (error) throw error
+  return count ?? 0
+}
+
+export async function recordMadeItems(shopId: string, jobId: string, runId: string, items: MadeItemInput[]): Promise<void> {
+  validateMadeItems(items)
+  const { data: run, error: rErr } = await supabase.from('print_runs').select('job_id').eq('id', runId).eq('shop_id', shopId).maybeSingle()
+  if (rErr) throw rErr
+  if (!run || run.job_id !== jobId) throw new Error('That print is not on this project.')
+  if ((await placedCount(runId)) > 0) throw new Error('Some of what this print made is already placed — take it back first.')
+  const { error: dErr } = await supabase.from('made_items').delete().eq('run_id', runId)
+  if (dErr) throw dErr
+  if (!items.length) return
+  const { error } = await supabase.from('made_items').insert(
+    items.map((it) => ({
+      shop_id: shopId,
+      job_id: jobId,
+      run_id: runId,
+      section_id: it.sectionId,
+      label: it.label.trim(),
+      grams: it.grams,
+      unit_cost: it.unitCost,
+      status: it.failed ? 'failed' : 'made',
+      note: it.note ?? null,
+    })),
+  )
+  if (error) throw error
+}
+
+export async function placeItems(shopId: string, jobId: string, ids: string[], to: ItemPlace): Promise<{ batchId?: string }> {
+  if (!ids.length) return {}
+  const { data, error } = await supabase.from('made_items').select('*').eq('shop_id', shopId).in('id', ids)
+  if (error) throw error
+  const rows = (data ?? []) as any[]
+  if (rows.length !== ids.length || rows.some((r) => r.job_id !== jobId)) throw new Error('Those items are not all on this project.')
+  const now = new Date().toISOString()
+  const set = async (patch: Record<string, unknown>) => {
+    const { error: uErr } = await supabase.from('made_items').update(patch).eq('shop_id', shopId).in('id', ids)
+    if (uErr) throw uErr
+  }
+  if (to.kind === 'back') {
+    for (const r of rows) {
+      if (r.status === 'shelved') throw new Error(`${r.label} is on the shelf and may have sold — it cannot come back from there.`)
+      if (r.status === 'failed') throw new Error(`${r.label} failed; it stays a failure.`)
+      if (r.assembly_id) {
+        const { data: a } = await supabase.from('assemblies').select('status').eq('id', r.assembly_id).maybeSingle()
+        if (a?.status === 'done') throw new Error(`${r.label} is in a finished assembly.`)
+      }
+    }
+    await set({ status: 'made', assembly_id: null, placed_at: null })
+    return {}
+  }
+  const bad = rows.find((r) => r.status !== 'made')
+  if (bad) throw new Error(`${bad.label} is ${bad.status === 'failed' ? 'a failed print' : 'already placed'}.`)
+  if (to.kind === 'kept') {
+    await set({ status: 'kept', placed_at: now })
+    return {}
+  }
+  if (to.kind === 'assembly') {
+    const { data: a, error: aErr } = await supabase.from('assemblies').select('job_id, status').eq('id', to.assemblyId).eq('shop_id', shopId).maybeSingle()
+    if (aErr) throw aErr
+    if (!a || a.job_id !== jobId) throw new Error('That assembly is not on this project.')
+    if (a.status !== 'open') throw new Error('That assembly is finished.')
+    await set({ status: 'assembled', assembly_id: to.assemblyId, placed_at: now })
+    return {}
+  }
+  const productId =
+    to.productId ??
+    (await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null }))
+  const total = rows.reduce((a, r) => a + Number(r.unit_cost), 0)
+  const batchId = await saveBatch(shopId, {
+    productId,
+    jobId,
+    unitsMade: rows.length,
+    unitCost: Math.round((total / rows.length) * 1e6) / 1e6,
+    madeOn: to.madeOn,
+    note: shelfNote(rows.map((r) => r.label)),
+  })
+  await set({ status: 'shelved', batch_id: batchId, placed_at: now })
+  return { batchId }
+}
+
+const assemblyFromRow = (r: any): AssemblyRow => {
+  let needs: { label: string; qty: number }[] = []
+  try {
+    const v = JSON.parse(r.needs || '[]')
+    if (Array.isArray(v)) needs = v.filter((x) => x && typeof x.label === 'string' && Number(x.qty) > 0).map((x) => ({ label: String(x.label), qty: Math.floor(Number(x.qty)) }))
+  } catch {
+    needs = []
+  }
+  return { id: r.id, jobId: r.job_id, name: r.name, needs, status: r.status, batchId: r.batch_id, createdAt: r.created_at, doneAt: r.done_at }
+}
+
+export async function listAssemblies(shopId: string, jobId: string): Promise<AssemblyRow[]> {
+  const { data, error } = await supabase
+    .from('assemblies')
+    .select('*')
+    .eq('shop_id', shopId)
+    .eq('job_id', jobId)
+    .order('status')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as any[]).map(assemblyFromRow)
+}
+
+export async function saveAssembly(shopId: string, jobId: string, next: AssemblyInput): Promise<string> {
+  const name = next.name.trim()
+  if (!name) throw new Error('An assembly needs a name.')
+  const needs = JSON.stringify(
+    next.needs.map((n) => ({ label: n.label.trim(), qty: Math.floor(Number(n.qty)) })).filter((n) => n.label && n.qty > 0),
+  )
+  if (next.id) {
+    const { error } = await supabase.from('assemblies').update({ name, needs }).eq('id', next.id).eq('shop_id', shopId)
+    if (error) throw error
+    return next.id
+  }
+  const { data, error } = await supabase.from('assemblies').insert({ shop_id: shopId, job_id: jobId, name, needs }).select('id').single()
+  if (error) throw error
+  return data.id as string
+}
+
+export async function finishAssembly(
+  shopId: string,
+  assemblyId: string,
+  to: { kind: 'shelf'; productId: string | null; name?: string; madeOn: string } | { kind: 'kept' },
+): Promise<{ batchId?: string }> {
+  const { data: a, error } = await supabase.from('assemblies').select('*').eq('id', assemblyId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  if (!a) throw new Error('That assembly no longer exists.')
+  if (a.status === 'done') throw new Error('That assembly is already finished.')
+  const { data: items, error: iErr } = await supabase.from('made_items').select('label, unit_cost').eq('assembly_id', assemblyId)
+  if (iErr) throw iErr
+  if (!items?.length) throw new Error('Nothing is in it yet.')
+  let batchId: string | null = null
+  if (to.kind === 'shelf') {
+    const productId = to.productId ?? (await saveProduct(shopId, { name: to.name || a.name, designJobId: a.job_id }))
+    batchId = await saveBatch(shopId, {
+      productId,
+      jobId: a.job_id,
+      unitsMade: 1,
+      unitCost: Math.round((items as any[]).reduce((t, i) => t + Number(i.unit_cost), 0) * 1e6) / 1e6,
+      madeOn: to.madeOn,
+      note: `${a.name}: ${shelfNote((items as any[]).map((i) => i.label))}`,
+    })
+  }
+  const { error: uErr } = await supabase
+    .from('assemblies')
+    .update({ status: 'done', batch_id: batchId, done_at: new Date().toISOString() })
+    .eq('id', assemblyId)
+  if (uErr) throw uErr
+  return batchId ? { batchId } : {}
+}
+
+export async function deleteAssembly(shopId: string, assemblyId: string): Promise<void> {
+  const { data: a, error } = await supabase.from('assemblies').select('status').eq('id', assemblyId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  if (!a) return
+  if (a.status === 'done') throw new Error('A finished assembly stays — it is on the shelf or kept.')
+  const { error: uErr } = await supabase.from('made_items').update({ status: 'made', assembly_id: null, placed_at: null }).eq('assembly_id', assemblyId)
+  if (uErr) throw uErr
+  const { error: dErr } = await supabase.from('assemblies').delete().eq('id', assemblyId)
+  if (dErr) throw dErr
 }

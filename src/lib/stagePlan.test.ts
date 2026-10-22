@@ -36,11 +36,13 @@ describe('each stage shows only what moves it forward', () => {
     expect(canImport('review', 'client')).toBe(false)
   })
 
-  it('gives the shop\'s own work its three stages', () => {
-    // What it made goes on the shelf from Working too (CG, 13 Oct).
-    expect(workFor('design', 'inhouse')).toEqual(['brief', 'build', 'took', 'made'])
-    expect(workFor('review', 'inhouse')).toEqual(['build', 'took', 'made'])
-    expect(canPrint('design', 'inhouse')).toBe(true)
-    expect(recordFor('design', 'review', 'inhouse')).toEqual(['brief'])
+  it('keeps the shop\'s own work ongoing: one page, whatever stage it was left at (CG, 21 Oct)', () => {
+    for (const ph of ['design', 'review', 'delivered'] as const) {
+      expect(workFor(ph, 'inhouse')).toEqual(['brief', 'build', 'made', 'took'])
+      expect(canPrint(ph, 'inhouse')).toBe(true)
+      expect(canImport(ph, 'inhouse')).toBe(true)
+    }
+    // Everything is on the one page, so nothing is filed away as history.
+    expect(recordFor('design', 'review', 'inhouse')).toEqual([])
   })
 })

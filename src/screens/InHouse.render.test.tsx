@@ -25,7 +25,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -172,19 +172,16 @@ describe('the project page for work nobody is paying for', () => {
     return { ctx, data, jobId }
   }
 
-  it('walks Working, Made, Done — not seven client stages', async () => {
+  it('is ongoing: no stages to walk, archived when it is retired (CG, 21 Oct)', async () => {
     const { ctx, jobId } = await started()
     await renderProject(jobId, ctx)
     await screen.findByText('Calibrating the new PETG')
-
-    expect(screen.getByRole('button', { name: /^Working$/ })).toBeDefined()
-    expect(screen.getByRole('button', { name: /^Made$/ })).toBeDefined()
-    expect(screen.getByRole('button', { name: /^Done$/ })).toBeDefined()
-    // Walking a trial print past "Client approval" is theatre, and a
-    // checklist that is theatre teaches people to tick without reading.
+    expect(screen.getByText(/^Ongoing — upload plates/)).toBeDefined()
+    expect(screen.queryByRole('button', { name: /^Working$/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /advance to/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /client approval/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Scheduled$/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Intake$/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /^archive$/i })).toBeDefined()
+    expect(screen.getByRole('heading', { name: /^made$/i })).toBeDefined()
   })
 
   it('shows no money, no promised window and no handover', async () => {
@@ -245,17 +242,21 @@ describe('the whole loop', () => {
       note: null,
     })
 
-    // What it made is recorded at Made, once the printing is done.
-    await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, 'review')
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     await screen.findByText('Hex keychain run')
 
-    // The section only an in-house job has.
-    await screen.findByRole('heading', { name: /what this made/i })
-    await user.type(screen.getByLabelText(/call it/i), 'Hex keychain')
-    await user.type(screen.getByLabelText(/how many usable units/i), '40')
-    await user.click(screen.getByRole('button', { name: /put them on the shelf/i }))
+    // A print with no file: say what it made, and the pieces land in Made.
+    const made = await screen.findByRole('region', { name: /^made$/i })
+    await user.selectOptions(within(made).getByLabelText(/a print with no file made/i), within(made).getAllByRole('option')[1])
+    await user.type(within(made).getByLabelText(/how many/i), '40')
+    await user.type(within(made).getByLabelText(/of what/i), 'Hex keychain')
+    await user.click(within(made).getByRole('button', { name: /make them/i }))
+    await within(made).findAllByRole('checkbox', { name: /pick hex keychain/i })
+    await user.click(within(made).getByRole('button', { name: /pick all/i }))
+    await user.selectOptions(within(made).getByLabelText(/send to/i), 'shelf:new')
+    await user.type(within(made).getByLabelText(/product name/i), 'Hex keychain')
+    await user.click(within(made).getByRole('button', { name: /^send$/i }))
 
     await waitFor(async () => {
       const shelf = await data.listShelf(ctx.shop.id)
@@ -314,23 +315,29 @@ describe('the whole loop', () => {
     await evening() // $13.10 of production, as in the test above
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
-    // Still Working -- no need to move to Made to shelve a batch.
-    await screen.findByRole('heading', { name: /what this made/i })
-    await user.type(screen.getByLabelText(/call it/i), 'Hex keychain')
-    await user.type(screen.getByLabelText(/how many usable units/i), '40')
-    await user.click(screen.getByRole('button', { name: /put them on the shelf/i }))
-    // It stays on the page and says so, with the shelf read back in.
-    expect(await screen.findByText(/40 × Hex keychain on the shelf/)).toBeDefined()
-    await waitFor(() => expect(screen.getByText(/^40 on the shelf$/)).toBeDefined())
-
-    // A second evening, and a second batch of the same thing.
+    const shelve = async (product: 'new' | 'existing') => {
+      const made = await screen.findByRole('region', { name: /^made$/i })
+      await user.selectOptions(within(made).getByLabelText(/a print with no file made/i), within(made).getAllByRole('option')[1])
+      await user.type(within(made).getByLabelText(/how many/i), '40')
+      await user.type(within(made).getByLabelText(/of what/i), 'Hex keychain')
+      await user.click(within(made).getByRole('button', { name: /make them/i }))
+      await within(made).findAllByRole('checkbox', { name: /pick hex keychain/i })
+      await user.click(within(made).getByRole('button', { name: /pick all/i }))
+      const dest = within(made).getByLabelText(/send to/i) as HTMLSelectElement
+      if (product === 'new') {
+        await user.selectOptions(dest, 'shelf:new')
+        await user.type(within(made).getByLabelText(/product name/i), 'Hex keychain')
+      } else await user.selectOptions(dest, within(dest).getByRole('option', { name: 'Hex keychain' }))
+      await user.click(within(made).getByRole('button', { name: /^send$/i }))
+      expect(await within(made).findByText(/40 × Hex keychain on the shelf/)).toBeDefined()
+    }
+    await shelve('new')
+    // A second evening, and a second batch of the same thing -- the first
+    // evening's pieces are already placed, so only the new one is offered.
     await evening()
     cleanup()
     await renderProject(jobId, ctx)
-    const pick = (await screen.findByLabelText(/what did it make/i)) as HTMLSelectElement
-    await waitFor(() => expect(pick.selectedOptions[0].textContent).toBe('Hex keychain'))
-    await user.type(screen.getByLabelText(/how many usable units/i), '40')
-    await user.click(screen.getByRole('button', { name: /put them on the shelf/i }))
+    await shelve('existing')
     await waitFor(async () => {
       const [p] = await data.listShelf(ctx.shop.id)
       expect(p.batches).toHaveLength(2)

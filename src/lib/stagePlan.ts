@@ -46,10 +46,15 @@ const CLIENT_WORK: Record<JobPhase, Section[]> = {
 // Working can run for months on a series piece, so what it made goes on
 // the shelf as it comes off -- not only at Made (CG, 13 Oct). The order is
 // the order of the work: plan it, print it, cost it, shelve it.
+// Your own work is ongoing (CG, 21 Oct: "a project can be continuously
+// added to ... The project doesn't close or end"): whatever stage an older
+// project was left at, the page is the same -- plates, what they made, what
+// it took -- until it is archived.
+const ONGOING: Section[] = ['brief', 'build', 'made', 'took']
 const IN_HOUSE_WORK: Partial<Record<JobPhase, Section[]>> = {
-  design: ['brief', 'build', 'took', 'made'],
-  review: ['build', 'took', 'made'],
-  delivered: ['closeout'],
+  design: ONGOING,
+  review: ONGOING,
+  delivered: ONGOING,
 }
 
 /** The stage a section belongs to in the record: where it is first worked on. */
@@ -105,13 +110,13 @@ export function moneyMode(phase: JobPhase): MoneyMode {
  * phase should not be available"). Review keeps it for reprints only.
  */
 export function canPrint(phase: JobPhase, kind: JobKind): boolean {
-  return kind === 'inhouse' ? phase === 'design' || phase === 'review' : phase === 'building' || phase === 'review'
+  return kind === 'inhouse' ? true : phase === 'building' || phase === 'review'
 }
 
 /** Sliced files can be read in as estimates while a job is still being
  *  priced, designed or planned, and while it is being built (fixed files). */
 export function canImport(phase: JobPhase, kind: JobKind): boolean {
-  if (kind === 'inhouse') return phase === 'design' || phase === 'review'
+  if (kind === 'inhouse') return true
   return phase !== 'review' && phase !== 'delivered'
 }
 
