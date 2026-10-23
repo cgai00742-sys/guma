@@ -689,6 +689,26 @@ describe('what each print made, and where it went (CG, 21 Oct)', () => {
     expect(p.photo).toBe('data:image/png;base64,PLATE')
   })
 
+  it('a piece assembled from several plates gets every plate picture (CG, 22 Oct)', async () => {
+    const data = await import('./data.local')
+    const a = await data.importSlice(SHOP, JOB, ACTOR, BUOY)
+    const b = await data.importSlice(SHOP, JOB, ACTOR, { ...BUOY, fileName: 'Maui_BATHY.gcode', kind: 'gcode', sections: [{ label: 'Bathy', qty: 1, estMinutes: 60, estGrams: 40, material: 'PETG' }] })
+    await data.setSliceExtras(SHOP, a.importId, 'data:plate-a', null)
+    await data.setSliceExtras(SHOP, b.importId, 'data:plate-b', null)
+    const ra = await run(data, a.importId)
+    const rb = await run(data, b.importId)
+    await data.recordMadeItems(SHOP, JOB, ra, [{ sectionId: null, label: 'Frame', grams: 1, unitCost: 1, failed: false }])
+    await data.recordMadeItems(SHOP, JOB, rb, [{ sectionId: null, label: 'Bathy', grams: 1, unitCost: 2, failed: false }])
+    const asm = await data.saveAssembly(SHOP, JOB, { name: 'Maui BathyTopo 3X 12in', needs: [{ label: 'Frame', qty: 1 }, { label: 'Bathy', qty: 1 }] })
+    const items = await data.listMadeItems(SHOP, JOB)
+    await data.placeItems(SHOP, JOB, items.map((x) => x.id), { kind: 'assembly', assemblyId: asm })
+    await data.finishAssembly(SHOP, asm, { kind: 'shelf', productId: null, madeOn: '2026-10-22' })
+    const [p] = await data.listShelf(SHOP)
+    expect(p.photos!.map((x) => x.image).sort()).toEqual(['data:plate-a', 'data:plate-b'])
+    // Asking again adds nothing twice.
+    expect((await data.matchShelfPhotos(SHOP)).matched).toBe(0)
+  })
+
   it('products already on the shelf pick up their plate picture, and a removed one stays removed', async () => {
     const data = await import('./data.local')
     const imp = await data.importSlice(SHOP, JOB, ACTOR, BUOY)
@@ -699,14 +719,13 @@ describe('what each print made, and where it went (CG, 21 Oct)', () => {
     // Shelved before the plate had a picture -- as everything before today was.
     await data.placeItems(SHOP, JOB, [it0.id], { kind: 'shelf', productId: null, name: 'Reef buoy', madeOn: '2026-10-22' })
     expect((await data.listShelf(SHOP))[0].photo).toBeNull()
-    expect((await data.matchShelfPhotos(SHOP)).matched).toBe(0)
     await data.setSliceExtras(SHOP, imp.importId, 'data:image/png;base64,PLATE', null)
     expect((await data.matchShelfPhotos(SHOP)).matched).toBe(1)
     const [p] = await data.listShelf(SHOP)
     expect(p.photo).toBe('data:image/png;base64,PLATE')
-    await data.updateProduct(SHOP, p.id, { photo: null })
+    await data.removeProductPhoto(SHOP, p.photos![0].id)
     expect((await data.matchShelfPhotos(SHOP)).matched).toBe(0)
-    expect((await data.listShelf(SHOP))[0].photo).toBeNull()
+    expect((await data.listShelf(SHOP))[0].photos).toEqual([])
   })
 
   it('recording a print again replaces what it made, and removing an unplaced print removes it', async () => {

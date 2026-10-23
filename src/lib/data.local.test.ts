@@ -2412,17 +2412,21 @@ describe('the shelf', () => {
     ).rejects.toThrow(/negative/i)
   })
 
-  it('renames a product and keeps a picture on it', async () => {
+  it('renames a product, and keeps several pictures on it, cover first', async () => {
     const local = await import('./data.local')
     const { shopId, productId } = await shopWithStock(local)
-    await local.updateProduct(shopId, productId, { name: '  Hex keychain v2 ', photo: 'data:image/jpeg;base64,AAA' })
+    await local.updateProduct(shopId, productId, { name: '  Hex keychain v2 ' })
+    await local.addProductPhotos(shopId, productId, ['data:a', 'data:b', 'data:c'])
     let [product] = await local.listShelf(shopId)
     expect(product.name).toBe('Hex keychain v2')
-    expect(product.photo).toBe('data:image/jpeg;base64,AAA')
-    await local.updateProduct(shopId, productId, { photo: null })
+    expect(product.photos!.map((x) => x.image)).toEqual(['data:a', 'data:b', 'data:c'])
+    expect(product.photo).toBe('data:a')
+    await local.coverProductPhoto(shopId, product.photos![2].id)
     ;[product] = await local.listShelf(shopId)
-    expect(product.photo).toBeNull()
-    expect(product.name).toBe('Hex keychain v2')
+    expect(product.photo).toBe('data:c')
+    await local.removeProductPhoto(shopId, product.photos![0].id)
+    ;[product] = await local.listShelf(shopId)
+    expect(product.photos!.map((x) => x.image)).toEqual(['data:a', 'data:b'])
     await expect(local.updateProduct(shopId, productId, { name: '  ' })).rejects.toThrow(/name/i)
   })
 

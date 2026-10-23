@@ -2917,7 +2917,7 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
   const [products, stock] = await Promise.all([
     supabase
       .from('products')
-      .select('id, name, design_job_id, design_cost, design_hours, archived, photo')
+      .select('id, name, design_job_id, design_cost, design_hours, archived')
       .eq('shop_id', shopId)
       .order('archived')
       .order('name'),
@@ -2929,6 +2929,19 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
   ])
   if (products.error) throw products.error
   if (stock.error) throw stock.error
+  // '' is a plate picture taken off on purpose: kept, never shown.
+  const pics = await supabase
+    .from('product_photos')
+    .select('id, product_id, image, import_id')
+    .eq('shop_id', shopId)
+    .neq('image', '')
+    .order('sort')
+    .order('created_at')
+  if (pics.error) throw pics.error
+  const photosOf = (pid: string) =>
+    ((pics.data ?? []) as any[])
+      .filter((x) => String(x.product_id) === pid)
+      .map((x) => ({ id: String(x.id), image: String(x.image), import_id: x.import_id ? String(x.import_id) : null }))
 
   const batches = (stock.data ?? []).map((b) => {
     const parent = (b as { batches: { job_id: string | null; note: string | null } }).batches
@@ -2951,16 +2964,20 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
     }
   })
 
-  return (products.data ?? []).map((p) => ({
+  return (products.data ?? []).map((p) => {
+    const photos = photosOf(String(p.id))
+    return {
     id: String(p.id),
     name: String(p.name),
     design_job_id: p.design_job_id ? String(p.design_job_id) : null,
     design_cost: p.design_cost === null ? null : Number(p.design_cost),
     design_hours: p.design_hours === null ? null : Number(p.design_hours),
     archived: p.archived ? 1 : 0,
-    photo: (p as { photo?: string | null }).photo || null,
+    photo: photos[0]?.image ?? null,
+    photos,
     batches: batches.filter((b) => b.product_id === String(p.id)),
-  }))
+    }
+  })
 }
 
 export async function saveProduct(shopId: string, next: ProductInput): Promise<string> {
@@ -3817,17 +3834,9 @@ export async function placeItems(shopId: string, jobId: string, ids: string[], t
     await set({ status: 'assembled', assembly_id: to.assemblyId, placed_at: now })
     return {}
   }
-  let productId = to.productId
-  if (!productId) {
-    productId = await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null })
-    // See data.local.ts: a new product starts with its plate's picture.
-    const sec = rows.map((r) => r.section_id).find(Boolean)
-    if (sec) {
-      const { data: t } = await supabase.from('slice_sections').select('slice_imports ( thumbnail )').eq('id', sec).maybeSingle()
-      const thumb = (t as { slice_imports?: { thumbnail?: string | null } | null } | null)?.slice_imports?.thumbnail
-      if (thumb) await supabase.from('products').update({ photo: thumb }).eq('id', productId).eq('shop_id', shopId)
-    }
-  }
+  const productId =
+    to.productId ??
+    (await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null }))
   const total = rows.reduce((a, r) => a + Number(r.unit_cost), 0)
   const batchId = await saveBatch(shopId, {
     productId,
@@ -3838,6 +3847,7 @@ export async function placeItems(shopId: string, jobId: string, ids: string[], t
     note: shelfNote(rows.map((r) => r.label)),
   })
   await set({ status: 'shelved', batch_id: batchId, placed_at: now })
+  await matchShelfPhotos(shopId).catch(() => undefined)
   return { batchId }
 }
 
@@ -3909,6 +3919,7 @@ export async function finishAssembly(
     .update({ status: 'done', batch_id: batchId, done_at: new Date().toISOString() })
     .eq('id', assemblyId)
   if (uErr) throw uErr
+  if (batchId) await matchShelfPhotos(shopId).catch(() => undefined)
   return batchId ? { batchId } : {}
 }
 
@@ -3963,19 +3974,54 @@ export async function updateProduct(shopId: string, productId: string, patch: Pr
     if (!name) throw new Error('A product needs a name.')
     row.name = name
   }
-  if (patch.photo !== undefined) row.photo = patch.photo || ''
   if (!Object.keys(row).length) return
   const { error } = await supabase.from('products').update(row).eq('id', productId).eq('shop_id', shopId)
   if (error) throw error
 }
 
+/** See data.local.ts's addProductPhotos. */
+export async function addProductPhotos(shopId: string, productId: string, images: string[]): Promise<void> {
+  const { data: top, error } = await supabase
+    .from('product_photos').select('sort').eq('product_id', productId).eq('shop_id', shopId)
+    .order('sort', { ascending: false }).limit(1)
+  if (error) throw error
+  let sort = Number((top ?? [])[0]?.sort ?? 0)
+  const rows = images.filter(Boolean).map((image) => ({ shop_id: shopId, product_id: productId, image, sort: (sort += 1) }))
+  if (!rows.length) return
+  const { error: iErr } = await supabase.from('product_photos').insert(rows)
+  if (iErr) throw iErr
+}
+
+/** See data.local.ts's removeProductPhoto. */
+export async function removeProductPhoto(shopId: string, photoId: string): Promise<void> {
+  const { data: x, error } = await supabase.from('product_photos').select('import_id').eq('id', photoId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  if (!x) return
+  const q = x.import_id
+    ? supabase.from('product_photos').update({ image: '' }).eq('id', photoId)
+    : supabase.from('product_photos').delete().eq('id', photoId)
+  const { error: e2 } = await q
+  if (e2) throw e2
+}
+
+/** See data.local.ts's coverProductPhoto. */
+export async function coverProductPhoto(shopId: string, photoId: string): Promise<void> {
+  const { data: x, error } = await supabase.from('product_photos').select('product_id').eq('id', photoId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  if (!x) throw new Error('That picture no longer exists.')
+  const { data: low } = await supabase.from('product_photos').select('sort').eq('product_id', x.product_id).order('sort').limit(1)
+  const { error: e2 } = await supabase.from('product_photos').update({ sort: Number((low ?? [])[0]?.sort ?? 0) - 1 }).eq('id', photoId)
+  if (e2) throw e2
+}
+
 /** See data.local.ts's matchShelfPhotos. */
 export async function matchShelfPhotos(shopId: string): Promise<{ matched: number; need: string[] }> {
   const { data: products, error } = await supabase
-    .from('products').select('id, name, photo, design_job_id').eq('shop_id', shopId).is('photo', null)
+    .from('products').select('id, name, design_job_id').eq('shop_id', shopId)
   if (error) throw error
   if (!products?.length) return { matched: 0, need: [] }
-  const [b, m, a, i, s, f] = await Promise.all([
+  const [h, b, m, a, i, s, f] = await Promise.all([
+    supabase.from('product_photos').select('product_id, import_id').eq('shop_id', shopId),
     supabase.from('batches').select('id, product_id, job_id').eq('shop_id', shopId),
     supabase.from('made_items').select('batch_id, assembly_id, slice_sections ( import_id ), print_runs ( slice_import_id )').eq('shop_id', shopId),
     supabase.from('assemblies').select('id, batch_id').eq('shop_id', shopId),
@@ -3983,11 +4029,12 @@ export async function matchShelfPhotos(shopId: string): Promise<{ matched: numbe
     supabase.from('slice_sections').select('import_id, label, slice_imports!inner ( shop_id )').eq('slice_imports.shop_id', shopId),
     supabase.from('slice_files').select('import_id, slice_imports!inner ( shop_id )').eq('slice_imports.shop_id', shopId),
   ])
-  for (const r of [b, m, a, i, s, f]) if (r.error) throw r.error
+  for (const r of [h, b, m, a, i, s, f]) if (r.error) throw r.error
   const kept = new Set(((f.data ?? []) as any[]).map((x) => String(x.import_id)))
   const one = <T,>(x: T | T[] | null | undefined): T | null => (Array.isArray(x) ? x[0] ?? null : x ?? null)
   const pick = pickShelfPhotos({
-    products: (products as any[]).map((p) => ({ id: String(p.id), name: p.name, photo: p.photo ?? null, design_job_id: p.design_job_id ?? null })),
+    products: (products as any[]).map((p) => ({ id: String(p.id), name: p.name, design_job_id: p.design_job_id ?? null })),
+    have: ((h.data ?? []) as any[]).map((x) => ({ product_id: String(x.product_id), import_id: x.import_id ? String(x.import_id) : null })),
     batches: ((b.data ?? []) as any[]).map((x) => ({ id: String(x.id), product_id: String(x.product_id), job_id: x.job_id ?? null })),
     items: ((m.data ?? []) as any[]).map((x) => ({
       batch_id: x.batch_id ?? null,
@@ -3998,9 +4045,15 @@ export async function matchShelfPhotos(shopId: string): Promise<{ matched: numbe
     imports: ((i.data ?? []) as any[]).map((x) => ({ id: String(x.id), job_id: String(x.job_id), thumbnail: x.thumbnail ?? null, has_file: kept.has(String(x.id)) })),
     sections: ((s.data ?? []) as any[]).map((x) => ({ import_id: String(x.import_id), label: String(x.label) })),
   })
-  for (const x of pick.set) {
-    const { error: uErr } = await supabase.from('products').update({ photo: x.thumbnail }).eq('id', x.productId).eq('shop_id', shopId).is('photo', null)
-    if (uErr) throw uErr
+  for (const x of pick.add) {
+    const { data: top } = await supabase
+      .from('product_photos').select('sort').eq('product_id', x.productId).order('sort', { ascending: false }).limit(1)
+    const { error: iErr } = await supabase.from('product_photos').insert({
+      shop_id: shopId, product_id: x.productId, image: x.thumbnail, import_id: x.importId,
+      sort: Number((top ?? [])[0]?.sort ?? 0) + 1,
+    })
+    // 23505: the plate is already there (another device got to it first).
+    if (iErr && (iErr as { code?: string }).code !== '23505') throw iErr
   }
-  return { matched: pick.set.length, need: pick.need }
+  return { matched: pick.add.length, need: pick.need }
 }

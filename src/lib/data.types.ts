@@ -1413,9 +1413,18 @@ export interface ProductRow {
   design_cost: number | null
   design_hours: number | null
   archived: number
-  /** A picture of it -- a data: URL (0041). */
+  /** The cover picture -- the first of `photos` -- as a data: URL. */
   photo?: string | null
+  /** Every picture, cover first (0042). */
+  photos?: ProductPhoto[]
   batches: BatchRow[]
+}
+
+/** One picture of a product. `import_id` is the plate it came from, if any. */
+export interface ProductPhoto {
+  id: string
+  image: string
+  import_id: string | null
 }
 
 export interface ProductInput {
@@ -1445,7 +1454,6 @@ export interface SaleRow {
 /** Rename a product, or change or clear its picture. */
 export interface ProductPatch {
   name?: string
-  photo?: string | null
 }
 
 export interface SaleInput {

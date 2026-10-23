@@ -22,7 +22,7 @@
  * Treat it as a strong draft, not a proven one, until Phase 4's parity task
  * is checked off.
  */
-import { matchShelfPhotos as pickShelfPhotos, type PhotoProduct, type PhotoBatch, type PhotoItem, type PhotoAssembly, type PhotoImport, type PhotoSection } from './shelfPhotos'
+import { matchShelfPhotos as pickShelfPhotos, type PhotoProduct, type PhotoHave, type PhotoBatch, type PhotoItem, type PhotoAssembly, type PhotoImport, type PhotoSection } from './shelfPhotos'
 import { describePartEdit, describeProjectEdits, type ProjectBefore } from './edits'
 import Database from '@tauri-apps/plugin-sql'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
@@ -48,7 +48,7 @@ import {
   type AssemblyInput,
   type ItemPlace,
   type MadeStatus,
-  type ProductPatch,
+  type ProductPatch, type ProductPhoto,
   type SectionAssign,
   type SectionMoveResult,
   describeHolds,
@@ -3569,10 +3569,9 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
         design_cost: number | null
         design_hours: number | null
         archived: number
-        photo: string | null
       }[]
     >(
-      `select id, name, design_job_id, design_cost, design_hours, archived, photo
+      `select id, name, design_job_id, design_cost, design_hours, archived
        from products where shop_id = ? order by archived, name`,
       [shopId],
     ),
@@ -3590,14 +3589,26 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
     ),
   ])
 
-  return products.map((p) => ({
-    ...p,
-    // '' means the picture was removed on purpose; to a screen it is none.
-    photo: p.photo || null,
-    batches: batches
-      .filter((b) => b.product_id === p.id)
-      .map((b) => ({ ...b, estimated: b.job_id === null })),
-  }))
+  // '' is a plate picture taken off on purpose -- kept so it is not put
+  // back, never shown.
+  const photos = await d.select<(ProductPhoto & { product_id: string })[]>(
+    `select id, product_id, image, import_id from product_photos
+      where shop_id = ? and image <> '' order by sort, created_at, rowid`,
+    [shopId],
+  )
+  return products.map((p) => {
+    const mine = photos
+      .filter((x) => x.product_id === p.id)
+      .map(({ id, image, import_id }) => ({ id, image, import_id }))
+    return {
+      ...p,
+      photo: mine[0]?.image ?? null,
+      photos: mine,
+      batches: batches
+        .filter((b) => b.product_id === p.id)
+        .map((b) => ({ ...b, estimated: b.job_id === null })),
+    }
+  })
 }
 
 export async function saveProduct(shopId: string, next: ProductInput): Promise<string> {
@@ -4590,20 +4601,9 @@ export async function placeItems(shopId: string, jobId: string, ids: string[], t
     )
     return {}
   }
-  let productId = to.productId
-  if (!productId) {
-    productId = await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null })
-    // A new product starts with the picture of the plate its pieces came off
-    // (CG, 22 Oct) -- replaceable on the Shelf with a real photo.
-    const sec = rows.map((r) => (r as { section_id?: string | null }).section_id).find(Boolean)
-    if (sec) {
-      const [t] = await d.select<{ thumbnail: string | null }[]>(
-        `select i.thumbnail from slice_sections s join slice_imports i on i.id = s.import_id where s.id = ?`,
-        [sec],
-      )
-      if (t?.thumbnail) await d.execute('update products set photo = ? where id = ? and shop_id = ?', [t.thumbnail, productId, shopId])
-    }
-  }
+  const productId =
+    to.productId ??
+    (await saveProduct(shopId, { name: to.name ?? '', designJobId: jobId, designCost: to.designCost ?? null, designHours: to.designHours ?? null }))
   const total = rows.reduce((a, r) => a + Number(r.unit_cost), 0)
   const batchId = await saveBatch(shopId, {
     productId,
@@ -4618,6 +4618,8 @@ export async function placeItems(shopId: string, jobId: string, ids: string[], t
       where shop_id = ? and id in (${ids.map(() => '?').join(',')})`,
     [batchId, now, shopId, ...ids],
   )
+  // The plates these pieces came off become the product's pictures.
+  await matchShelfPhotos(shopId).catch(() => undefined)
   return { batchId }
 }
 
@@ -4713,6 +4715,8 @@ export async function finishAssembly(
     })
   }
   await d.execute("update assemblies set status = 'done', batch_id = ?, done_at = ? where id = ?", [batchId, new Date().toISOString(), assemblyId])
+  // Every plate behind the assembly's pieces becomes a picture of it.
+  if (batchId) await matchShelfPhotos(shopId).catch(() => undefined)
   return batchId ? { batchId } : {}
 }
 
@@ -4773,25 +4777,59 @@ export async function updateProduct(shopId: string, productId: string, patch: Pr
     if (!name) throw new Error('A product needs a name.')
     await d.execute('update products set name = ? where id = ? and shop_id = ?', [name, productId, shopId])
   }
-  // Removing stores '' rather than null, so matchShelfPhotos does not put
-  // the plate picture straight back.
-  if (patch.photo !== undefined)
-    await d.execute('update products set photo = ? where id = ? and shop_id = ?', [patch.photo || '', productId, shopId])
+}
+
+async function ownedProduct(shopId: string, productId: string): Promise<void> {
+  const d = await db()
+  const [p] = await d.select<{ id: string }[]>('select id from products where id = ? and shop_id = ?', [productId, shopId])
+  if (!p) throw new Error('That product no longer exists.')
+}
+
+/** Add pictures to a product, after the ones it has (CG, 22 Oct). */
+export async function addProductPhotos(shopId: string, productId: string, images: string[]): Promise<void> {
+  await ownedProduct(shopId, productId)
+  const d = await db()
+  const [m] = await d.select<{ s: number | null }[]>('select max(sort) as s from product_photos where product_id = ?', [productId])
+  let sort = Number(m?.s ?? 0)
+  for (const image of images) {
+    if (!image) continue
+    sort += 1
+    await d.execute('insert into product_photos (id, shop_id, product_id, image, sort) values (?, ?, ?, ?, ?)', [uuid(), shopId, productId, image, sort])
+  }
 }
 
 /**
- * Give every Shelf product that has never had a picture the picture of the
- * plate it came off (CG, 22 Oct). See lib/shelfPhotos.ts for the rule.
+ * Take a picture off. A plate's picture is blanked rather than deleted, so
+ * matchShelfPhotos knows it was taken off and does not put it back.
+ */
+export async function removeProductPhoto(shopId: string, photoId: string): Promise<void> {
+  const d = await db()
+  const [x] = await d.select<{ import_id: string | null }[]>('select import_id from product_photos where id = ? and shop_id = ?', [photoId, shopId])
+  if (!x) return
+  if (x.import_id) await d.execute("update product_photos set image = '' where id = ?", [photoId])
+  else await d.execute('delete from product_photos where id = ?', [photoId])
+}
+
+/** Make a picture the one shown on the Shelf row. */
+export async function coverProductPhoto(shopId: string, photoId: string): Promise<void> {
+  const d = await db()
+  const [x] = await d.select<{ product_id: string }[]>('select product_id from product_photos where id = ? and shop_id = ?', [photoId, shopId])
+  if (!x) throw new Error('That picture no longer exists.')
+  const [m] = await d.select<{ s: number | null }[]>('select min(sort) as s from product_photos where product_id = ?', [x.product_id])
+  await d.execute('update product_photos set sort = ? where id = ?', [Number(m?.s ?? 0) - 1, photoId])
+}
+
+/**
+ * Give each Shelf product the pictures of the plates it came off (CG, 22
+ * Oct). See lib/shelfPhotos.ts for the rule.
  * Returns how many were matched, and which files still need reading.
  */
 export async function matchShelfPhotos(shopId: string): Promise<{ matched: number; need: string[] }> {
   const d = await db()
-  const products = await d.select<PhotoProduct[]>(
-    'select id, name, photo, design_job_id from products where shop_id = ? and photo is null',
-    [shopId],
-  )
+  const products = await d.select<PhotoProduct[]>('select id, name, design_job_id from products where shop_id = ?', [shopId])
   if (!products.length) return { matched: 0, need: [] }
-  const [batches, items, assemblies, imports, sections] = await Promise.all([
+  const [have, batches, items, assemblies, imports, sections] = await Promise.all([
+    d.select<PhotoHave[]>('select product_id, import_id from product_photos where shop_id = ?', [shopId]),
     d.select<PhotoBatch[]>('select id, product_id, job_id from batches where shop_id = ?', [shopId]),
     d.select<PhotoItem[]>(
       `select m.batch_id, m.assembly_id, coalesce(s.import_id, r.slice_import_id) as import_id
@@ -4816,13 +4854,19 @@ export async function matchShelfPhotos(shopId: string): Promise<{ matched: numbe
   ])
   const m = pickShelfPhotos({
     products,
+    have,
     batches,
     items,
     assemblies,
     imports: imports.map((i) => ({ ...i, has_file: !!Number(i.has_file) })),
     sections,
   })
-  for (const x of m.set)
-    await d.execute('update products set photo = ? where id = ? and shop_id = ? and photo is null', [x.thumbnail, x.productId, shopId])
-  return { matched: m.set.length, need: m.need }
+  for (const x of m.add) {
+    const [s] = await d.select<{ s: number | null }[]>('select max(sort) as s from product_photos where product_id = ?', [x.productId])
+    await d.execute(
+      `insert or ignore into product_photos (id, shop_id, product_id, image, import_id, sort) values (?, ?, ?, ?, ?, ?)`,
+      [uuid(), shopId, x.productId, x.thumbnail, x.importId, Number(s?.s ?? 0) + 1],
+    )
+  }
+  return { matched: m.add.length, need: m.need }
 }

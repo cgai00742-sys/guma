@@ -40,6 +40,9 @@ import {
   saveBatch,
   saveProduct,
   updateProduct,
+  addProductPhotos,
+  removeProductPhoto,
+  coverProductPhoto,
   matchShelfPhotos,
   sliceFileContent,
   setSliceExtras,
@@ -53,6 +56,7 @@ import { makeMoney } from '../lib/pricing'
 import { productResult, summarize, type BatchStock, type ProductResult } from '../lib/selling'
 import { todayISO } from '../lib/dates'
 import { Flash, useFlash } from '../components/Saving'
+import type { ProductPhoto } from '../lib/data.types'
 import { unpackFile } from '../lib/sliceFile'
 import { fileExtras } from '../lib/fileExtras'
 
@@ -128,7 +132,7 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
   const photosChecked = useRef(false)
   useEffect(() => {
     if (!products || photosChecked.current) return
-    if (!products.some((p) => !p.photo)) return
+    if (!products.length) return
     photosChecked.current = true
     let live = true
     void (async () => {
@@ -239,12 +243,12 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
     }
   }
 
-  /** Rename a product, or give it a picture (CG, 22 Oct). */
-  async function editProduct(productId: string, patch: { name?: string; photo?: string | null }, said: string) {
+  /** Rename a product, or change its pictures (CG, 22 Oct). */
+  async function editProduct(change: () => Promise<void>, said: string) {
     setBusy(true)
     setError(null)
     try {
-      await updateProduct(ctx.shop.id, productId, patch)
+      await change()
       await reload()
       setFlash(said)
     } catch (e) {
@@ -400,6 +404,11 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                             />
                           ) : null}
                           {r.name}
+                          {(product?.photos?.length ?? 0) > 1 && (
+                            <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt-3)' }}>
+                              {product!.photos!.length} pictures
+                            </span>
+                          )}
                         </span>
                       </td>
                       <td className="r">{r.unitsMade}</td>
@@ -426,10 +435,22 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                             product={product}
                             busy={busy}
                             onRename={(name) =>
-                              void editProduct(product.id, { name }, `Renamed to ${name.trim()}.`)
+                              void editProduct(
+                                () => updateProduct(ctx.shop.id, product.id, { name }),
+                                `Renamed to ${name.trim()}.`,
+                              )
                             }
-                            onPhoto={(photo) =>
-                              void editProduct(product.id, { photo }, photo ? 'Picture saved.' : 'Picture removed.')
+                            onAdd={(images) =>
+                              void editProduct(
+                                () => addProductPhotos(ctx.shop.id, product.id, images),
+                                images.length === 1 ? 'Picture added.' : `${images.length} pictures added.`,
+                              )
+                            }
+                            onRemove={(id) =>
+                              void editProduct(() => removeProductPhoto(ctx.shop.id, id), 'Picture removed.')
+                            }
+                            onCover={(id) =>
+                              void editProduct(() => coverProductPhoto(ctx.shop.id, id), 'Cover picture set.')
                             }
                             onError={setError}
                           />
@@ -694,42 +715,38 @@ async function shrinkPhoto(file: File, max = 480): Promise<string> {
   }
 }
 
-/** The product's name and picture, editable in place. */
+/**
+ * The product's name and pictures, editable in place (CG, 22 Oct: several
+ * pictures, "especially when multiple parts are assigned"). The first is
+ * the cover -- the one on the Shelf row. Plate pictures come in by
+ * themselves from the project; real photos are added here.
+ */
 function ProductEdit({
   product,
   busy,
   onRename,
-  onPhoto,
+  onAdd,
+  onRemove,
+  onCover,
   onError,
 }: {
   product: ProductRow
   busy: boolean
   onRename: (name: string) => void
-  onPhoto: (photo: string | null) => void
+  onAdd: (images: string[]) => void
+  onRemove: (photoId: string) => void
+  onCover: (photoId: string) => void
   onError: (msg: string) => void
 }) {
   const [renaming, setRenaming] = useState(false)
   const [name, setName] = useState(product.name)
+  const [viewing, setViewing] = useState<number | null>(null)
+  const photos: ProductPhoto[] = product.photos ?? []
   const inputId = `pe-photo-${product.id}`
+  const shown = viewing === null ? null : photos[Math.min(viewing, photos.length - 1)] ?? null
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 2px 4px', flexWrap: 'wrap' }}>
-      {product.photo ? (
-        <img
-          src={product.photo}
-          alt={`Picture of ${product.name}`}
-          style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--line)' }}
-        />
-      ) : (
-        <div
-          style={{
-            width: 72, height: 72, borderRadius: 6, border: '1px dashed var(--line)',
-            display: 'grid', placeItems: 'center', fontSize: 10, color: 'var(--txt-3)',
-          }}
-        >
-          no picture
-        </div>
-      )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ padding: '10px 2px 4px' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', marginBottom: 8 }}>
         {renaming ? (
           <form
             style={{ display: 'flex', gap: 6, alignItems: 'center' }}
@@ -745,7 +762,7 @@ function ProductEdit({
               value={name}
               autoFocus
               onChange={(e) => setName(e.target.value)}
-              style={{ minWidth: 220 }}
+              style={{ minWidth: 260 }}
             />
             <button type="submit" className="btn sm primary" disabled={busy || !name.trim()}>Save</button>
             <button type="button" className="btn sm" onClick={() => { setName(product.name); setRenaming(false) }}>
@@ -753,39 +770,105 @@ function ProductEdit({
             </button>
           </form>
         ) : (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+          <>
             <b style={{ fontSize: 14 }}>{product.name}</b>
             <button type="button" className="linkbtn" style={{ width: 'auto', fontSize: 11 }} disabled={busy} onClick={() => setRenaming(true)}>
               rename
             </button>
-          </div>
+          </>
         )}
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 11 }}>
-          <label htmlFor={inputId} className="linkbtn" style={{ width: 'auto', fontSize: 11, cursor: 'pointer' }}>
-            {product.photo ? 'change picture' : 'add a picture'}
-          </label>
-          <input
-            id={inputId}
-            type="file"
-            accept="image/*"
-            style={{ display: 'none' }}
-            disabled={busy}
-            onChange={(e) => {
-              const f = e.target.files?.[0]
-              e.target.value = ''
-              if (!f) return
-              shrinkPhoto(f)
-                .then(onPhoto)
-                .catch((err) => onError(err instanceof Error ? err.message : String(err)))
-            }}
-          />
-          {product.photo && (
-            <button type="button" className="linkbtn" style={{ width: 'auto', fontSize: 11 }} disabled={busy} onClick={() => onPhoto(null)}>
-              remove picture
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }} aria-label="Pictures">
+        {photos.map((ph, i) => (
+          <div key={ph.id} style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+            <button
+              type="button"
+              onClick={() => setViewing(i)}
+              title="See it larger"
+              style={{ padding: 0, border: i === 0 ? '2px solid var(--accent)' : '1px solid var(--line)', borderRadius: 6, background: 'none', cursor: 'zoom-in', lineHeight: 0 }}
+            >
+              <img src={ph.image} alt={`${product.name}, picture ${i + 1}`} style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 5 }} />
             </button>
+            <span style={{ fontSize: 10, color: 'var(--txt-3)', display: 'flex', gap: 6 }}>
+              {i === 0 ? (
+                <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--accent)' }}>cover</span>
+              ) : (
+                <button type="button" className="linkbtn" style={{ width: 'auto', fontSize: 10 }} disabled={busy} onClick={() => onCover(ph.id)}>
+                  make cover
+                </button>
+              )}
+              <button
+                type="button"
+                className="linkbtn"
+                style={{ width: 'auto', fontSize: 10 }}
+                disabled={busy}
+                aria-label={`Remove picture ${i + 1}`}
+                onClick={() => onRemove(ph.id)}
+              >
+                remove
+              </button>
+            </span>
+            {ph.import_id && <span style={{ fontSize: 9, color: 'var(--txt-3)' }}>from a plate</span>}
+          </div>
+        ))}
+        <label
+          htmlFor={inputId}
+          style={{
+            width: 96, height: 96, borderRadius: 6, border: '1px dashed var(--line)', cursor: 'pointer',
+            display: 'grid', placeItems: 'center', textAlign: 'center', fontSize: 11, color: 'var(--txt-2)', padding: 6,
+          }}
+        >
+          {photos.length ? '+ add pictures' : '+ add a picture'}
+        </label>
+        <input
+          id={inputId}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: 'none' }}
+          disabled={busy}
+          onChange={(e) => {
+            const files = [...(e.target.files ?? [])]
+            e.target.value = ''
+            if (!files.length) return
+            Promise.all(files.map((f) => shrinkPhoto(f, 1000)))
+              .then(onAdd)
+              .catch((err) => onError(err instanceof Error ? err.message : String(err)))
+          }}
+        />
+      </div>
+      {shown && viewing !== null && (
+        <div
+          role="dialog"
+          aria-label={`${product.name} pictures`}
+          onClick={() => setViewing(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setViewing(null)
+            if (e.key === 'ArrowRight') setViewing((v) => ((v ?? 0) + 1) % photos.length)
+            if (e.key === 'ArrowLeft') setViewing((v) => ((v ?? 0) - 1 + photos.length) % photos.length)
+          }}
+          tabIndex={-1}
+          ref={(el) => el?.focus()}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,.82)', zIndex: 50,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24,
+          }}
+        >
+          {photos.length > 1 && (
+            <button type="button" className="btn" aria-label="Previous picture" onClick={(e) => { e.stopPropagation(); setViewing((v) => ((v ?? 0) - 1 + photos.length) % photos.length) }}>‹</button>
+          )}
+          <figure style={{ margin: 0, textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+            <img src={shown.image} alt={product.name} style={{ width: 'min(78vw, 900px)', maxHeight: '80vh', objectFit: 'contain', borderRadius: 8 }} />
+            <figcaption style={{ color: '#ddd', fontSize: 12, marginTop: 8 }}>
+              {product.name} · {photos.indexOf(shown) + 1} of {photos.length}
+              {shown.import_id ? ' · from a plate' : ''}
+            </figcaption>
+          </figure>
+          {photos.length > 1 && (
+            <button type="button" className="btn" aria-label="Next picture" onClick={(e) => { e.stopPropagation(); setViewing((v) => ((v ?? 0) + 1) % photos.length) }}>›</button>
           )}
         </div>
-      </div>
+      )}
     </div>
   )
 }

@@ -30,6 +30,9 @@ const saveProduct = vi.fn(async () => 'prod-new')
 const saveBatch = vi.fn(async () => 'batch-new')
 const saveChannel = vi.fn(async () => channels[0])
 const updateProduct = vi.fn(async () => {})
+const addProductPhotos = vi.fn(async () => {})
+const removeProductPhoto = vi.fn(async () => {})
+const coverProductPhoto = vi.fn(async () => {})
 const matchShelfPhotos = vi.fn(async () => ({ matched: 0, need: [] as string[] }))
 
 vi.mock('../lib/data', async () => {
@@ -37,7 +40,7 @@ vi.mock('../lib/data', async () => {
   return {
     ...types,
     listShelf, listChannels, listSales, recordSale, deleteSale,
-    saveProduct, saveBatch, saveChannel, updateProduct, matchShelfPhotos,
+    saveProduct, saveBatch, saveChannel, updateProduct, matchShelfPhotos, addProductPhotos, removeProductPhoto, coverProductPhoto,
   }
 })
 
@@ -308,11 +311,56 @@ describe('pictures from the project', () => {
     await waitFor(() => expect(matchShelfPhotos).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(listShelf.mock.calls.length).toBeGreaterThanOrEqual(2))
   })
-  it('does not ask when every product has a picture', async () => {
+  it('asks once per visit, even when products already have pictures (a new plate may have come in)', async () => {
     products = keychains()
     products[0].photo = 'data:x'
+    products[0].photos = [{ id: 'ph1', image: 'data:x', import_id: null }]
     await renderShelf()
     await screen.findByText('Hex keychain')
-    expect(matchShelfPhotos).not.toHaveBeenCalled()
+    await waitFor(() => expect(matchShelfPhotos).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('several pictures (CG, 22 Oct)', () => {
+  beforeEach(() => {
+    products = keychains()
+    products[0].photos = [
+      { id: 'ph1', image: 'data:frame', import_id: 'imp-1' },
+      { id: 'ph2', image: 'data:bathy', import_id: 'imp-2' },
+      { id: 'ph3', image: 'data:real', import_id: null },
+    ]
+    products[0].photo = 'data:frame'
+  })
+
+  it('shows every picture, cover first, and says how many on the row', async () => {
+    const user = userEvent.setup()
+    await renderShelf()
+    const row = (await screen.findByText('Hex keychain')).closest('tr') as HTMLTableRowElement
+    expect(within(row).getByText(/3 pictures/)).toBeDefined()
+    await user.click(screen.getByText('Hex keychain'))
+    const imgs = screen.getAllByRole('img', { name: /Hex keychain, picture/ })
+    expect(imgs.map((i) => i.getAttribute('src'))).toEqual(['data:frame', 'data:bathy', 'data:real'])
+    expect(screen.getAllByText(/from a plate/).length).toBe(2)
+  })
+
+  it('makes one the cover, and removes one', async () => {
+    const user = userEvent.setup()
+    await renderShelf()
+    await user.click(await screen.findByText('Hex keychain'))
+    await user.click(screen.getAllByRole('button', { name: /make cover/i })[1])
+    await waitFor(() => expect(coverProductPhoto).toHaveBeenCalledWith(expect.anything(), 'ph3'))
+    await user.click(screen.getByRole('button', { name: /remove picture 2/i }))
+    await waitFor(() => expect(removeProductPhoto).toHaveBeenCalledWith(expect.anything(), 'ph2'))
+  })
+
+  it('opens a picture larger, and steps to the next', async () => {
+    const user = userEvent.setup()
+    await renderShelf()
+    await user.click(await screen.findByText('Hex keychain'))
+    await user.click(screen.getByRole('img', { name: /Hex keychain, picture 1/ }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(/1 of 3/)).toBeDefined()
+    await user.click(within(dialog).getByRole('button', { name: /next picture/i }))
+    expect(within(dialog).getByText(/2 of 3/)).toBeDefined()
   })
 })

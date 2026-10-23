@@ -813,3 +813,15 @@ export async function updateProduct(shopId: string, productId: string, patch: im
 export async function matchShelfPhotos(shopId: string): Promise<{ matched: number; need: string[] }> {
   return (await backend()).matchShelfPhotos(shopId)
 }
+
+export async function addProductPhotos(shopId: string, productId: string, images: string[]): Promise<void> {
+  return (await backend()).addProductPhotos(shopId, productId, images)
+}
+
+export async function removeProductPhoto(shopId: string, photoId: string): Promise<void> {
+  return (await backend()).removeProductPhoto(shopId, photoId)
+}
+
+export async function coverProductPhoto(shopId: string, photoId: string): Promise<void> {
+  return (await backend()).coverProductPhoto(shopId, photoId)
+}
