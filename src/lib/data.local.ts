@@ -22,6 +22,7 @@
  * Treat it as a strong draft, not a proven one, until Phase 4's parity task
  * is checked off.
  */
+import { matchShelfPhotos as pickShelfPhotos, type PhotoProduct, type PhotoBatch, type PhotoItem, type PhotoAssembly, type PhotoImport, type PhotoSection } from './shelfPhotos'
 import { describePartEdit, describeProjectEdits, type ProjectBefore } from './edits'
 import Database from '@tauri-apps/plugin-sql'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
@@ -3591,6 +3592,8 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
 
   return products.map((p) => ({
     ...p,
+    // '' means the picture was removed on purpose; to a screen it is none.
+    photo: p.photo || null,
     batches: batches
       .filter((b) => b.product_id === p.id)
       .map((b) => ({ ...b, estimated: b.job_id === null })),
@@ -4770,6 +4773,56 @@ export async function updateProduct(shopId: string, productId: string, patch: Pr
     if (!name) throw new Error('A product needs a name.')
     await d.execute('update products set name = ? where id = ? and shop_id = ?', [name, productId, shopId])
   }
+  // Removing stores '' rather than null, so matchShelfPhotos does not put
+  // the plate picture straight back.
   if (patch.photo !== undefined)
-    await d.execute('update products set photo = ? where id = ? and shop_id = ?', [patch.photo, productId, shopId])
+    await d.execute('update products set photo = ? where id = ? and shop_id = ?', [patch.photo || '', productId, shopId])
+}
+
+/**
+ * Give every Shelf product that has never had a picture the picture of the
+ * plate it came off (CG, 22 Oct). See lib/shelfPhotos.ts for the rule.
+ * Returns how many were matched, and which files still need reading.
+ */
+export async function matchShelfPhotos(shopId: string): Promise<{ matched: number; need: string[] }> {
+  const d = await db()
+  const products = await d.select<PhotoProduct[]>(
+    'select id, name, photo, design_job_id from products where shop_id = ? and photo is null',
+    [shopId],
+  )
+  if (!products.length) return { matched: 0, need: [] }
+  const [batches, items, assemblies, imports, sections] = await Promise.all([
+    d.select<PhotoBatch[]>('select id, product_id, job_id from batches where shop_id = ?', [shopId]),
+    d.select<PhotoItem[]>(
+      `select m.batch_id, m.assembly_id, coalesce(s.import_id, r.slice_import_id) as import_id
+         from made_items m
+         left join slice_sections s on s.id = m.section_id
+         left join print_runs r on r.id = m.run_id
+        where m.shop_id = ?`,
+      [shopId],
+    ),
+    d.select<PhotoAssembly[]>('select id, batch_id from assemblies where shop_id = ?', [shopId]),
+    d.select<(Omit<PhotoImport, 'has_file'> & { has_file: number })[]>(
+      `select i.id, i.job_id, i.thumbnail,
+              exists (select 1 from slice_files f where f.import_id = i.id) as has_file
+         from slice_imports i where i.shop_id = ?`,
+      [shopId],
+    ),
+    d.select<PhotoSection[]>(
+      `select s.import_id, s.label from slice_sections s
+         join slice_imports i on i.id = s.import_id where i.shop_id = ?`,
+      [shopId],
+    ),
+  ])
+  const m = pickShelfPhotos({
+    products,
+    batches,
+    items,
+    assemblies,
+    imports: imports.map((i) => ({ ...i, has_file: !!Number(i.has_file) })),
+    sections,
+  })
+  for (const x of m.set)
+    await d.execute('update products set photo = ? where id = ? and shop_id = ? and photo is null', [x.thumbnail, x.productId, shopId])
+  return { matched: m.set.length, need: m.need }
 }

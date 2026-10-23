@@ -30,13 +30,14 @@ const saveProduct = vi.fn(async () => 'prod-new')
 const saveBatch = vi.fn(async () => 'batch-new')
 const saveChannel = vi.fn(async () => channels[0])
 const updateProduct = vi.fn(async () => {})
+const matchShelfPhotos = vi.fn(async () => ({ matched: 0, need: [] as string[] }))
 
 vi.mock('../lib/data', async () => {
   const types = await import('../lib/data.types')
   return {
     ...types,
     listShelf, listChannels, listSales, recordSale, deleteSale,
-    saveProduct, saveBatch, saveChannel, updateProduct,
+    saveProduct, saveBatch, saveChannel, updateProduct, matchShelfPhotos,
   }
 })
 
@@ -296,5 +297,22 @@ describe('shipping on a sale', () => {
     const [, input] = recordSale.mock.calls[0] as unknown as [string, Record<string, unknown>]
     expect(input.shippingCharged).toBe(5)
     expect(input.shippingCost).toBe(4)
+  })
+})
+
+describe('pictures from the project', () => {
+  it('asks for plate pictures when a product has none, and reloads when one is found', async () => {
+    products = keychains()
+    matchShelfPhotos.mockResolvedValueOnce({ matched: 1, need: [] })
+    await renderShelf()
+    await waitFor(() => expect(matchShelfPhotos).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(listShelf.mock.calls.length).toBeGreaterThanOrEqual(2))
+  })
+  it('does not ask when every product has a picture', async () => {
+    products = keychains()
+    products[0].photo = 'data:x'
+    await renderShelf()
+    await screen.findByText('Hex keychain')
+    expect(matchShelfPhotos).not.toHaveBeenCalled()
   })
 })

@@ -809,3 +809,7 @@ export async function setSliceExtras(shopId: string, importId: string, thumbnail
 export async function updateProduct(shopId: string, productId: string, patch: import('./data.types').ProductPatch): Promise<void> {
   return (await backend()).updateProduct(shopId, productId, patch)
 }
+
+export async function matchShelfPhotos(shopId: string): Promise<{ matched: number; need: string[] }> {
+  return (await backend()).matchShelfPhotos(shopId)
+}

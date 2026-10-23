@@ -13,6 +13,7 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
+import { matchShelfPhotos as pickShelfPhotos } from './shelfPhotos'
 import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, renumberCopies, setStates, statesOf, statusOf } from './copies'
 import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
@@ -2957,7 +2958,7 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
     design_cost: p.design_cost === null ? null : Number(p.design_cost),
     design_hours: p.design_hours === null ? null : Number(p.design_hours),
     archived: p.archived ? 1 : 0,
-    photo: (p as { photo?: string | null }).photo ?? null,
+    photo: (p as { photo?: string | null }).photo || null,
     batches: batches.filter((b) => b.product_id === String(p.id)),
   }))
 }
@@ -3962,8 +3963,44 @@ export async function updateProduct(shopId: string, productId: string, patch: Pr
     if (!name) throw new Error('A product needs a name.')
     row.name = name
   }
-  if (patch.photo !== undefined) row.photo = patch.photo
+  if (patch.photo !== undefined) row.photo = patch.photo || ''
   if (!Object.keys(row).length) return
   const { error } = await supabase.from('products').update(row).eq('id', productId).eq('shop_id', shopId)
   if (error) throw error
+}
+
+/** See data.local.ts's matchShelfPhotos. */
+export async function matchShelfPhotos(shopId: string): Promise<{ matched: number; need: string[] }> {
+  const { data: products, error } = await supabase
+    .from('products').select('id, name, photo, design_job_id').eq('shop_id', shopId).is('photo', null)
+  if (error) throw error
+  if (!products?.length) return { matched: 0, need: [] }
+  const [b, m, a, i, s, f] = await Promise.all([
+    supabase.from('batches').select('id, product_id, job_id').eq('shop_id', shopId),
+    supabase.from('made_items').select('batch_id, assembly_id, slice_sections ( import_id ), print_runs ( slice_import_id )').eq('shop_id', shopId),
+    supabase.from('assemblies').select('id, batch_id').eq('shop_id', shopId),
+    supabase.from('slice_imports').select('id, job_id, thumbnail').eq('shop_id', shopId),
+    supabase.from('slice_sections').select('import_id, label, slice_imports!inner ( shop_id )').eq('slice_imports.shop_id', shopId),
+    supabase.from('slice_files').select('import_id, slice_imports!inner ( shop_id )').eq('slice_imports.shop_id', shopId),
+  ])
+  for (const r of [b, m, a, i, s, f]) if (r.error) throw r.error
+  const kept = new Set(((f.data ?? []) as any[]).map((x) => String(x.import_id)))
+  const one = <T,>(x: T | T[] | null | undefined): T | null => (Array.isArray(x) ? x[0] ?? null : x ?? null)
+  const pick = pickShelfPhotos({
+    products: (products as any[]).map((p) => ({ id: String(p.id), name: p.name, photo: p.photo ?? null, design_job_id: p.design_job_id ?? null })),
+    batches: ((b.data ?? []) as any[]).map((x) => ({ id: String(x.id), product_id: String(x.product_id), job_id: x.job_id ?? null })),
+    items: ((m.data ?? []) as any[]).map((x) => ({
+      batch_id: x.batch_id ?? null,
+      assembly_id: x.assembly_id ?? null,
+      import_id: one<any>(x.slice_sections)?.import_id ?? one<any>(x.print_runs)?.slice_import_id ?? null,
+    })),
+    assemblies: ((a.data ?? []) as any[]).map((x) => ({ id: String(x.id), batch_id: x.batch_id ?? null })),
+    imports: ((i.data ?? []) as any[]).map((x) => ({ id: String(x.id), job_id: String(x.job_id), thumbnail: x.thumbnail ?? null, has_file: kept.has(String(x.id)) })),
+    sections: ((s.data ?? []) as any[]).map((x) => ({ import_id: String(x.import_id), label: String(x.label) })),
+  })
+  for (const x of pick.set) {
+    const { error: uErr } = await supabase.from('products').update({ photo: x.thumbnail }).eq('id', x.productId).eq('shop_id', shopId).is('photo', null)
+    if (uErr) throw uErr
+  }
+  return { matched: pick.set.length, need: pick.need }
 }

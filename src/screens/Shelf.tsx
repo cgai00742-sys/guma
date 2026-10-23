@@ -25,7 +25,7 @@
  * figure means the denominator grows with every batch, and last month's
  * number quietly becomes wrong -- see 0014_selling.sql.
  */
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   deleteBatch,
@@ -40,6 +40,9 @@ import {
   saveBatch,
   saveProduct,
   updateProduct,
+  matchShelfPhotos,
+  sliceFileContent,
+  setSliceExtras,
   type ChannelInput,
   type ChannelRow,
   type ProductRow,
@@ -50,6 +53,8 @@ import { makeMoney } from '../lib/pricing'
 import { productResult, summarize, type BatchStock, type ProductResult } from '../lib/selling'
 import { todayISO } from '../lib/dates'
 import { Flash, useFlash } from '../components/Saving'
+import { unpackFile } from '../lib/sliceFile'
+import { fileExtras } from '../lib/fileExtras'
 
 /** The rows the pure module wants, out of the rows the database gives. */
 function stockOf(products: ProductRow[]): BatchStock[] {
@@ -113,6 +118,54 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  /**
+   * Products that have never had a picture take their plate's (CG, 22 Oct).
+   * Quietly, after the Shelf is on screen: match what is already known,
+   * read any plate file whose picture was never pulled out, match again.
+   */
+  const filesTried = useRef(new Set<string>())
+  const photosChecked = useRef(false)
+  useEffect(() => {
+    if (!products || photosChecked.current) return
+    if (!products.some((p) => !p.photo)) return
+    photosChecked.current = true
+    let live = true
+    void (async () => {
+      try {
+        let { matched, need } = await matchShelfPhotos(ctx.shop.id)
+        let read = 0
+        for (const id of need) {
+          if (!live || filesTried.current.has(id)) continue
+          filesTried.current.add(id)
+          try {
+            const row = await sliceFileContent(ctx.shop.id, id)
+            if (!row) continue
+            const bytes = await unpackFile(row.content)
+            const u = bytes as unknown as Uint8Array
+            // Only the bytes are at hand here, so tell the kind by its magic:
+            // binary G-code starts "GCDE", a 3MF is a zip ("PK").
+            const head = String.fromCharCode(...u.slice(0, 4))
+            const kind = head === 'GCDE' ? 'bgcode' : head.startsWith('PK') ? '3mf' : 'gcode'
+            const ex = await fileExtras(new File([u as unknown as BlobPart], `plate.${kind}`))
+            if (ex.thumbnail || ex.slicedAt) {
+              await setSliceExtras(ctx.shop.id, id, ex.thumbnail, ex.slicedAt)
+              read++
+            }
+          } catch {
+            // A picture is a nicety; leave it for the person to add.
+          }
+        }
+        if (read) matched += (await matchShelfPhotos(ctx.shop.id)).matched
+        if (live && matched) await reload()
+      } catch {
+        // Same: never let a picture get in the way of the Shelf.
+      }
+    })()
+    return () => {
+      live = false
+    }
+  }, [products, ctx.shop.id, reload])
 
   const results: ProductResult[] = useMemo(() => {
     if (!products) return []
