@@ -169,7 +169,7 @@ import { sheetVsQuote } from '../lib/sheetVsQuote'
 import HoursInput from '../components/HoursInput'
 import { fmtHours } from '../lib/duration'
 import { fmtMinutes, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
-import { sameSliceFile, type PrintRunRow, type SliceImportRow, type StockHoldRow } from '../lib/data.types'
+import { sameSliceFile, uniqueLabel, type PrintRunRow, type SliceImportRow, type StockHoldRow } from '../lib/data.types'
 import { splitJobCost } from '../lib/selling'
 import { fileExtras, type FileExtras } from '../lib/fileExtras'
 import { gramsUsed, plateObjects, runCost, splitCost, assemblyStatus, type ObjectResult, type PlateObject } from '../lib/madeItems'
@@ -1999,6 +1999,18 @@ function SortPick({
   const choice: SortChoice = guess?.choice ?? { kind: 'new', label: objectLabel }
   const [name, setName] = useState(choice.kind === 'new' ? choice.label : objectLabel)
   const fromFile = fileName ? nameFromFile(fileName) : null
+  const taken = parts.map((p) => p.label)
+  const samePart = parts.find((p) => p.label.trim().toLowerCase() === objectLabel.trim().toLowerCase()) ?? null
+  /** The file's name and the object's name, each made unique against the
+   *  build sheet -- and whatever is typed now, so it stays one of them. */
+  const suggestions = [
+    ...new Map(
+      [fromFile, objectLabel]
+        .filter((n): n is string => !!n && !!n.trim())
+        .map((n) => uniqueLabel(n.trim(), taken))
+        .map((n) => [n.toLowerCase(), n] as const),
+    ).values(),
+  ]
   const sizeOf = (p: PartRow) => {
     const s = partSizes(p)[0]
     if (!s) return ''
@@ -2044,24 +2056,52 @@ function SortPick({
           }}
         />
       )}
+      {/* Every name worth giving it, one click each (CG, 23 Oct: "I used to
+          be able to add a new part based on the name the file was imported
+          as ... doesn't allow me to click on the suggested name"). The one
+          in use is marked rather than hidden, so the choice never vanishes. */}
       {choice.kind === 'new' &&
-        fromFile &&
-        fromFile.toLowerCase() !== choice.label.trim().toLowerCase() &&
-        // Not when that name is a part already: it would only become "… (2)".
-        !parts.some((p) => p.label.trim().toLowerCase() === fromFile.toLowerCase()) && (
-        <button
-          type="button"
-          className="linkbtn"
-          style={{ fontSize: 11, width: 'auto', marginTop: 2 }}
-          onClick={() => {
-            setName(fromFile)
-            onChange({ choice: { kind: 'new', label: fromFile }, why: guess?.why ?? null })
-          }}
-        >
-          use the file&rsquo;s name: {fromFile}
-        </button>
+        (suggestions.length > 1 || (suggestions.length === 1 && suggestions[0].toLowerCase() !== choice.label.trim().toLowerCase())) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 4, fontSize: 11 }}>
+          <span style={{ color: 'var(--txt-3)' }}>Name it:</span>
+          {suggestions.map((n) => {
+            const on = n.toLowerCase() === choice.label.trim().toLowerCase()
+            return (
+              <button
+                key={n}
+                type="button"
+                className={`btn sm${on ? ' primary' : ''}`}
+                aria-pressed={on}
+                style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={() => {
+                  setName(n)
+                  onChange({ choice: { kind: 'new', label: n }, why: guess?.why ?? null })
+                }}
+              >
+                {n}
+              </button>
+            )
+          })}
+        </div>
       )}
-      {guess?.why && <div className="hint" style={{ marginTop: 2, color: 'var(--warn)' }}>{guess.why}</div>}
+      {guess?.why && (
+        <div className="hint" style={{ marginTop: 4, color: 'var(--warn)' }}>
+          {guess.why}
+          {samePart && choice.kind === 'new' && (
+            <>
+              {' '}
+              <button
+                type="button"
+                className="btn sm"
+                style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={() => onChange({ choice: { kind: 'part', partId: samePart.id }, why: guess.why })}
+              >
+                It is {samePart.label}
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }

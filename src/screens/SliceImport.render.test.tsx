@@ -1427,6 +1427,31 @@ describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
     expect(await within(plates).findByText('Small cap')).toBeDefined()
   })
 
+  it('offers the file name and the object name as one-click names, and the old part as one click (CG, 23 Oct)', async () => {
+    const { ctx, jobId } = await seedShop('inhouse')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await user.click(await screen.findByRole('button', { name: /record the print/i }))
+    await screen.findByRole('list', { name: /prints of reef buoy_sliced/i })
+
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([SMALL_CAP], 'Sliced_Small cap_0.4n_0.2mm_PETG_XL_10m.gcode'))
+    const name = (await screen.findByLabelText(/name the new part for cap/i)) as HTMLInputElement
+    // The file's name is in use -- and still shown, marked, not hidden.
+    expect(screen.getByRole('button', { name: 'Small cap' }).getAttribute('aria-pressed')).toBe('true')
+    // The object's own name, made unique against the build sheet.
+    await user.click(screen.getByRole('button', { name: 'Cap (2)' }))
+    expect(name.value).toBe('Cap (2)')
+    // Typed over, the file's name is one click back.
+    await user.clear(name)
+    await user.type(name, 'Something else')
+    await user.click(screen.getByRole('button', { name: 'Small cap' }))
+    expect(name.value).toBe('Small cap')
+    // And the warning's part is a choice, not just a sentence.
+    await user.click(screen.getByRole('button', { name: /^It is Cap$/ }))
+    expect((screen.getByLabelText(/where cap goes/i) as HTMLSelectElement).value).toMatch(/^part:/)
+  })
+
   it('moves an object already imported to the right part, and its printed copy with it', async () => {
     const { ctx, jobId } = await seedShop('inhouse')
     const user = userEvent.setup()
