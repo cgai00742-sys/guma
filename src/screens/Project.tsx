@@ -2832,6 +2832,15 @@ interface PendingFile {
   stopWhy: string
   /** Already on this project (or earlier in this batch): when, or 'this batch'. */
   dupOf: string | null
+  /** The plate already on the project this file is, when it is one. */
+  dupPlate: string | null
+  /**
+   * The same file again, on a plate that already has a print: is this ANOTHER
+   * print of it? (CG, 24 Oct: a plate stopped part way, printed again clean,
+   * dropped again -- and the clean print was silently not recorded.) Asked,
+   * not guessed; defaulted to yes when the last print did not come off clean.
+   */
+  again: boolean
   /** Where each object goes, one per section (CG, 16 Oct). */
   sorts: SortGuess[]
   /** Some objects on the plate failed (your own work): which, and weights. */
@@ -2938,6 +2947,12 @@ function SliceImport({
           stop: null,
           stopWhy: '',
           dupOf: onProject ? onProject.importedAt.slice(0, 10) : inBatch ? 'this batch' : null,
+          dupPlate: onProject?.id ?? null,
+          again: (() => {
+            if (!onProject) return false
+            const before = detail.runs.filter((r) => r.sliceImportId === onProject.id)
+            return before.length > 0 && before.every((r) => r.outcome !== 'success')
+          })(),
         })
       } catch (e) {
         errors.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`)
@@ -2956,10 +2971,15 @@ function SliceImport({
     setDragging(false)
   }
 
+  /** The same file again, said to be the same print: nothing to record. */
+  function droppedAgain(p: PendingFile): boolean {
+    return !!p.dupPlate && !p.again && detail.runs.some((r) => r.sliceImportId === p.dupPlate)
+  }
+
   /** Why a card cannot be added yet, or null when it can. */
   function blocker(p: PendingFile): string | null {
     if (p.sorts.some((g) => g.choice.kind === 'new' && !g.choice.label.trim())) return 'Name the new part above'
-    const printedNow = printing && p.printed
+    const printedNow = printing && p.printed && !droppedAgain(p)
     if (printedNow && !p.printerId) return 'Pick the machine above to record the print'
     if (printedNow && p.howWent !== 'success' && !p.stop) return 'Say how long it ran and what it weighs, above'
     return null
@@ -2968,7 +2988,7 @@ function SliceImport({
   /** Write one card: the import, and the print if it already happened. */
   async function addOne(p: PendingFile, recordedNow: Set<string>): Promise<{ text: string; parts: number }> {
     const { read, kept, printerId, materialId, howWent, stop, stopWhy } = p
-    const printedNow = printing && p.printed
+    const printedNow = printing && p.printed && !droppedAgain(p)
     const res = await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
       file: kept,
       fileName: read.fileName,
@@ -2998,7 +3018,8 @@ function SliceImport({
     // `detail` is from before this batch, so a file recorded earlier in the
     // same batch is remembered here -- the same file dropped twice is one print.
     const alreadyRecorded =
-      !!res.duplicateOf && (recordedNow.has(res.importId) || detail.runs.some((r) => r.sliceImportId === res.importId))
+      !!res.duplicateOf &&
+      (recordedNow.has(res.importId) || (!p.again && detail.runs.some((r) => r.sliceImportId === res.importId)))
     if (alreadyRecorded) {
       recorded = 'Its print was already recorded, so nothing was counted twice — use “Print it again” on the plate if it really printed twice.'
     } else if (printedNow && printerId) {
@@ -3180,7 +3201,7 @@ function SliceImport({
 
       {pending.map((p, i) => {
         const { read } = p
-        const printedNow = printing && p.printed
+        const printedNow = printing && p.printed && !droppedAgain(p)
         // The first card keeps the plain ids the page has always had.
         const sfx = i === 0 ? '' : `-${i + 1}`
         const block = blocker(p)
@@ -3197,15 +3218,38 @@ function SliceImport({
                 {read.totals.estMinutes != null && ` · ~${hrs(read.totals.estMinutes)}`}
               </span>
             </div>
-            {p.dupOf && (
-              <div className="attn warn" role="note" style={{ marginTop: 0, marginBottom: 8 }}>
-                <span>
-                  {p.dupOf === 'this batch'
-                    ? 'The same file is already in this batch — it will be counted once.'
-                    : `This file is already on the project (imported ${p.dupOf}). Adding it again changes nothing; if it printed a second time, use “Print it again” on its plate instead.`}
-                </span>
-              </div>
-            )}
+            {p.dupOf &&
+              (() => {
+                const before = p.dupPlate ? detail.runs.filter((r) => r.sliceImportId === p.dupPlate) : []
+                if (p.dupOf === 'this batch' || !before.length)
+                  return (
+                    <div className="attn warn" role="note" style={{ marginTop: 0, marginBottom: 8 }}>
+                      <span>
+                        {p.dupOf === 'this batch'
+                          ? 'The same file is already in this batch — it will be counted once.'
+                          : `This file is already on the project (imported ${p.dupOf}) and nothing has been recorded from it yet — recording now records its first print.`}
+                      </span>
+                    </div>
+                  )
+                const said = (r: PrintRunRow) =>
+                  `${(r.startedAt ?? '').slice(0, 10)}, ${r.outcome === 'success' ? 'came off clean' : r.outcome === 'cancelled' ? 'stopped part way' : 'failed'}`
+                return (
+                  <div className="attn warn" role="group" aria-label="Another print of this plate?" style={{ marginTop: 0, marginBottom: 8, display: 'block' }}>
+                    <b>This plate is already on the project</b>, with {before.length} print
+                    {before.length === 1 ? '' : 's'} recorded: {before.map(said).join('; ')}. Is this another print of it?
+                    <div style={{ display: 'flex', gap: 14, marginTop: 6, fontSize: 12, flexWrap: 'wrap' }}>
+                      <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input type="radio" name={`again-${p.key}`} checked={p.again} onChange={() => patchOne(p.key, { again: true, printed: true })} />
+                        Yes — I printed it again; record this print too
+                      </label>
+                      <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input type="radio" name={`again-${p.key}`} checked={!p.again} onChange={() => patchOne(p.key, { again: false })} />
+                        No — same print, the file was just dropped again
+                      </label>
+                    </div>
+                  </div>
+                )
+              })()}
 
             <div className="sheetwrap">
               <table>
@@ -3296,7 +3340,7 @@ function SliceImport({
               </div>
             ))}
 
-            {printing && (
+            {printing && !droppedAgain(p) && (
               <div className="btnrow" style={{ marginTop: 10, alignItems: 'center' }}>
                 <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
                   <input type="checkbox" checked={printedNow} onChange={(e) => patchOne(p.key, { printed: e.target.checked })} />

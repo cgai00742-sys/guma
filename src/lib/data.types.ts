@@ -1331,8 +1331,14 @@ export function sameSliceFile(
   b: { fileName: string; estMinutes: number | null; estGrams: number | null },
 ): boolean {
   const n = (v: number | null) => (v == null ? null : Math.round(Number(v) * 10) / 10)
-  // A browser saving the same download twice names it "x (1).bgcode".
-  const name = (f: string) => f.trim().toLowerCase().replace(/\s\(\d+\)(?=\.[^.]+$|$)/, '')
+  // A browser saving the same download twice names it "x (1).bgcode"; the
+  // Mac's Finder names a copy "x 1.bgcode" or "x copy.bgcode" (CG, 24 Oct:
+  // the same Gahet plate, printed twice). Sizes must match exactly too.
+  const name = (f: string) =>
+    f
+      .trim()
+      .toLowerCase()
+      .replace(/\s(\(\d+\)|\d+|copy(\s\d+)?)(?=\.[a-z0-9.]+$|$)/, '')
   return (
     name(a.fileName) === name(b.fileName) &&
     n(a.estMinutes) === n(b.estMinutes) &&

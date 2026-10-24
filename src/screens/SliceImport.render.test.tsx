@@ -1723,3 +1723,49 @@ describe('a plate removed before 23 Oct left prints that still mark parts (CG, 2
     expect((currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }).on_hand).toBe(1000)
   })
 })
+
+describe('the same plate printed again and dropped again (CG, 24 Oct)', () => {
+  async function failedFirst() {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await addAsEstimate(user)
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
+    await user.type(await screen.findByLabelText(/what went wrong/i), 'Ghost printing')
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) n from print_runs').get()).toEqual({ n: 1 }))
+    return { user, jobId }
+  }
+  const states = () =>
+    (currentDb.sqlite.prepare('select copy_states from job_parts order by sort').all() as { copy_states: string | null }[]).map((r) => r.copy_states)
+
+  it('asks, defaults to yes after a failed print, and records the clean one on the same plate', async () => {
+    const { user } = await failedFirst()
+    // The Mac's copy of the same download: "name 1.gcode".
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile('Reef buoy_sliced 1.gcode'))
+    const ask = await screen.findByRole('group', { name: /another print of this plate/i })
+    expect(ask.textContent).toMatch(/1 print recorded: .*failed/)
+    expect((within(ask).getByLabelText(/yes — i printed it again/i) as HTMLInputElement).checked).toBe(true)
+    await user.click(screen.getByRole('button', { name: /record the print/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) n from print_runs').get()).toEqual({ n: 2 }))
+    // One plate, two prints; the copies the failure sent back are printed now.
+    expect(currentDb.sqlite.prepare('select count(*) n from slice_imports').get()).toEqual({ n: 1 })
+    expect(states().every((s) => s == null || !s.includes('reprint'))).toBe(true)
+    expect(currentDb.sqlite.prepare("select count(*) n from job_parts where printed_n > 0").get()).toEqual({ n: 2 })
+  })
+
+  it('records nothing when you say it was the same print, and does not promise to', async () => {
+    const { user } = await failedFirst()
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    const ask = await screen.findByRole('group', { name: /another print of this plate/i })
+    await user.click(within(ask).getByLabelText(/no — same print/i))
+    expect(screen.queryByRole('checkbox', { name: /already printed/i })).toBeNull()
+    const add = [...document.querySelectorAll('button')].find((b) => /^add/i.test(b.textContent ?? '') && /sheet|section/i.test(b.textContent ?? ''))!
+    await user.click(add)
+    await waitFor(() => expect(screen.queryByRole('group', { name: /another print of this plate/i })).toBeNull())
+    expect(currentDb.sqlite.prepare('select count(*) n from print_runs').get()).toEqual({ n: 1 })
+  })
+})

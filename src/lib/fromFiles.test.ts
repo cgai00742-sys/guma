@@ -31,3 +31,16 @@ describe('plates, newest print first (CG, 20 Oct)', () => {
     expect(newestFirst(groupSliceFiles(slices, runs), runs).map((g) => g.first.id)).toEqual(['a', 'b'])
   })
 })
+
+describe('the Mac names a copy of a download differently (CG, 24 Oct)', () => {
+  it('treats "x 1.bgcode", "x copy.bgcode" and "x (2).gcode.3mf" as the same file, sizes permitting', async () => {
+    const { sameSliceFile } = await import('./data.types')
+    const a = { fileName: 'Gahet_0.4n_0.15mm_PLA_XLIS_29m.bgcode', estMinutes: 29, estGrams: 6.77 }
+    expect(sameSliceFile(a, { ...a, fileName: 'Gahet_0.4n_0.15mm_PLA_XLIS_29m 1.bgcode' })).toBe(true)
+    expect(sameSliceFile(a, { ...a, fileName: 'Gahet_0.4n_0.15mm_PLA_XLIS_29m copy.bgcode' })).toBe(true)
+    const b = { fileName: 'plate.gcode.3mf', estMinutes: 10, estGrams: 2 }
+    expect(sameSliceFile(b, { ...b, fileName: 'plate (2).gcode.3mf' })).toBe(true)
+    // A different size is a different file, whatever it is called.
+    expect(sameSliceFile(a, { ...a, fileName: 'Gahet_0.4n_0.15mm_PLA_XLIS_29m 1.bgcode', estGrams: 7.5 })).toBe(false)
+  })
+})
