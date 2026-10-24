@@ -2996,6 +2996,33 @@ export async function markPlateFailed(
   return movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', reason?.trim() || 'The plate failed.')
 }
 
+/**
+ * A plate that stopped or failed with some objects good (CG, 24 Oct: "it
+ * should at least ask if some of the parts were successful or if they should
+ * all be marked as failed"). The parts in `ok` gain their copies printed;
+ * every other part on the plate is marked failed with the reason -- the same
+ * copies, the same events, as markPlatePrinted and markPlateFailed.
+ */
+export async function markPlateParts(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+  runId: string | null,
+  ok: string[],
+  reason: string | null,
+): Promise<{ printed: number; failed: number }> {
+  const why = reason?.trim() || 'The plate failed.'
+  const partIds = await platePartIds(shopId, jobId, sliceImportId)
+  let printed = 0
+  let failed = 0
+  for (const id of partIds) {
+    if (ok.includes(id)) printed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'printed', null, id)
+    else failed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', why, id)
+  }
+  return { printed, failed }
+}
+
 /** The copies one plate moves, part by part, each event stamped with the print. */
 async function movePlate(
   shopId: string,
@@ -4869,4 +4896,15 @@ export async function matchShelfPhotos(shopId: string): Promise<{ matched: numbe
     )
   }
   return { matched: m.add.length, need: m.need }
+}
+
+/** The parts one plate makes, each once. */
+async function platePartIds(shopId: string, jobId: string, sliceImportId: string): Promise<string[]> {
+  const d = await db()
+  const rows = await d.select<{ part_id: string }[]>(
+    `select distinct s.part_id from slice_sections s join slice_imports i on i.id = s.import_id
+      where s.import_id = ? and i.job_id = ? and i.shop_id = ? and s.part_id is not null`,
+    [sliceImportId, jobId, shopId],
+  )
+  return rows.map((r) => r.part_id)
 }

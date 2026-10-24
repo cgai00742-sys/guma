@@ -825,3 +825,15 @@ export async function removeProductPhoto(shopId: string, photoId: string): Promi
 export async function coverProductPhoto(shopId: string, photoId: string): Promise<void> {
   return (await backend()).coverProductPhoto(shopId, photoId)
 }
+
+export async function markPlateParts(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+  runId: string | null,
+  ok: string[],
+  reason: string | null,
+): Promise<{ printed: number; failed: number }> {
+  return (await backend()).markPlateParts(shopId, jobId, actorId, sliceImportId, runId, ok, reason)
+}

@@ -1769,3 +1769,48 @@ describe('the same plate printed again and dropped again (CG, 24 Oct)', () => {
     expect(currentDb.sqlite.prepare('select count(*) n from print_runs').get()).toEqual({ n: 1 })
   })
 })
+
+describe('a plate stopped part way asks what came off OK (CG, 24 Oct)', () => {
+  const byLabel = () =>
+    Object.fromEntries(
+      (currentDb.sqlite.prepare('select label, copy_states from job_parts').all() as { label: string; copy_states: string | null }[]).map((r) => [r.label, r.copy_states]),
+    )
+
+  it('at upload: ticked parts are printed, the rest failed', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    const box = await screen.findByRole('checkbox', { name: /already printed/i })
+    if (!(box as HTMLInputElement).checked) await user.click(box)
+    await user.selectOptions(screen.getByLabelText(/how it went/i), 'cancelled')
+    const ask = screen.getByRole('group', { name: /what came off ok/i })
+    expect(ask.textContent).toMatch(/Nothing ticked: every part on the plate is marked failed/)
+    await user.click(within(ask).getByLabelText('Cap'))
+    expect(ask.textContent).toMatch(/Cap marked printed; Buoy shell marked failed/)
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
+    const mins = [...document.querySelectorAll('input')].filter((i) => /minutes/i.test(i.getAttribute('aria-label') ?? ''))
+    await user.type(mins[0], '30')
+    await user.type(screen.getByLabelText(/the failed print weighs/i), '20')
+    await user.click([...document.querySelectorAll('button')].find((b) => /build sheet and record/i.test(b.textContent ?? ''))!)
+    await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) n from print_runs').get()).toEqual({ n: 1 }))
+    expect(byLabel()).toEqual({ 'Buoy shell': '["reprint","reprint"]', Cap: '["printed"]' })
+  })
+
+  it('on a plate already there: the same question, the same result', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await addAsEstimate(user)
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'cancelled')
+    await user.click(within(screen.getByRole('group', { name: /what came off ok/i })).getByLabelText('Buoy shell'))
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) n from print_runs').get()).toEqual({ n: 1 }))
+    await waitFor(() => expect(byLabel()).toEqual({ 'Buoy shell': '["printed","printed"]', Cap: '["reprint"]' }))
+  })
+})

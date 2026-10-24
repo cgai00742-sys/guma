@@ -2378,6 +2378,27 @@ export async function markPlateFailed(
   return movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', reason?.trim() || 'The plate failed.')
 }
 
+/** See data.local.ts's markPlateParts. */
+export async function markPlateParts(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  sliceImportId: string,
+  runId: string | null,
+  ok: string[],
+  reason: string | null,
+): Promise<{ printed: number; failed: number }> {
+  const why = reason?.trim() || 'The plate failed.'
+  const partIds = await platePartIds(shopId, jobId, sliceImportId)
+  let printed = 0
+  let failed = 0
+  for (const id of partIds) {
+    if (ok.includes(id)) printed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'printed', null, id)
+    else failed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', why, id)
+  }
+  return { printed, failed }
+}
+
 /** See data.local.ts's movePlate. */
 async function movePlate(
   shopId: string,
@@ -4056,4 +4077,16 @@ export async function matchShelfPhotos(shopId: string): Promise<{ matched: numbe
     if (iErr && (iErr as { code?: string }).code !== '23505') throw iErr
   }
   return { matched: pick.add.length, need: pick.need }
+}
+
+/** See data.local.ts's platePartIds. */
+async function platePartIds(shopId: string, jobId: string, sliceImportId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('slice_sections')
+    .select('part_id, slice_imports!inner ( job_id, shop_id )')
+    .eq('import_id', sliceImportId)
+    .eq('slice_imports.job_id', jobId)
+    .eq('slice_imports.shop_id', shopId)
+  if (error) throw error
+  return [...new Set(((data ?? []) as any[]).map((r) => r.part_id).filter(Boolean).map(String))]
 }

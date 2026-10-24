@@ -76,6 +76,7 @@ import {
   skipCopy,
   markPlateFailed,
   markPlatePrinted,
+  markPlateParts,
   correctPrintRun,
   deletePrintRun,
   moveSliceSection,
@@ -2111,6 +2112,49 @@ function SortPick({
 }
 
 /**
+ * A plate that stopped or failed: did anything on it come off OK? (CG, 24
+ * Oct.) Asked, never assumed -- a stopped plate often has whole objects done
+ * and others half-built. Ticked parts are marked printed; the rest failed,
+ * so the parts list says exactly what has to print again.
+ */
+function CameOffOk({
+  id,
+  labels,
+  ok,
+  onChange,
+}: {
+  id: string
+  labels: string[]
+  ok: string[]
+  onChange: (ok: string[]) => void
+}) {
+  return (
+    <div className="fld" role="group" aria-label="What came off OK" id={id} style={{ marginTop: 8 }}>
+      <div className="lbl">Did anything on the plate come off OK?</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, fontSize: 12, marginTop: 4 }}>
+        {labels.map((l) => (
+          <label key={l} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={ok.includes(l)}
+              onChange={(e) => onChange(e.target.checked ? [...ok, l] : ok.filter((x) => x !== l))}
+            />
+            {l}
+          </label>
+        ))}
+      </div>
+      <div className="hint" style={{ marginTop: 4 }}>
+        {ok.length === 0
+          ? 'Nothing ticked: every part on the plate is marked failed.'
+          : ok.length === labels.length
+            ? 'Everything ticked: every part is marked printed — then it came off clean; say so above instead.'
+            : `${ok.join(', ')} marked printed; ${labels.filter((l) => !ok.includes(l)).join(', ')} marked failed.`}
+      </div>
+    </div>
+  )
+}
+
+/**
  * Each object on a plate, ticked when it came off (CG, 21 Oct: "if a
  * specific part failed we can mark it with the appropriate information
  * like weight"). Untick one and say what it weighs; the rest came off.
@@ -2834,6 +2878,9 @@ interface PendingFile {
   dupOf: string | null
   /** The plate already on the project this file is, when it is one. */
   dupPlate: string | null
+  /** Stopped or failed: the parts that came off OK anyway, by name; the
+   *  rest are marked failed (CG, 24 Oct). Empty: all failed. */
+  okLabels: string[]
   /**
    * The same file again, on a plate that already has a print: is this ANOTHER
    * print of it? (CG, 24 Oct: a plate stopped part way, printed again clean,
@@ -2948,6 +2995,7 @@ function SliceImport({
           stopWhy: '',
           dupOf: onProject ? onProject.importedAt.slice(0, 10) : inBatch ? 'this batch' : null,
           dupPlate: onProject?.id ?? null,
+          okLabels: [],
           again: (() => {
             if (!onProject) return false
             const before = detail.runs.filter((r) => r.sliceImportId === onProject.id)
@@ -2969,6 +3017,13 @@ function SliceImport({
   function discard(key: string) {
     setPending((xs) => xs.filter((x) => x.key !== key))
     setDragging(false)
+  }
+
+  /** The part an object of a card goes on, by name. */
+  function targetLabel(p: PendingFile, j: number): string {
+    const c = p.sorts[j]?.choice
+    if (!c) return p.read.sections[j]?.label ?? ''
+    return c.kind === 'part' ? (detail.parts.find((x) => x.id === c.partId)?.label ?? '') : c.label
   }
 
   /** The same file again, said to be the same print: nothing to record. */
@@ -3058,9 +3113,20 @@ function SliceImport({
       }
       // The plate came off: each part on it gains the copies the plate
       // holds. Or it did not, and those copies fail with it.
-      const marked = clean
-        ? await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId)
-        : await markPlateFailed(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId, why)
+      let marked: number
+      if (!clean && !mine && p.okLabels.length) {
+        // Some of it came off: those parts printed, the rest failed.
+        const saved = (await listSliceImports(ctx.shop.id, detail.jobId)).find((x) => x.id === res.importId)
+        const okIds = (saved?.sections ?? [])
+          .filter((_, j) => p.okLabels.includes(targetLabel(p, j)))
+          .map((sec) => sec.partId)
+          .filter((x): x is string => !!x)
+        const r = await markPlateParts(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId, okIds, why)
+        marked = r.failed
+      } else
+        marked = clean
+          ? await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId)
+          : await markPlateFailed(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId, why)
       const machine = ctx.printerRows.find((x) => x.id === printerId)?.name ?? 'the machine'
       recorded =
         `Recorded as ${clean ? 'printed' : howWent === 'cancelled' ? 'stopped part way' : 'failed'} on ${machine}: ${
@@ -3382,6 +3448,18 @@ function SliceImport({
                 )}
               </div>
             )}
+            {printedNow && p.howWent !== 'success' && !mine &&
+              (() => {
+                const labels = [...new Set(read.sections.map((_, j) => targetLabel(p, j)).filter(Boolean))]
+                return labels.length > 1 ? (
+                  <CameOffOk
+                    id={`imp-ok${sfx}`}
+                    labels={labels}
+                    ok={p.okLabels}
+                    onChange={(okLabels) => patchOne(p.key, { okLabels })}
+                  />
+                ) : null
+              })()}
             {printedNow && p.partial && (
               <>
                 <ObjectResults
@@ -3567,6 +3645,8 @@ function SliceRuns({
     }
   }, [detail.slices, ctx.shop.id, onChanged])
   const [results, setResults] = useState<ObjectResult[]>([])
+  /** A stopped or failed plate: the parts that came off OK anyway, by name. */
+  const [okParts, setOkParts] = useState<string[]>([])
   const [sortDraft, setSortDraft] = useState<Record<string, SortGuess>>({})
   const [sortMsg, setSortMsg] = useState<{ id: string; text: string } | null>(null)
 
@@ -3883,8 +3963,20 @@ function SliceRuns({
       // workflow starts on the build sheet (CG, 13 Oct). Either way the
       // copies remember this print, so removing it can put them back.
       if (markParts && form.sliceImportId) {
+        const plate = plateParts(form.sliceImportId)
+        const okIds = plate.filter((x) => okParts.includes(x.label)).map((x) => x.id)
         if (form.outcome === 'success')
           await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, form.sliceImportId, runId)
+        else if (!mine && okIds.length)
+          await markPlateParts(
+            ctx.shop.id,
+            detail.jobId,
+            ctx.profile.id,
+            form.sliceImportId,
+            runId,
+            okIds,
+            form.failureReason || (form.outcome === 'cancelled' ? 'Cancelled part way.' : 'The plate failed.'),
+          )
         else
           await markPlateFailed(
             ctx.shop.id,
@@ -3897,12 +3989,22 @@ function SliceRuns({
       }
       setOpenId(null)
       setForm(null)
+      setOkParts([])
       await onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
+  }
+
+  /** The parts a plate makes, each once, by name. */
+  function plateParts(importId: string): { id: string; label: string }[] {
+    const ids = [...new Set((detail.slices.find((x) => x.id === importId)?.sections ?? []).map((sec) => sec.partId).filter(Boolean))]
+    return ids.flatMap((id) => {
+      const part = detail.parts.find((x) => x.id === id)
+      return part ? [{ id: part.id, label: part.label }] : []
+    })
   }
 
   const unit = ctx.materials.find((m) => m.id === form?.materialId)?.unit ?? 'g'
@@ -4456,6 +4558,14 @@ function SliceRuns({
                       }
                     />
                   </div>
+                )}
+                {form.outcome !== 'success' && !mine && !correcting && plateParts(s.id).length > 1 && (
+                  <CameOffOk
+                    id={`sr-ok-${s.id}`}
+                    labels={plateParts(s.id).map((x) => x.label)}
+                    ok={okParts}
+                    onChange={setOkParts}
+                  />
                 )}
                 {form.outcome !== 'success' && (
                   <StoppedPrint
@@ -7854,11 +7964,17 @@ function EachCopy({
               <div className="copytrail">
                 {past.slice(-2).map((f, k) => (
                   <div key={k} className="copyfailed">
-                    ✕ Failed{past.length > 1 ? ` (attempt ${past.length - Math.min(2, past.length) + k + 1})` : ''}
+                    ✕ {st === 'printed' || st === 'passed' ? 'Failed earlier' : 'Failed'}
+                    {past.length > 1 ? ` (attempt ${past.length - Math.min(2, past.length) + k + 1})` : ''}
                     {f.note ? ` — ${f.note}` : ''}
                   </div>
                 ))}
                 {past.length > 2 && <div className="copyfailed">+{past.length - 2} earlier</div>}
+                {/* CG, 24 Oct: a failure above a Printed pill read as if the
+                    copy were failed now. It is history: say what came after. */}
+                {(st === 'printed' || st === 'passed') && !story.file && (
+                  <div className="copyfile">✓ Printed again after that — this copy is done</div>
+                )}
               </div>
             )}
             {story.file && st !== 'reprint' && (
