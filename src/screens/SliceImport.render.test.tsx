@@ -1616,3 +1616,21 @@ describe('plates you can tell apart (CG, 22 Oct)', () => {
     expect(within(plates).getByText(/sliced 2026-09-15/)).toBeDefined()
   })
 })
+
+describe('a client project goes in a series, not under a project (CG, 23 Oct)', () => {
+  it('offers the series, files it, and no longer offers in-house projects as parents', async () => {
+    const { ctx, jobId } = await seedShop('client')
+    const data = await import('../lib/data')
+    const sid = await data.createSeries(ctx.shop.id, { name: 'BathyTopo' })
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    const pick = (await screen.findByLabelText(/piece of/i)) as HTMLSelectElement
+    expect(screen.queryByText(/put this inside a program/i)).toBeNull()
+    expect(screen.queryByText(/start a project inside/i)).toBeNull()
+    expect(document.body.textContent).toMatch(/stays this client.s project/i)
+    await user.selectOptions(pick, sid)
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare('select series_id from jobs where id = ?').get(jobId)).toEqual({ series_id: sid }),
+    )
+  })
+})

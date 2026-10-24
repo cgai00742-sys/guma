@@ -572,6 +572,7 @@ function OneSeries({
                     </Link>
                     <span className="pmeta" style={{ marginLeft: 8 }}>
                       {r.ref}
+                      {r.facts.kind !== 'inhouse' && r.clientName ? ` · for ${r.clientName}` : ''}
                       {r.facts.archivedAt ? ' · archived' : ''}
                     </span>
                   </td>

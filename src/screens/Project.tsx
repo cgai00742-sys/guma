@@ -88,7 +88,6 @@ import {
   recordPrintRun,
   setQuoteStatus,
   takeProjectIn,
-  createInHouseJob,
   deleteProject,
   recordPayment,
   setGateItem,
@@ -159,8 +158,6 @@ import {
   ancestorsOf,
   childrenOf,
   descendantsOf,
-  eligibleParents,
-  pathLabel,
   programTotals,
 } from '../lib/programs'
 import { buildComparison, compareToQuote, priceProjectQuote, type Comparison } from '../lib/actuals'
@@ -1368,30 +1365,36 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             )
           })}
           {/* ---- the family ----
-          The shop's own work lives in a series (0026_series.sql); client
-          work keeps the older "continues from" program link. */}
-      {detail.facts.kind === 'inhouse' ? (
-        <SeriesSection
-          ctx={ctx}
-          jobId={detail.jobId}
-          seriesId={mySeriesId}
-          all={allSeries}
-          busy={busy}
-          onChanged={reload}
-          setError={setError}
-        />
-      ) : (
-      <Program
+          Every project, client or the shop's own, is filed in a SERIES
+          (0026_series.sql). CG, 23 Oct: a client project's question is
+          "what series should this go to, not programs or projects" -- the
+          old program picker offered in-house projects as parents. It is
+          kept only where a client project still has such a link, so it can
+          be seen and undone; nothing new is ever filed that way. */}
+      <SeriesSection
         ctx={ctx}
-        detail={detail}
-        rows={allRows}
+        jobId={detail.jobId}
+        seriesId={mySeriesId}
+        all={allSeries}
+        client={detail.facts.kind !== 'inhouse'}
         busy={busy}
-        open={fold.isOpen('program')}
-        onToggle={(o) => fold.set('program', o)}
         onChanged={reload}
         setError={setError}
       />
-      )}
+      {detail.facts.kind !== 'inhouse' &&
+        allRows &&
+        (childrenOf(allRows, detail.jobId).length > 0 || ancestorsOf(allRows, detail.jobId).length > 0) && (
+          <Program
+            ctx={ctx}
+            detail={detail}
+            rows={allRows}
+            busy={busy}
+            open={fold.isOpen('program')}
+            onToggle={(o) => fold.set('program', o)}
+            onChanged={reload}
+            setError={setError}
+          />
+        )}
 
 
       {/* ---- activity ---- */}
@@ -4820,11 +4823,7 @@ function Program({
   onChanged: () => Promise<void>
   setError: (m: string | null) => void
 }) {
-  const navigate = useNavigate()
   const [saving, setSaving] = useState(false)
-  const [newTitle, setNewTitle] = useState('')
-  const [moving, setMoving] = useState(false)
-  const [filter, setFilter] = useState('')
 
   if (!rows) return null
   const id = detail.jobId
@@ -4850,30 +4849,6 @@ function Program({
     }
   }
 
-  async function startSub() {
-    const title = newTitle.trim()
-    if (!title) return
-    setSaving(true)
-    setError(null)
-    try {
-      const newId = await createInHouseJob(ctx.shop.id, { title, relatedTo: id })
-      setNewTitle('')
-      navigate(`/project/${newId}`)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const options = eligibleParents(rows, id).filter((r) =>
-    filter.trim()
-      ? `${r.title} ${r.ref} ${pathLabel(rows, r.jobId) ?? ''}`
-          .toLowerCase()
-          .includes(filter.trim().toLowerCase())
-      : true,
-  )
-
   return (
     <details
       className="sec fold"
@@ -4883,7 +4858,7 @@ function Program({
       onToggle={(e) => onToggle(e.currentTarget.open)}
     >
       <summary className="sechead">
-        <h4>Program</h4>
+        <h4>Linked projects</h4>
         <span className="secstat">
           {inside.length
             ? `${inside.length} project${inside.length === 1 ? '' : 's'} inside`
@@ -4968,44 +4943,12 @@ function Program({
         </div>
       )}
 
-      {/* Start a sub-project already filed here. Creating a project and
-          then hunting for it to link was the long way round, and it is how
-          the drafts confusion started. */}
-      <div className="btnrow" style={{ marginTop: 12, alignItems: 'flex-end' }}>
-        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
-          <label className="lbl" htmlFor="sub-title">
-            Start a project inside {detail.title}
-          </label>
-          <input
-            id="sub-title"
-            value={newTitle}
-            placeholder="Fiji, French Polynesia, Oʻahu…"
-            onChange={(e) => setNewTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void startSub()
-            }}
-          />
-        </div>
-        <button
-          type="button"
-          className="btn sm primary"
-          disabled={busy || saving || !newTitle.trim()}
-          onClick={() => void startSub()}
-        >
-          Start it
-        </button>
+      <div className="hint" style={{ marginTop: 10 }}>
+        An older link between projects. Projects are grouped in a series now (above); take this
+        out once it is filed there.
       </div>
-
-      <div className="btnrow" style={{ marginTop: 10 }}>
-        <button
-          type="button"
-          className="btn sm"
-          disabled={busy || saving}
-          onClick={() => setMoving((v) => !v)}
-        >
-          {parent ? 'Move to another program' : 'Put this inside a program'}
-        </button>
-        {parent && (
+      {parent && (
+        <div className="btnrow" style={{ marginTop: 8 }}>
           <button
             type="button"
             className="btn sm ghost"
@@ -5014,57 +4957,6 @@ function Program({
           >
             Take it out of {parent.title}
           </button>
-        )}
-      </div>
-
-      {moving && (
-        <div className="pane" style={{ marginTop: 10 }}>
-          <div className="fld" style={{ marginTop: 0 }}>
-            <label className="lbl" htmlFor="move-find">
-              Which program? Anything already inside this one is left out — that would be a loop.
-            </label>
-            <input
-              id="move-find"
-              value={filter}
-              placeholder="Find by name or reference"
-              onChange={(e) => setFilter(e.target.value)}
-            />
-          </div>
-          {options.length === 0 ? (
-            <div className="hint">Nothing matches.</div>
-          ) : (
-            <div className="stack" style={{ maxHeight: 280, overflow: 'auto' }}>
-              {options.slice(0, 40).map((o) => {
-                const where = pathLabel(rows, o.jobId)
-                return (
-                  <button
-                    key={o.jobId}
-                    type="button"
-                    className="btn sm"
-                    disabled={saving || o.jobId === parent?.jobId}
-                    style={{ justifyContent: 'space-between', gap: 10 }}
-                    onClick={() =>
-                      void guard(async () => {
-                        await setRelatedProject(ctx.shop.id, id, o.jobId)
-                        setMoving(false)
-                        setFilter('')
-                      })
-                    }
-                  >
-                    <span style={{ textAlign: 'left' }}>
-                      {where ? <span style={{ color: 'var(--txt-3)' }}>{where} › </span> : null}
-                      {o.title}
-                    </span>
-                    <span className="chip">
-                      {o.facts.takenInAt || o.facts.kind === 'inhouse'
-                        ? phaseLabel(o.phase, o.facts.kind)
-                        : 'Draft'}
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-          )}
         </div>
       )}
     </details>
@@ -7092,6 +6984,7 @@ function SeriesSection({
   jobId,
   seriesId,
   all,
+  client = false,
   busy,
   onChanged,
   setError,
@@ -7100,6 +6993,8 @@ function SeriesSection({
   jobId: string
   seriesId: string | null
   all: SeriesRow[]
+  /** A client's project: the series groups it with related work. */
+  client?: boolean
   busy: boolean
   onChanged: () => Promise<void>
   setError: (m: string | null) => void
@@ -7151,6 +7046,13 @@ function SeriesSection({
           {all.length ? 'All series' : 'Start a series'}
         </Link>
       </div>
+      {client && (
+        <div className="hint" style={{ marginTop: 6 }}>
+          Files this order with related work — a BathyTopo commission alongside your own BathyTopo
+          pieces, say. It stays this client&rsquo;s project: their quote, invoice and stages are
+          unchanged.
+        </div>
+      )}
     </section>
   )
 }
