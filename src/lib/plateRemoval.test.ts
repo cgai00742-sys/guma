@@ -60,3 +60,30 @@ describe('parts left behind by earlier removals', () => {
     ).toEqual([{ id: 'a', label: 'a' }])
   })
 })
+
+describe('parts with no plate, and what marked them (CG, 24 Oct)', () => {
+  const runs = [
+    { id: 'orphan', sliceImportId: null, startedAt: '2026-10-07T10:00:00Z', hours: 25 / 60, unitsUsed: 3 },
+  ]
+  it('names the plate-less print behind a mark, and every part it marked', async () => {
+    const { strandedReport } = await import('./plateRemoval')
+    const falina = part('Falina', {
+      variants: [], qty: 5, copyStates: ['printed', 'pending', 'pending', 'pending', 'pending'],
+      history: [{ kind: 'status', toStatus: 'printed', copies: [1], runId: 'orphan' }],
+    })
+    const lucha = part('Lucha', {
+      variants: [], qty: 5, copyStates: ['printed', 'pending', 'pending', 'pending', 'pending'],
+      history: [{ kind: 'status', toStatus: 'printed', copies: [1], runId: 'orphan' }],
+    })
+    const lahi = part('Lahi', { variants: [], qty: 1, copyStates: ['pending'] })
+    const r = strandedReport([falina, lucha, lahi], runs)
+    expect(r.clear).toEqual([{ id: 'Lahi', label: 'Lahi' }])
+    expect(r.marked[0].why).toBe('1 of 5 marked — 1 by the print of 2026-10-07, 25m, 3 g, which has no plate.')
+    expect(r.prints).toEqual([{ id: 'orphan', said: '2026-10-07, 25m, 3 g', parts: ['Falina', 'Lucha'] }])
+  })
+  it('says marked by hand when no print did it', async () => {
+    const { strandedReport } = await import('./plateRemoval')
+    const p = part('Diagonal', { variants: [], copyStates: ['printed', 'pending'], history: [{ kind: 'status', toStatus: 'printed', copies: [1], runId: null }] })
+    expect(strandedReport([p], runs)).toMatchObject({ marked: [{ why: '1 of 2 marked — 1 marked by hand.' }], prints: [] })
+  })
+})

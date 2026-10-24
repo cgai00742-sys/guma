@@ -171,7 +171,7 @@ import { splitJobCost } from '../lib/selling'
 import { fileExtras, type FileExtras } from '../lib/fileExtras'
 import { gramsUsed, plateObjects, runCost, splitCost, assemblyStatus, type ObjectResult, type PlateObject } from '../lib/madeItems'
 import type { MadeItemRow, AssemblyRow, MadeItemInput } from '../lib/data.types'
-import { plateRemoval, strandedParts } from '../lib/plateRemoval'
+import { plateRemoval, strandedReport } from '../lib/plateRemoval'
 import { choiceFrom, choiceValue, guessSort, nameFromFile, partSizes, perCopyOf, toAssign, type BatchPart, type SortChoice, type SortGuess } from '../lib/sortParts'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
@@ -5049,7 +5049,7 @@ function BuildSheet({
    * that plate's prints; only a part with no plate is marked by hand.
    */
   const groupsAll = groupSliceFiles(detail.slices, detail.runs)
-  const stranded = strandedParts(detail.parts)
+  const stranded = strandedReport(detail.parts, detail.runs)
   /** Your own work is plates and what they made -- no parts list beside
    *  them (CG, 21 Oct: "We can just use plates and what it took"). */
   const plateOnly = detail.facts.kind === 'inhouse'
@@ -5329,44 +5329,89 @@ function BuildSheet({
             need with edit.
           </span>
         </div>
-        {/* Parts an earlier plate removal left behind (CG, 23 Oct): no plate,
-            nothing marked. Offered, never removed by themselves -- a part
-            typed in by hand on purpose looks the same. */}
-        {!locked && detail.slices.length > 0 && stranded.length > 0 && (
+        {/* Parts with no plate behind them (CG, 23-24 Oct): an earlier plate
+            removal left them, and the prints it left still mark copies.
+            Each says what marked it; nothing is undone by itself -- a part
+            or print typed in by hand on purpose looks the same. */}
+        {!locked && (stranded.clear.length > 0 || stranded.marked.length > 0) && (detail.slices.length > 0 || stranded.prints.length > 0) && (
           <div className="attn warn" role="note" aria-label="Parts with no plate" style={{ marginTop: 8, display: 'block' }}>
             <b>
-              {stranded.length} part{stranded.length === 1 ? ' has' : 's have'} no plate behind
-              {stranded.length === 1 ? ' it' : ' them'} and nothing printed
+              {stranded.clear.length + stranded.marked.length} part
+              {stranded.clear.length + stranded.marked.length === 1 ? ' has' : 's have'} no plate behind{' '}
+              {stranded.clear.length + stranded.marked.length === 1 ? 'it' : 'them'}
             </b>
-            : {stranded.map((p) => p.label).join(', ')}.
-            <div style={{ fontSize: 12, marginTop: 4 }}>
-              Usually left over from a plate that was removed. If you are still going to print{' '}
-              {stranded.length === 1 ? 'it' : 'them'} by hand, keep {stranded.length === 1 ? 'it' : 'them'}; otherwise
-              they only inflate the copy count. Parts with copies already marked are not listed — those are a record.
+            <div style={{ fontSize: 12, marginTop: 2 }}>
+              Usually left by a plate that was removed. The plates below are the record; these are not on any of them.
             </div>
-            <div className="btnrow" style={{ marginTop: 8 }}>
-              <button
-                type="button"
-                className="btn sm danger"
-                disabled={busy || saving}
-                onClick={() =>
-                  void (async () => {
-                    setSaving(true)
-                    try {
-                      for (const p of stranded)
-                        await deletePart(ctx.shop.id, p.id, ctx.profile.id, 'No plate behind it and nothing printed — cleared from the build sheet.')
-                      await onChanged()
-                    } catch (e) {
-                      setError(e instanceof Error ? e.message : String(e))
-                    } finally {
-                      setSaving(false)
-                    }
-                  })()
-                }
-              >
-                Remove {stranded.length === 1 ? 'it' : `these ${stranded.length}`}
-              </button>
-            </div>
+            {stranded.marked.length > 0 && (
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                {stranded.marked.map((p) => (
+                  <li key={p.id}>
+                    <b>{p.label}</b>: {p.why}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {stranded.prints.map((r) => (
+              <div key={r.id} className="btnrow" style={{ marginTop: 8, alignItems: 'center', fontSize: 12 }}>
+                <span style={{ flex: 1, minWidth: 220 }}>
+                  The print of <b>{r.said}</b> has no plate and marks {r.parts.join(', ')}. If it came off a plate you
+                  removed and that is not what was printed, undo it: those copies go back to not printed and its
+                  filament goes back on the shelf. If it really happened, keep it.
+                </span>
+                <button
+                  type="button"
+                  className="btn sm danger"
+                  disabled={busy || saving}
+                  onClick={() =>
+                    void (async () => {
+                      setSaving(true)
+                      try {
+                        await deletePrintRun(ctx.shop.id, r.id, true)
+                        await onChanged()
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : String(e))
+                      } finally {
+                        setSaving(false)
+                      }
+                    })()
+                  }
+                >
+                  Undo the print of {r.said.split(',')[0]}
+                </button>
+              </div>
+            ))}
+            {stranded.clear.length > 0 && (
+              <div className="btnrow" style={{ marginTop: 8, alignItems: 'center', fontSize: 12 }}>
+                <span style={{ flex: 1, minWidth: 220 }}>
+                  Nothing printed: {stranded.clear.map((p) => p.label).join(', ')}. Keep{' '}
+                  {stranded.clear.length === 1 ? 'it' : 'them'} only if you will still print{' '}
+                  {stranded.clear.length === 1 ? 'it' : 'them'} by hand — otherwise{' '}
+                  {stranded.clear.length === 1 ? 'it inflates' : 'they inflate'} the copy count.
+                </span>
+                <button
+                  type="button"
+                  className="btn sm danger"
+                  disabled={busy || saving}
+                  onClick={() =>
+                    void (async () => {
+                      setSaving(true)
+                      try {
+                        for (const p of stranded.clear)
+                          await deletePart(ctx.shop.id, p.id, ctx.profile.id, 'No plate behind it and nothing printed — cleared from the build sheet.')
+                        await onChanged()
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : String(e))
+                      } finally {
+                        setSaving(false)
+                      }
+                    })()
+                  }
+                >
+                  Remove {stranded.clear.length === 1 ? 'it' : `these ${stranded.clear.length}`}
+                </button>
+              </div>
+            )}
           </div>
         )}
         <div className="sheetwrap" style={{ maxHeight: 'none' }} role="region" aria-label="What this makes">

@@ -1671,3 +1671,55 @@ describe('a client project goes in a series, not under a project (CG, 23 Oct)', 
     )
   })
 })
+
+/** A different plate: one object nothing else makes. */
+const HULL = `
+; printing object Hull id:0 copy 0
+; filament used [g] = 40.0
+; total filament used [g] = 40.0
+; estimated printing time (normal mode) = 1h 0m
+; filament_type = PETG
+; printer_model = XL
+`
+
+describe('a plate removed before 23 Oct left prints that still mark parts (CG, 24 Oct)', () => {
+  it('names the plate-less print behind each mark, undoes it on request, then clears the parts', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await addAsEstimate(user)
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+    await screen.findByRole('list', { name: /^prints of /i })
+    // The old removal: the file goes, its print stays and keeps its marks.
+    const [{ id: oldPlate }] = currentDb.sqlite.prepare('select id from slice_imports').all() as { id: string }[]
+    await data.deleteSliceImport(ctx.shop.id, oldPlate)
+    cleanup()
+    await renderProject(jobId, ctx)
+    // The only plate now makes a Hull.
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([HULL], 'Hull_0.4n_0.2mm_PETG_XL_1h.gcode'))
+    const box0 = await screen.findByRole('checkbox', { name: /already printed/i })
+    if ((box0 as HTMLInputElement).checked) await user.click(box0)
+    await user.click(await screen.findByRole('button', { name: /add .*to the build sheet|add 1 section/i }))
+
+    const note = await screen.findByRole('note', { name: /parts with no plate/i })
+    expect(note.textContent).toMatch(/Buoy shell: 2 of 2 marked — 2 by the print of .*which has no plate/)
+    expect(note.textContent).toMatch(/marks Buoy shell, Cap/)
+    await user.click(within(note).getByRole('button', { name: /undo the print of/i }))
+
+    // Undone: no marks left, so the parts are offered for clearing.
+    const after = await screen.findByRole('note', { name: /parts with no plate/i })
+    await waitFor(() => expect(after.textContent).toMatch(/Nothing printed: Buoy shell, Cap/))
+    await user.click(within(screen.getByRole('note', { name: /parts with no plate/i })).getByRole('button', { name: /remove these 2/i }))
+    await waitFor(() =>
+      expect((currentDb.sqlite.prepare('select label from job_parts where job_id = ?').all(jobId) as { label: string }[]).map((p) => p.label)).toEqual(['Hull']),
+    )
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 0 })
+    expect((currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }).on_hand).toBe(1000)
+  })
+})

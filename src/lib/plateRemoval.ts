@@ -116,3 +116,79 @@ export function strandedParts(parts: RemovalPart[]): { id: string; label: string
     .filter((p) => p.variants.length === 0 && p.copyStates.every((s) => s === 'pending'))
     .map((p) => ({ id: p.id, label: p.label }))
 }
+
+export interface StrandedRun {
+  id: string
+  sliceImportId: string | null
+  startedAt: string | null
+  hours: number | null
+  unitsUsed: number | null
+}
+
+export interface StrandedReport {
+  /** No plate, nothing marked: safe to clear. */
+  clear: { id: string; label: string }[]
+  /** No plate, but copies marked -- each with what marked them. */
+  marked: { id: string; label: string; why: string }[]
+  /** Prints with no plate that marked those copies -- the trail an earlier
+   *  plate removal left (CG, 24 Oct). Each with every part it marked. */
+  prints: { id: string; said: string; parts: string[] }[]
+}
+
+/**
+ * Every part with no plate behind it, and the truth about its marks (CG, 24
+ * Oct: "things stated as printed when the only plate imported doesn't have
+ * those pieces"). Before 23 Oct removing a plate left its prints behind,
+ * with no plate, still marking copies printed. This says so per part, and
+ * names those prints so they can be undone -- never undone by itself, since
+ * a print typed in by hand looks the same and may be real.
+ */
+export function strandedReport(parts: RemovalPart[], runs: StrandedRun[]): StrandedReport {
+  const byId = new Map(runs.map((r) => [r.id, r]))
+  const out: StrandedReport = { clear: [], marked: [], prints: [] }
+  const printParts = new Map<string, Set<string>>()
+  for (const p of parts) {
+    if (p.variants.length) continue
+    let hand = 0
+    const viaRun = new Map<string, number>()
+    p.copyStates.forEach((st, i) => {
+      if (st === 'pending') return
+      const c = i + 1
+      const ev = p.history.find((h) => h.kind === 'status' && h.toStatus && (h.copies == null || h.copies.includes(c)))
+      const run = ev?.runId ? byId.get(ev.runId) : undefined
+      if (!run) hand++
+      else viaRun.set(run.id, (viaRun.get(run.id) ?? 0) + 1)
+    })
+    const n = hand + [...viaRun.values()].reduce((a, b) => a + b, 0)
+    if (!n) {
+      out.clear.push({ id: p.id, label: p.label })
+      continue
+    }
+    const bits: string[] = []
+    for (const [rid, k] of viaRun) {
+      const r = byId.get(rid)!
+      bits.push(`${k} by ${r.sliceImportId ? 'a print from another plate' : `the print of ${describeRun(r)}, which has no plate`}`)
+      if (!r.sliceImportId) {
+        if (!printParts.has(rid)) printParts.set(rid, new Set())
+        printParts.get(rid)!.add(p.label)
+      }
+    }
+    if (hand) bits.push(`${hand} marked by hand`)
+    out.marked.push({
+      id: p.id,
+      label: p.label,
+      why: `${n} of ${p.qty} marked — ${bits.join(', ')}.`,
+    })
+  }
+  for (const [rid, labels] of printParts)
+    out.prints.push({ id: rid, said: describeRun(byId.get(rid)!), parts: [...labels] })
+  return out
+}
+
+function describeRun(r: StrandedRun): string {
+  const h = r.hours ?? 0
+  const t = h >= 1 ? `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m` : `${Math.round(h * 60)}m`
+  return [r.startedAt?.slice(0, 10) ?? 'an unknown day', h ? t : null, r.unitsUsed ? `${Math.round(r.unitsUsed)} g` : null]
+    .filter(Boolean)
+    .join(', ')
+}
