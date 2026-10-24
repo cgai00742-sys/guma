@@ -574,7 +574,10 @@ describe('the file itself, kept', () => {
     await screen.findByRole('list', { name: /^prints of /i })
 
     await user.click(screen.getByRole('button', { name: /remove the file/i }))
-    await screen.findByText(/the print still happened/i)
+    // The print really happened: keep it, and the parts say why they stay.
+    await user.click(await screen.findByLabelText(/remove its 1 print too/i))
+    const stays = screen.getByRole('note', { name: /parts that stay/i })
+    expect(stays.textContent).toMatch(/by a print you are keeping/)
     await user.click(screen.getByRole('button', { name: /remove it/i }))
 
     await waitFor(() => {
@@ -592,6 +595,40 @@ describe('the file itself, kept', () => {
       n: number
     }
     expect(files.n).toBe(0)
+  })
+})
+
+describe('removing a plate makes the build sheet match (CG, 23 Oct)', () => {
+  it('by default undoes its print, puts the filament back, and takes off the parts only it made', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    for (const to of ['approval', 'design', 'scheduled', 'building'] as const) {
+      await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to)
+    }
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await addAsEstimate(user)
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+    await screen.findByRole('list', { name: /^prints of /i })
+    const before = currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }
+    expect(before.on_hand).toBeLessThan(1000)
+
+    await user.click(screen.getByRole('button', { name: /remove the file/i }))
+    expect(await screen.findByText(/comes off the build sheet/i)).toBeDefined()
+    await user.click(screen.getByRole('button', { name: /remove it/i }))
+
+    await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 0 }))
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 0 })
+    // The parts it made had no other source and nothing left marked.
+    const left = currentDb.sqlite.prepare('select label from job_parts where job_id = ?').all(jobId) as { label: string }[]
+    expect(left.filter((p) => ['Buoy shell', 'Cap'].includes(p.label))).toEqual([])
+    expect((currentDb.sqlite.prepare('select on_hand from materials').get() as { on_hand: number }).on_hand).toBe(1000)
+    // Said on the project, not done silently.
+    const said = currentDb.sqlite.prepare("select body from job_events where job_id = ? and body like 'Removed part%'").all(jobId) as { body: string }[]
+    expect(said.length).toBeGreaterThan(0)
+    expect(said[0].body).toMatch(/plate .* was removed/)
   })
 })
 

@@ -171,6 +171,7 @@ import { splitJobCost } from '../lib/selling'
 import { fileExtras, type FileExtras } from '../lib/fileExtras'
 import { gramsUsed, plateObjects, runCost, splitCost, assemblyStatus, type ObjectResult, type PlateObject } from '../lib/madeItems'
 import type { MadeItemRow, AssemblyRow, MadeItemInput } from '../lib/data.types'
+import { plateRemoval, strandedParts } from '../lib/plateRemoval'
 import { choiceFrom, choiceValue, guessSort, nameFromFile, partSizes, perCopyOf, toAssign, type BatchPart, type SortChoice, type SortGuess } from '../lib/sortParts'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
@@ -3473,6 +3474,8 @@ function SliceRuns({
    */
   const [markParts, setMarkParts] = useState(true)
   const [removing, setRemoving] = useState<string | null>(null)
+  /** Removing a plate takes its prints with it unless this is unticked. */
+  const [removePrints, setRemovePrints] = useState(true)
   const [rereadMsg, setRereadMsg] = useState<{ id: string; text: string } | null>(null)
   /**
    * The recorded print being corrected, when the form is open for that
@@ -3609,12 +3612,23 @@ function SliceRuns({
     }
   }
 
-  async function removeAll(importIds: string[]) {
+  /**
+   * Remove a plate, and make the build sheet match (CG, 23 Oct): its prints
+   * (unless kept) are undone -- copies back to not printed, filament back on
+   * the shelf -- and the parts only it made come off. What stays says why,
+   * in the confirm box, from the same plateRemoval() the box showed.
+   */
+  async function removeAll(importIds: string[], runIds: string[], withPrints: boolean, fileName: string) {
     setSaving(true)
     setError(null)
     try {
+      const plan = plateRemoval(detail.parts, importIds, runIds, withPrints)
+      if (withPrints) for (const r of runIds) await deletePrintRun(ctx.shop.id, r, true)
       for (const importId of importIds) await deleteSliceImport(ctx.shop.id, importId)
+      for (const p of plan.remove)
+        await deletePart(ctx.shop.id, p.id, ctx.profile.id, `Its plate ${fileName} was removed, and nothing else made or marked it.`)
       setRemoving(null)
+      setRemovePrints(true)
       await onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -4076,32 +4090,69 @@ function SliceRuns({
             )}
 
 
-            {removing === s.id && (
-              <div className="attn crit" style={{ marginTop: 8 }}>
-                <b>Remove {s.fileName}?</b>
-                <div style={{ marginTop: 4, fontSize: 12 }}>
-                  This drops the import, its per-part estimates and the stored file.{' '}
-                  {runs.length > 0
-                    ? `The ${runs.length} run${runs.length === 1 ? '' : 's'} recorded from it stay — the print still happened, and its cost is real.`
-                    : 'Nothing was recorded from it.'}{' '}
-                  The parts it added to the build sheet stay too; remove those on the sheet if you
-                  want them gone.
-                </div>
-                <div className="btnrow" style={{ marginTop: 8 }}>
-                  <button
-                    type="button"
-                    className="btn sm danger"
-                    disabled={saving}
-                    onClick={() => void removeAll(g.ids)}
-                  >
-                    {saving ? 'Removing…' : 'Remove it'}
-                  </button>
-                  <button type="button" className="btn sm" onClick={() => setRemoving(null)}>
-                    Keep it
-                  </button>
-                </div>
-              </div>
-            )}
+            {removing === s.id &&
+              (() => {
+                const runIdsHere = runs.map((r) => r.id)
+                const withPrints = runs.length > 0 && removePrints
+                const plan = plateRemoval(detail.parts, g.ids, runIdsHere, withPrints)
+                const grams = runs.reduce((a, r) => a + (r.unitsUsed ?? 0), 0)
+                return (
+                  <div className="attn crit" style={{ marginTop: 8, display: 'block' }}>
+                    <b>Remove {s.fileName}?</b>
+                    <div style={{ marginTop: 4, fontSize: 12 }}>
+                      The import, its estimates and the stored file go.
+                    </div>
+                    {runs.length > 0 && (
+                      <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8, fontSize: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={removePrints}
+                          onChange={(e) => setRemovePrints(e.target.checked)}
+                        />
+                        <span>
+                          Remove its {runs.length} print{runs.length === 1 ? '' : 's'} too — the copies{' '}
+                          {runs.length === 1 ? 'it' : 'they'} marked go back to not printed
+                          {grams > 0 ? `, and ${Math.round(grams)} g goes back on the shelf` : ''}.{' '}
+                          <span style={{ color: 'var(--txt-3)' }}>
+                            Untick if the print really happened: its cost stays, and so do its marks.
+                          </span>
+                        </span>
+                      </label>
+                    )}
+                    {plan.remove.length > 0 && (
+                      <div style={{ marginTop: 8, fontSize: 12 }}>
+                        <b>Comes off the build sheet</b> — nothing else makes or marks{' '}
+                        {plan.remove.length === 1 ? 'it' : 'them'}: {plan.remove.map((p) => p.label).join(', ')}
+                      </div>
+                    )}
+                    {plan.keep.length > 0 && (
+                      <div style={{ marginTop: 8, fontSize: 12 }} role="note" aria-label="Parts that stay">
+                        <b>Stays on the build sheet, and why</b>
+                        <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                          {plan.keep.map((p) => (
+                            <li key={p.id}>
+                              <b>{p.label}</b> — {p.why}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <div className="btnrow" style={{ marginTop: 10 }}>
+                      <button
+                        type="button"
+                        className="btn sm danger"
+                        disabled={saving}
+                        onClick={() => void removeAll(g.ids, runIdsHere, withPrints, s.fileName)}
+                      >
+                        {saving ? 'Removing…' : 'Remove it'}
+                      </button>
+                      <button type="button" className="btn sm" onClick={() => setRemoving(null)}>
+                        Keep it
+                      </button>
+                    </div>
+                  </div>
+                )
+              })()}
 
             {sortMsg?.id === s.id && (
               <div className="hint" role="status" style={{ marginTop: 6, color: 'var(--ok)' }}>
@@ -4998,6 +5049,7 @@ function BuildSheet({
    * that plate's prints; only a part with no plate is marked by hand.
    */
   const groupsAll = groupSliceFiles(detail.slices, detail.runs)
+  const stranded = strandedParts(detail.parts)
   /** Your own work is plates and what they made -- no parts list beside
    *  them (CG, 21 Oct: "We can just use plates and what it took"). */
   const plateOnly = detail.facts.kind === 'inhouse'
@@ -5277,6 +5329,46 @@ function BuildSheet({
             need with edit.
           </span>
         </div>
+        {/* Parts an earlier plate removal left behind (CG, 23 Oct): no plate,
+            nothing marked. Offered, never removed by themselves -- a part
+            typed in by hand on purpose looks the same. */}
+        {!locked && detail.slices.length > 0 && stranded.length > 0 && (
+          <div className="attn warn" role="note" aria-label="Parts with no plate" style={{ marginTop: 8, display: 'block' }}>
+            <b>
+              {stranded.length} part{stranded.length === 1 ? ' has' : 's have'} no plate behind
+              {stranded.length === 1 ? ' it' : ' them'} and nothing printed
+            </b>
+            : {stranded.map((p) => p.label).join(', ')}.
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              Usually left over from a plate that was removed. If you are still going to print{' '}
+              {stranded.length === 1 ? 'it' : 'them'} by hand, keep {stranded.length === 1 ? 'it' : 'them'}; otherwise
+              they only inflate the copy count. Parts with copies already marked are not listed — those are a record.
+            </div>
+            <div className="btnrow" style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn sm danger"
+                disabled={busy || saving}
+                onClick={() =>
+                  void (async () => {
+                    setSaving(true)
+                    try {
+                      for (const p of stranded)
+                        await deletePart(ctx.shop.id, p.id, ctx.profile.id, 'No plate behind it and nothing printed — cleared from the build sheet.')
+                      await onChanged()
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : String(e))
+                    } finally {
+                      setSaving(false)
+                    }
+                  })()
+                }
+              >
+                Remove {stranded.length === 1 ? 'it' : `these ${stranded.length}`}
+              </button>
+            </div>
+          </div>
+        )}
         <div className="sheetwrap" style={{ maxHeight: 'none' }} role="region" aria-label="What this makes">
           <table>
             <thead>
