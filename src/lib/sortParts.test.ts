@@ -87,3 +87,29 @@ describe('guessing where each object goes (CG, 16 Oct)', () => {
     expect(sameSize({ grams: 100, minutes: null }, { grams: 114, minutes: null })).toBe(true)
   })
 })
+
+describe('a part with a failed copy owed gets first call on a new file (CG, 26 Oct)', () => {
+  const failing = (label: string, g: number) =>
+    ({ ...part('pf', label, [{ g, m: 14 }]), copyStates: ['printed', 'reprint', 'pending'] }) as PartRow
+
+  it('fills the failed copy of a same-named part, even when the reprint was re-sliced to a different size', () => {
+    const [g] = guessSort([{ label: 'Tachang Hafen Falina to Gahet', qty: 1, estGrams: 2.5, estMinutes: 9 }], 'Gahet (2).bgcode', [
+      failing('Tachang Hafen Falina to Gahet', 0.5),
+    ])
+    expect(g.choice).toEqual({ kind: 'part', partId: 'pf' })
+    expect(g.why).toMatch(/has 1 failed copy going back, so this is set to fill it — though this one is/)
+  })
+  it('says nothing extra when the size matches too', () => {
+    const [g] = guessSort([{ label: 'Gahet', qty: 1, estGrams: 4.9, estMinutes: 14 }], 'g.bgcode', [failing('Gahet', 4.9)])
+    expect(g).toEqual({ choice: { kind: 'part', partId: 'pf' }, why: null })
+  })
+  it('matches the same piece numbered differently', () => {
+    const [g] = guessSort([{ label: 'Gahet (Instance 2)', qty: 1, estGrams: 4.9, estMinutes: 14 }], 'g.bgcode', [failing('Gahet', 4.9)])
+    expect(g.choice).toEqual({ kind: 'part', partId: 'pf' })
+  })
+  it('does not reach a differently named part with no failures', () => {
+    const ok = { ...part('po', 'Gahet', [{ g: 4.9, m: 14 }]), copyStates: ['printed'] } as PartRow
+    const [g] = guessSort([{ label: 'Gahet (Instance 2)', qty: 1, estGrams: 4.9, estMinutes: 14 }], 'g.bgcode', [ok])
+    expect(g.choice.kind).toBe('new')
+  })
+})

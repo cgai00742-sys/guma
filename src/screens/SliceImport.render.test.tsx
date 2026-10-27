@@ -1814,3 +1814,56 @@ describe('a plate stopped part way asks what came off OK (CG, 24 Oct)', () => {
     await waitFor(() => expect(byLabel()).toEqual({ 'Buoy shell': '["printed","printed"]', Cap: '["reprint"]' }))
   })
 })
+
+describe('a failed copy gets filled by the next good print of the same piece (CG, 26 Oct)', () => {
+  /** The same Cap, re-sliced: a different size, the same name. */
+  const RESLICED_CAP = `
+; printing object Cap id:0 copy 0
+; filament used [g] = 12.0
+; total filament used [g] = 12.0
+; estimated printing time (normal mode) = 0h 20m
+; filament_type = PETG
+; printer_model = XL
+`
+  const capStates = () => (currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Cap'").get() as { copy_states: string }).copy_states
+
+  async function capFailed() {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await addAsEstimate(user)
+    await user.click(await screen.findByRole('button', { name: /this print happened/i }))
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'cancelled')
+    await user.click(within(screen.getByRole('group', { name: /what came off ok/i })).getByLabelText('Buoy shell'))
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
+    await user.click(screen.getByRole('button', { name: /^record it$/i }))
+    await waitFor(() => expect(capStates()).toBe('["reprint"]'))
+    return { user, jobId }
+  }
+
+  it('a re-sliced file with the same name is set to fill it, and does', async () => {
+    const { user } = await capFailed()
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([RESLICED_CAP], 'Cap fix.gcode'))
+    expect(await screen.findByText(/Fills 1 failed copy of Cap when it comes off clean/)).toBeDefined()
+    expect((screen.getByLabelText(/where cap goes/i) as HTMLSelectElement).value).toMatch(/^part:/)
+    await user.click([...document.querySelectorAll('button')].find((b) => /build sheet and record/i.test(b.textContent ?? ''))!)
+    await waitFor(() => expect(capStates()).toBe('["printed"]'))
+    expect(currentDb.sqlite.prepare("select count(*) n from job_parts where label like 'Cap%'").get()).toEqual({ n: 1 })
+  })
+
+  it('a good print filed as another part can still fill it, from the failed copy', async () => {
+    const { user } = await capFailed()
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([RESLICED_CAP], 'Cap fix.gcode'))
+    // Filed as a new part on purpose.
+    await user.selectOptions(await screen.findByLabelText(/where cap goes/i), 'new')
+    await user.click([...document.querySelectorAll('button')].find((b) => /build sheet and record/i.test(b.textContent ?? ''))!)
+    await waitFor(() => expect(currentDb.sqlite.prepare("select count(*) n from job_parts where label like 'Cap%'").get()).toEqual({ n: 2 }))
+    expect(capStates()).toBe('["reprint"]')
+    // Open Cap's copies and fill the failed one from that plate.
+    await user.click(screen.getByRole('button', { name: /each copy of cap$/i }))
+    await user.click(await screen.findByRole('button', { name: /fill it from cap fix\.gcode/i }))
+    await waitFor(() => expect(capStates()).toBe('["printed"]'))
+  })
+})

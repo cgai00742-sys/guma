@@ -82,6 +82,20 @@ const fmtG = (g: number | null) => (g == null ? null : `${Math.round(g)} g`)
 const fmtM = (m: number | null) =>
   m == null ? null : m >= 60 ? `${Math.floor(m / 60)}h ${Math.round(m % 60)}m` : `${Math.round(m)}m`
 
+/** "Gahet (Instance 2)", "Gahet (2)", "Gahet_1" -> "gahet": the piece, not the copy. */
+export function baseName(label: string): string {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\((instance\s*)?\d+\)$/i, '')
+    .replace(/[_\s-]+\d+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Failed copies a part is still owed. */
+const owed = (p: PartRow) => (p.copyStates ?? []).filter((s) => s === 'reprint').length
+
 /** A best guess for every object of one file. */
 export function guessSort(
   objects: SortObject[],
@@ -95,6 +109,29 @@ export function guessSort(
     const size = perCopyOf(o)
     const key = o.label.trim().toLowerCase()
     const same = parts.find((p) => p.label.trim().toLowerCase() === key)
+    // A failed copy waiting to go again is what a reprint file is FOR (CG,
+    // 26 Oct: "allow a future imported file the chance to fill those failed
+    // parts, especially if they have the correct name"). A reprint is often
+    // re-sliced -- a fix for the ghosting, other things on the plate -- so
+    // its size differs; the name, or the same piece numbered differently,
+    // is what says it is that part. Filling a failure beats a new part.
+    const failing =
+      (same && owed(same) > 0 ? same : null) ??
+      parts.find((p) => owed(p) > 0 && baseName(p.label) === baseName(o.label)) ??
+      null
+    if (failing) {
+      const sizes = partSizes(failing)
+      const n = owed(failing)
+      const fits = !sizes.length || sizes.some((s) => sameSize(s, size))
+      out.push({
+        choice: { kind: 'part', partId: failing.id },
+        why: fits && failing === same
+          ? null
+          : `${failing.label} has ${n} failed cop${n === 1 ? 'y' : 'ies'} going back, so this is set to fill ${n === 1 ? 'it' : 'them'}` +
+            (fits ? '.' : ` — though this one is ${[fmtG(size.grams), fmtM(size.minutes)].filter(Boolean).join(', ')} a copy. Pick New part if it is a different piece.`),
+      })
+      continue
+    }
     if (same) {
       const sizes = partSizes(same)
       if (!sizes.length || sizes.some((s) => sameSize(s, size))) {

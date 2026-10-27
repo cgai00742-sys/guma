@@ -173,7 +173,7 @@ import { fileExtras, type FileExtras } from '../lib/fileExtras'
 import { gramsUsed, plateObjects, runCost, splitCost, assemblyStatus, type ObjectResult, type PlateObject } from '../lib/madeItems'
 import type { MadeItemRow, AssemblyRow, MadeItemInput } from '../lib/data.types'
 import { plateRemoval, strandedReport } from '../lib/plateRemoval'
-import { choiceFrom, choiceValue, guessSort, nameFromFile, partSizes, perCopyOf, toAssign, type BatchPart, type SortChoice, type SortGuess } from '../lib/sortParts'
+import { baseName, choiceFrom, choiceValue, guessSort, nameFromFile, partSizes, perCopyOf, toAssign, type BatchPart, type SortChoice, type SortGuess } from '../lib/sortParts'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
 import { changeCopies, copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
@@ -2089,6 +2089,16 @@ function SortPick({
           })}
         </div>
       )}
+      {choice.kind === 'part' &&
+        (() => {
+          const tgt = parts.find((x) => x.id === choice.partId)
+          const n = tgt ? tgt.copyStates.filter((st) => st === 'reprint').length : 0
+          return n > 0 ? (
+            <div className="hint" style={{ marginTop: 4, color: 'var(--ok)' }}>
+              ↻ Fills {n} failed cop{n === 1 ? 'y' : 'ies'} of {tgt!.label} when it comes off clean.
+            </div>
+          ) : null
+        })()}
       {guess?.why && (
         <div className="hint" style={{ marginTop: 4, color: 'var(--warn)' }}>
           {guess.why}
@@ -5204,6 +5214,24 @@ function BuildSheet({
    */
   const groupsAll = groupSliceFiles(detail.slices, detail.runs)
   const stranded = strandedReport(detail.parts, detail.runs)
+  /**
+   * The same piece printed on another plate and filed as a different part
+   * (CG, 26 Oct): offered to a failed copy, so a good print can fill it.
+   * Moving the object brings its prints, and they fill failed copies first.
+   */
+  const fillFrom = (p: PartRow) => {
+    if (!p.copyStates.includes('reprint')) return []
+    const want = baseName(p.label)
+    return detail.slices.flatMap((sl) =>
+      sl.sections.flatMap((sec) => {
+        if (!sec.partId || sec.partId === p.id) return []
+        const src = detail.parts.find((x) => x.id === sec.partId)
+        if (!src || !src.copyStates.some((st) => st === 'printed' || st === 'passed')) return []
+        if (baseName(sec.label) !== want && baseName(src.label) !== want) return []
+        return [{ sectionId: sec.id, label: src.label, fileName: sl.fileName }]
+      }),
+    )
+  }
   /** Your own work is plates and what they made -- no parts list beside
    *  them (CG, 21 Oct: "We can just use plates and what it took"). */
   const plateOnly = detail.facts.kind === 'inhouse'
@@ -5798,6 +5826,10 @@ function BuildSheet({
                           fileName={(id) => detail.slices.find((sl) => sl.id === id)?.fileName ?? null}
                           onSkip={(copy, why) => guard(() => skipCopy(ctx.shop.id, p.id, ctx.profile.id, copy, why))}
                           onClose={() => setCopiesOpen(null)}
+                          fillFrom={fillFrom(p)}
+                          onFill={(sectionId) =>
+                            guard(() => moveSliceSection(ctx.shop.id, detail.jobId, ctx.profile.id, sectionId, { partId: p.id }))
+                          }
                         />
                       </td>
                     </tr>
@@ -7929,6 +7961,8 @@ function EachCopy({
   onSkip,
   onClose,
   fileName = () => null,
+  fillFrom = [],
+  onFill = async () => undefined,
 }: {
   part: PartRow
   options: PartStatus[]
@@ -7938,6 +7972,9 @@ function EachCopy({
   onSkip: (copy: number, why: string | null) => Promise<void>
   onClose: () => void
   fileName?: (sliceImportId: string) => string | null
+  /** The same piece, printed on another plate and filed as another part. */
+  fillFrom?: { sectionId: string; label: string; fileName: string }[]
+  onFill?: (sectionId: string) => Promise<void>
 }) {
   const states = statesOf(part)
   const [failing, setFailing] = useState<number | null>(null)
@@ -8068,6 +8105,25 @@ function EachCopy({
                     >
                       Skip
                     </button>
+                  </div>
+                )}
+                {editable && skipping !== i && fillFrom.length > 0 && (
+                  <div className="copyfile" style={{ marginTop: 6 }}>
+                    Printed already on another plate?
+                    {fillFrom.map((f) => (
+                      <button
+                        key={f.sectionId}
+                        type="button"
+                        className="btn sm"
+                        style={{ marginLeft: 6, marginTop: 4 }}
+                        disabled={busy}
+                        title={`Moves ${f.label} from ${f.fileName} onto ${part.label}; its prints fill the failed copies first.`}
+                        onClick={() => void onFill(f.sectionId)}
+                      >
+                        Fill it from {f.fileName}
+                        {f.label !== part.label ? ` (now ${f.label})` : ''}
+                      </button>
+                    ))}
                   </div>
                 )}
                 {skipping === i && (
