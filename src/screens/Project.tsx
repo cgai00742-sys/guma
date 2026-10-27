@@ -177,7 +177,7 @@ import { plateRemoval, strandedReport } from '../lib/plateRemoval'
 import { baseName, choiceFrom, choiceValue, guessSort, nameFromFile, partSizes, perCopyOf, toAssign, type BatchPart, type SortChoice, type SortGuess } from '../lib/sortParts'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
 import AddStock from '../components/AddStock'
-import { changeCopies, copiesOf, describeCopies, movable, statesOf } from '../lib/copies'
+import { changeCopies, copiesOf, describeCopies, movable, statesOf, mergedNeed, planMerge } from '../lib/copies'
 
 const DELIVERY_METHODS = [
   'Collected in person',
@@ -2134,12 +2134,17 @@ function CombineParts({
 }: {
   parts: PartRow[]
   busy: boolean
-  onCombine: (label: string) => void
+  onCombine: (label: string, need: number) => void
 }) {
   const shared = parts[0]?.label.replace(/\s*\((instance\s*)?\d+\)\s*$/i, '').trim() ?? ''
   const [name, setName] = useState(shared)
-  const total = parts.reduce((t, p) => t + p.qty, 0)
-  const printed = parts.reduce((t, p) => t + p.copyStates.filter((st) => st === 'printed' || st === 'passed').length, 0)
+  // The count the project needs, not the parts added up (CG, 27 Oct: Falina
+  // 5 + three single instances is 5, not 8).
+  const [need, setNeed] = useState(String(mergedNeed(parts.map((p) => ({ qty: p.qty, states: statesOf(p) })))))
+  const n = Math.max(1, Math.floor(Number(need) || 0))
+  const plan = planMerge(parts.map((p) => ({ id: p.id, states: statesOf(p) })), n)
+  const done = plan.states.filter((st) => st === 'printed' || st === 'passed').length
+  const failed = plan.states.filter((st) => st === 'reprint').length
   return (
     <div className="pane" role="group" aria-label="Combine parts" style={{ marginTop: 10, padding: '10px 14px' }}>
       <div className="btnrow" style={{ alignItems: 'flex-end', margin: 0 }}>
@@ -2149,13 +2154,22 @@ function CombineParts({
           </label>
           <input id="combine-name" value={name} onChange={(e) => setName(e.target.value)} />
         </div>
-        <button type="button" className="btn sm primary" disabled={busy || !name.trim()} onClick={() => onCombine(name)}>
+        <div className="fld" style={{ margin: 0, width: 130 }}>
+          <label className="lbl" htmlFor="combine-need">
+            Copies needed
+          </label>
+          <input id="combine-need" type="number" min={1} step={1} value={need} onChange={(e) => setNeed(e.target.value)} />
+        </div>
+        <button type="button" className="btn sm primary" disabled={busy || !name.trim() || !(Number(need) >= 1)} onClick={() => onCombine(name, n)}>
           Combine into “{name.trim() || '…'}”
         </button>
       </div>
       <div className="hint" style={{ marginTop: 6 }}>
-        {parts.map((p) => p.label).join(', ')} become one part of {total} cop{total === 1 ? 'y' : 'ies'}
-        {printed ? `, ${printed} already printed` : ''}. Every print, plate and history line comes with them.
+        {parts.map((p) => p.label).join(', ')} become one part: <b>{done} of {n} printed</b>
+        {failed ? `, ${failed} going back` : ''}
+        {plan.spare ? ` · ${plan.spare} printed beyond that kept as spare${plan.spare === 1 ? '' : 's'}` : ''}. Printed
+        copies fill the slots; copies never printed on the others are dropped. Every print, plate and history line
+        comes along.
       </div>
     </div>
   )
@@ -5525,21 +5539,6 @@ function BuildSheet({
         </div>
       ) : detail.parts.length === 0 ? null : (
         <>
-        {picked.size > 1 && !locked && (
-          <CombineParts
-            key={[...picked].sort().join(',')}
-            parts={detail.parts.filter((x) => picked.has(x.id))}
-            busy={busy || saving}
-            onCombine={(label) =>
-              guard(async () => {
-                // In list order, so the first row picked keeps its copies first.
-                const ids = detail.parts.filter((x) => picked.has(x.id)).map((x) => x.id)
-                await mergeParts(ctx.shop.id, detail.jobId, ctx.profile.id, ids, label)
-                setPicked(new Set())
-              })
-            }
-          />
-        )}
         {picked.size > 0 && (
           <CopiesBar
             parts={detail.parts}
@@ -6136,6 +6135,23 @@ function BuildSheet({
           </span>
         </div>
       )}
+
+      {/* Below the list (CG, 27 Oct): you pick the rows, then combine. */}
+      {picked.size > 1 && !locked && !plateOnly && (
+          <CombineParts
+            key={[...picked].sort().join(',')}
+            parts={detail.parts.filter((x) => picked.has(x.id))}
+            busy={busy || saving}
+            onCombine={(label, need) =>
+              guard(async () => {
+                // In list order, so the first row picked keeps its copies first.
+                const ids = detail.parts.filter((x) => picked.has(x.id)).map((x) => x.id)
+                await mergeParts(ctx.shop.id, detail.jobId, ctx.profile.id, ids, label, need)
+                setPicked(new Set())
+              })
+            }
+          />
+        )}
 
       {/* Objects on a plate this list does not count: their part was removed
           before plates and parts were one list (CG's Maui: LAND FLUSH and

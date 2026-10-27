@@ -14,7 +14,7 @@ import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
 import { matchShelfPhotos as pickShelfPhotos } from './shelfPhotos'
-import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, renumberCopies, setStates, shiftCopies, statesOf, statusOf } from './copies'
+import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, movedCopies, planMerge, renumberCopies, setStates, statesOf, statusOf } from './copies'
 import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
@@ -4098,6 +4098,7 @@ export async function mergeParts(
   actorId: string | null,
   partIds: string[],
   label: string,
+  need: number | null = null,
 ): Promise<string> {
   const name = label.trim()
   if (!name) throw new Error('The combined part needs a name.')
@@ -4113,27 +4114,32 @@ export async function mergeParts(
   const rows = ((data ?? []) as any[]).sort((a, b) => ids.indexOf(String(a.id)) - ids.indexOf(String(b.id)))
   if (rows.length !== ids.length) throw new Error('Those parts are not all on this project.')
   const [keep, ...rest] = rows
-  let offset = 0
-  const states: PartStatus[] = []
-  let spare = 0
+  const states0 = rows.map((r) => ({
+    id: String(r.id),
+    states: statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states }),
+  }))
+  const plan = planMerge(states0, need ?? Math.max(...rows.map((r) => Number(r.qty))))
+  const states = plan.states
+  const spare = rows.reduce((t, r) => t + (Number(r.spare_n) || 0), 0) + plan.spare
   for (const r of rows) {
-    const st = statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states })
-    const { data: evs, error: eErr } = await supabase.from('part_events').select('id, copies, kind').eq('part_id', r.id)
+    const qty0 = states0.find((x) => x.id === String(r.id))!.states.length
+    const { data: evs, error: eErr } = await supabase.from('part_events').select('id, copies, kind, note, to_status').eq('part_id', r.id)
     if (eErr) throw eErr
     for (const e of (evs ?? []) as any[]) {
-      const { error: uErr } = await supabase
-        .from('part_events')
-        .update({ part_id: keep.id, copies: shiftCopies(e.copies ?? null, offset, st.length, e.kind === 'status') })
-        .eq('id', e.id)
+      const moved = movedCopies(e, qty0, String(r.id), plan.map)
+      const patch =
+        moved === undefined
+          ? { part_id: keep.id }
+          : moved
+            ? { part_id: keep.id, copies: moved }
+            : { part_id: keep.id, kind: 'note', from_status: null, to_status: null, note: `On ${r.label}, before it was combined: ${e.note ?? e.to_status ?? ''}` }
+      const { error: uErr } = await supabase.from('part_events').update(patch).eq('id', e.id)
       if (uErr) throw uErr
     }
     if (r.id !== keep.id) {
       const { error: sErr } = await supabase.from('slice_sections').update({ part_id: keep.id }).eq('part_id', r.id)
       if (sErr) throw sErr
     }
-    states.push(...st)
-    spare += Number(r.spare_n) || 0
-    offset += st.length
   }
   const n = countsOf(states)
   const { error: pErr } = await supabase

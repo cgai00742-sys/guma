@@ -338,22 +338,64 @@ export function plateCopies(
 }
 
 /**
- * One copy-number list moved into a merged part (CG, 27 Oct: duplicates
- * like "Falina (Instance 1/2/3)" combined into one part). A part's copies
- * keep their order and follow the parts before them: copy 2 of the third
- * part, after parts of 1 and 1 copies, is copy 4. An event that named no
- * copies meant all of that part's -- it is spelled out, so it cannot later
- * be read as all of the merged part's.
+ * Parts combined into one (CG, 27 Oct: "Falina" needing 5, 2 printed, plus
+ * three printed "Falina (Instance n)" made 8 copies with gaps; it is 5 of 5).
+ *
+ * The combined part needs `qty` copies. Every copy that happened -- passed,
+ * printed, then failed-and-owed -- fills a slot, in that order; the rest of
+ * the slots are not printed yet. Printed copies past the count are spares
+ * (kept, counted in cost, out of the count), as when a count goes down; a
+ * failure past it is simply no longer owed. Copies never printed on the
+ * parts being folded in have nothing to carry and are dropped.
+ *
+ * `map` says where each old copy went: "partId:copy" (1-based) -> new copy
+ * number, so the history that names copies can follow them.
  */
-export function shiftCopies(copies: string | null, offset: number, qty: number, named: boolean): string | null {
-  if (!copies) {
-    if (!named) return null
-    return Array.from({ length: qty }, (_, i) => offset + i + 1).join(',')
+export function planMerge(
+  parts: { id: string; states: PartStatus[] }[],
+  qty: number,
+): { states: PartStatus[]; spare: number; map: Map<string, number> } {
+  const want = Math.max(1, Math.floor(qty))
+  const rank: Record<PartStatus, number> = { passed: 0, printed: 1, reprint: 2, pending: 3 }
+  const made = parts
+    .flatMap((p) => p.states.map((st, i) => ({ key: `${p.id}:${i + 1}`, st })))
+    .filter((c) => c.st !== 'pending')
+  // Stable: within a kind, the parts keep the order they were picked in.
+  const order = made.map((c, i) => ({ ...c, i })).sort((a, b) => rank[a.st] - rank[b.st] || a.i - b.i)
+  const kept = order.slice(0, want)
+  const over = order.slice(want)
+  const map = new Map<string, number>()
+  const states: PartStatus[] = []
+  for (const c of kept) {
+    states.push(c.st)
+    map.set(c.key, states.length)
   }
-  return copies
-    .split(',')
-    .map((x) => Number(x.trim()))
-    .filter((x) => Number.isInteger(x) && x > 0)
-    .map((x) => x + offset)
-    .join(',')
+  while (states.length < want) states.push('pending')
+  return { states, spare: over.filter((c) => c.st === 'printed' || c.st === 'passed').length, map }
+}
+
+/** What a combine should need by default: the largest count among the
+ *  parts, or every copy that has happened if that is more. */
+export function mergedNeed(parts: { qty: number; states: PartStatus[] }[]): number {
+  const happened = parts.reduce((t, p) => t + p.states.filter((st) => st !== 'pending').length, 0)
+  return Math.max(1, ...parts.map((p) => p.qty), happened)
+}
+
+/**
+ * Where a history line's copies went in a combine. undefined: it named no
+ * copies and is not a status change -- move it as it is. '': none of its
+ * copies survived (never printed, or past the count) -- keep it as a note.
+ */
+export function movedCopies(
+  e: { copies: string | null; kind: string },
+  qty: number,
+  partId: string,
+  map: Map<string, number>,
+): string | undefined {
+  if (!e.copies && e.kind !== 'status') return undefined
+  const old = e.copies
+    ? e.copies.split(',').map((x) => Number(x.trim())).filter((x) => Number.isInteger(x) && x > 0)
+    : Array.from({ length: qty }, (_, i) => i + 1)
+  const next = old.map((c) => map.get(`${partId}:${c}`)).filter((x): x is number => x != null)
+  return [...new Set(next)].sort((a, b) => a - b).join(',')
 }

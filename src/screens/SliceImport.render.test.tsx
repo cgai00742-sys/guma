@@ -1988,11 +1988,13 @@ describe('duplicates combined into one part (CG, 27 Oct)', () => {
     await user.click(screen.getByLabelText('Pick Cap (Instance 2)'))
     const box = screen.getByRole('group', { name: /combine parts/i })
     expect((within(box).getByLabelText(/combine 2 parts into one/i) as HTMLInputElement).value).toBe('Cap')
-    expect(box.textContent).toMatch(/become one part of 3 copies, 1 already printed/)
+    // What the project needs, not the parts added up: the larger count, 2.
+    expect((within(box).getByLabelText(/copies needed/i) as HTMLInputElement).value).toBe('2')
+    expect(box.textContent).toMatch(/become one part: 1 of 2 printed/)
     await user.click(within(box).getByRole('button', { name: /combine into “cap”/i }))
     await waitFor(() =>
       expect(currentDb.sqlite.prepare("select label, qty, copy_states from job_parts where label like 'Cap%'").all()).toEqual([
-        { label: 'Cap', qty: 3, copy_states: '["printed","pending","pending"]' },
+        { label: 'Cap', qty: 2, copy_states: '["printed","pending"]' },
       ]),
     )
     const capId = (currentDb.sqlite.prepare("select id from job_parts where label = 'Cap'").get() as { id: string }).id
@@ -2000,7 +2002,7 @@ describe('duplicates combined into one part (CG, 27 Oct)', () => {
     expect(currentDb.sqlite.prepare('select count(*) n from slice_sections where part_id = ?').get(capId)).toEqual({ n: 1 })
     expect(currentDb.sqlite.prepare("select copies from part_events where part_id = ? and to_status = 'printed'").get(capId)).toEqual({ copies: '1' })
     expect(currentDb.sqlite.prepare("select body from job_events where body like 'Combined%'").get()).toEqual({
-      body: 'Combined "Cap (Instance 1)" ×1, "Cap (Instance 2)" ×2 into "Cap" ×3.',
+      body: 'Combined "Cap (Instance 1)" ×1, "Cap (Instance 2)" ×2 into "Cap" ×2.',
     })
   })
 })

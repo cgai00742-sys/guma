@@ -27,7 +27,7 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import Database from '@tauri-apps/plugin-sql'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
-import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, renumberCopies, setStates, shiftCopies, statesOf, statusOf } from './copies'
+import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, movedCopies, planMerge, renumberCopies, setStates, statesOf, statusOf } from './copies'
 import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 import {
   NeedsSetup,
@@ -4923,6 +4923,7 @@ export async function mergeParts(
   actorId: string | null,
   partIds: string[],
   label: string,
+  need: number | null = null,
 ): Promise<string> {
   const name = label.trim()
   if (!name) throw new Error('The combined part needs a name.')
@@ -4940,21 +4941,31 @@ export async function mergeParts(
   // The first one picked keeps its id: links to it stay good.
   rows.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
   const [keep, ...rest] = rows
-  let offset = 0
-  const states: PartStatus[] = []
-  let spare = 0
+  const states0 = rows.map((r) => ({
+    id: r.id,
+    states: statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states }),
+  }))
+  const plan = planMerge(states0, need ?? Math.max(...rows.map((r) => Number(r.qty))))
+  const states = plan.states
+  const spare = rows.reduce((t, r) => t + (Number(r.spare_n) || 0), 0) + plan.spare
   for (const r of rows) {
-    const st = statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states })
-    const evs = await d.select<{ id: number; copies: string | null; kind: string }[]>(
-      'select id, copies, kind from part_events where part_id = ?',
+    const qty0 = states0.find((x) => x.id === r.id)!.states.length
+    const evs = await d.select<{ id: number; copies: string | null; kind: string; note: string | null; to_status: string | null }[]>(
+      'select id, copies, kind, note, to_status from part_events where part_id = ?',
       [r.id],
     )
-    for (const e of evs)
-      await d.execute('update part_events set part_id = ?, copies = ? where id = ?', [keep.id, shiftCopies(e.copies, offset, st.length, e.kind === 'status'), e.id])
+    for (const e of evs) {
+      const moved = movedCopies(e, qty0, r.id, plan.map)
+      if (moved === undefined) await d.execute('update part_events set part_id = ? where id = ?', [keep.id, e.id])
+      else if (moved) await d.execute('update part_events set part_id = ?, copies = ? where id = ?', [keep.id, moved, e.id])
+      else
+        await d.execute(
+          `update part_events set part_id = ?, kind = 'note', from_status = null, to_status = null,
+                  note = ? || coalesce(note, to_status) where id = ?`,
+          [keep.id, `On ${r.label}, before it was combined: `, e.id],
+        )
+    }
     if (r.id !== keep.id) await d.execute('update slice_sections set part_id = ? where part_id = ?', [keep.id, r.id])
-    states.push(...st)
-    spare += Number(r.spare_n) || 0
-    offset += st.length
   }
   const n = countsOf(states)
   await d.execute(
@@ -4969,3 +4980,4 @@ export async function mergeParts(
   await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [jobId, actorId, said])
   return keep.id
 }
+

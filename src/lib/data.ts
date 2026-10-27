@@ -838,6 +838,13 @@ export async function markPlateParts(
   return (await backend()).markPlateParts(shopId, jobId, actorId, sliceImportId, runId, ok, reason)
 }
 
-export async function mergeParts(shopId: string, jobId: string, actorId: string | null, partIds: string[], label: string): Promise<string> {
-  return (await backend()).mergeParts(shopId, jobId, actorId, partIds, label)
+export async function mergeParts(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  partIds: string[],
+  label: string,
+  need: number | null = null,
+): Promise<string> {
+  return (await backend()).mergeParts(shopId, jobId, actorId, partIds, label, need)
 }

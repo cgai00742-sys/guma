@@ -78,11 +78,42 @@ describe('each copy in its own place (CG, 8 Oct: a dropdown per instance)', () =
   })
 })
 
-describe('copies moved into a combined part (CG, 27 Oct)', () => {
-  it('follow the copies before them, and an all-copies event is spelled out', async () => {
-    const { shiftCopies } = await import('./copies')
-    expect(shiftCopies('1,2', 3, 2, true)).toBe('4,5')
-    expect(shiftCopies(null, 2, 3, true)).toBe('3,4,5')
-    expect(shiftCopies(null, 2, 3, false)).toBeNull()
+describe('parts combined into one (CG, 27 Oct)', () => {
+  it('fills the count from what happened, not by adding copies up', async () => {
+    const { planMerge, mergedNeed } = await import('./copies')
+    // Falina needs 5, 2 printed; three instances, 1 printed each.
+    const parts = [
+      { id: 'f', qty: 5, states: ['printed', 'printed', 'pending', 'pending', 'pending'] as const },
+      { id: 'a', qty: 1, states: ['printed'] as const },
+      { id: 'b', qty: 1, states: ['printed'] as const },
+      { id: 'c', qty: 1, states: ['printed'] as const },
+    ].map((p) => ({ ...p, states: [...p.states] }))
+    expect(mergedNeed(parts)).toBe(5)
+    const plan = planMerge(parts, 5)
+    expect(plan.states).toEqual(['printed', 'printed', 'printed', 'printed', 'printed'])
+    expect(plan.spare).toBe(0)
+    expect(plan.map.get('c:1')).toBe(5)
+    expect(plan.map.get('f:3')).toBeUndefined()
+  })
+  it('a count of duplicates is how many happened, and extras printed are spares', async () => {
+    const { planMerge, mergedNeed } = await import('./copies')
+    const dup = ['a', 'b', 'c'].map((id) => ({ id, qty: 1, states: ['printed' as const] }))
+    expect(mergedNeed(dup)).toBe(3)
+    const plan = planMerge(dup, 2)
+    expect(plan.states).toEqual(['printed', 'printed'])
+    expect(plan.spare).toBe(1)
+  })
+  it('failed copies still owed take a slot after the good ones', async () => {
+    const { planMerge } = await import('./copies')
+    const plan = planMerge([{ id: 'x', states: ['reprint', 'pending'] }, { id: 'y', states: ['printed'] }], 3)
+    expect(plan.states).toEqual(['printed', 'reprint', 'pending'])
+  })
+  it('history follows its copies, and a line about a dropped copy becomes a note', async () => {
+    const { movedCopies } = await import('./copies')
+    const map = new Map([['a:1', 4]])
+    expect(movedCopies({ copies: '1', kind: 'status' }, 1, 'a', map)).toBe('4')
+    expect(movedCopies({ copies: null, kind: 'status' }, 1, 'a', map)).toBe('4')
+    expect(movedCopies({ copies: '2', kind: 'status' }, 2, 'a', map)).toBe('')
+    expect(movedCopies({ copies: null, kind: 'note' }, 1, 'a', map)).toBeUndefined()
   })
 })
