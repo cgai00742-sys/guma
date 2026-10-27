@@ -27,7 +27,7 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import Database from '@tauri-apps/plugin-sql'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
-import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, renumberCopies, setStates, statesOf, statusOf } from './copies'
+import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, renumberCopies, setStates, shiftCopies, statesOf, statusOf } from './copies'
 import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 import {
   NeedsSetup,
@@ -4907,4 +4907,65 @@ async function platePartIds(shopId: string, jobId: string, sliceImportId: string
     [sliceImportId, jobId, shopId],
   )
   return rows.map((r) => r.part_id)
+}
+
+/**
+ * Combine parts into one (CG, 27 Oct: "parts that have been recorded that
+ * might have been marked an incorrect name or a duplicate"). The first part
+ * picked stays and takes the name; the others' copies follow its own, in
+ * order, each still in the state it was in. Their history, their plates and
+ * what their prints marked all move across -- nothing printed is lost, and
+ * the project's Activity says what was combined.
+ */
+export async function mergeParts(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  partIds: string[],
+  label: string,
+): Promise<string> {
+  const name = label.trim()
+  if (!name) throw new Error('The combined part needs a name.')
+  const ids = [...new Set(partIds)]
+  if (ids.length < 2) throw new Error('Pick at least two parts to combine.')
+  const d = await db()
+  const rows = await d.select<
+    { id: string; label: string; qty: number; printed_n: number; passed_n: number; reprint_n: number; copy_states: string | null; spare_n: number }[]
+  >(
+    `select id, label, qty, printed_n, passed_n, reprint_n, copy_states, spare_n from job_parts
+      where shop_id = ? and job_id = ? and id in (${ids.map(() => '?').join(',')})`,
+    [shopId, jobId, ...ids],
+  )
+  if (rows.length !== ids.length) throw new Error('Those parts are not all on this project.')
+  // The first one picked keeps its id: links to it stay good.
+  rows.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
+  const [keep, ...rest] = rows
+  let offset = 0
+  const states: PartStatus[] = []
+  let spare = 0
+  for (const r of rows) {
+    const st = statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states })
+    const evs = await d.select<{ id: number; copies: string | null; kind: string }[]>(
+      'select id, copies, kind from part_events where part_id = ?',
+      [r.id],
+    )
+    for (const e of evs)
+      await d.execute('update part_events set part_id = ?, copies = ? where id = ?', [keep.id, shiftCopies(e.copies, offset, st.length, e.kind === 'status'), e.id])
+    if (r.id !== keep.id) await d.execute('update slice_sections set part_id = ? where part_id = ?', [keep.id, r.id])
+    states.push(...st)
+    spare += Number(r.spare_n) || 0
+    offset += st.length
+  }
+  const n = countsOf(states)
+  await d.execute(
+    `update job_parts set label = ?, qty = ?, copy_states = ?, printed_n = ?, passed_n = ?, reprint_n = ?, status = ?, spare_n = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      where id = ? and shop_id = ?`,
+    [name, states.length, JSON.stringify(states), n.printed, n.passed, n.reprint, statusOf(n), spare, keep.id, shopId],
+  )
+  for (const r of rest) await d.execute('delete from job_parts where id = ? and shop_id = ?', [r.id, shopId])
+  const said = `Combined ${rows.map((r) => `"${r.label}" ×${r.qty}`).join(', ')} into "${name}" ×${states.length}.`
+  await d.execute(`insert into part_events (part_id, job_id, kind, note, actor_id) values (?, ?, 'note', ?, ?)`, [keep.id, jobId, said, actorId])
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [jobId, actorId, said])
+  return keep.id
 }

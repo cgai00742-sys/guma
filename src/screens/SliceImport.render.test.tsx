@@ -1967,3 +1967,40 @@ describe('when it printed is asked, not assumed (CG, 26 Oct)', () => {
     expect((screen.getByRole('button', { name: /record the print/i }) as HTMLButtonElement).disabled).toBe(false)
   })
 })
+
+describe('duplicates combined into one part (CG, 27 Oct)', () => {
+  it('Instance 1 and 2 become one part, keeping every print and the plate', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await answerToday(user)
+    await user.click(await screen.findByRole('button', { name: /record the print/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Cap'").get()).toEqual({ copy_states: '["printed"]' }))
+    // Leftovers named the way the slicer named them.
+    currentDb.sqlite.exec("update job_parts set label = 'Cap (Instance 1)' where label = 'Cap'")
+    const data = await import('../lib/data')
+    await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Cap (Instance 2)', qty: 2, note: null })
+    cleanup()
+    await renderProject(jobId, ctx)
+    await user.click(screen.getByLabelText('Pick Cap (Instance 1)'))
+    await user.click(screen.getByLabelText('Pick Cap (Instance 2)'))
+    const box = screen.getByRole('group', { name: /combine parts/i })
+    expect((within(box).getByLabelText(/combine 2 parts into one/i) as HTMLInputElement).value).toBe('Cap')
+    expect(box.textContent).toMatch(/become one part of 3 copies, 1 already printed/)
+    await user.click(within(box).getByRole('button', { name: /combine into “cap”/i }))
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare("select label, qty, copy_states from job_parts where label like 'Cap%'").all()).toEqual([
+        { label: 'Cap', qty: 3, copy_states: '["printed","pending","pending"]' },
+      ]),
+    )
+    const capId = (currentDb.sqlite.prepare("select id from job_parts where label = 'Cap'").get() as { id: string }).id
+    // The plate still makes it; the print's mark is still on copy 1.
+    expect(currentDb.sqlite.prepare('select count(*) n from slice_sections where part_id = ?').get(capId)).toEqual({ n: 1 })
+    expect(currentDb.sqlite.prepare("select copies from part_events where part_id = ? and to_status = 'printed'").get(capId)).toEqual({ copies: '1' })
+    expect(currentDb.sqlite.prepare("select body from job_events where body like 'Combined%'").get()).toEqual({
+      body: 'Combined "Cap (Instance 1)" ×1, "Cap (Instance 2)" ×2 into "Cap" ×3.',
+    })
+  })
+})

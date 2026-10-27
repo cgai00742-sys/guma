@@ -14,7 +14,7 @@ import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
 import { matchShelfPhotos as pickShelfPhotos } from './shelfPhotos'
-import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, renumberCopies, setStates, statesOf, statusOf } from './copies'
+import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, renumberCopies, setStates, shiftCopies, statesOf, statusOf } from './copies'
 import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
@@ -4089,4 +4089,65 @@ async function platePartIds(shopId: string, jobId: string, sliceImportId: string
     .eq('slice_imports.shop_id', shopId)
   if (error) throw error
   return [...new Set(((data ?? []) as any[]).map((r) => r.part_id).filter(Boolean).map(String))]
+}
+
+/** See data.local.ts's mergeParts. */
+export async function mergeParts(
+  shopId: string,
+  jobId: string,
+  actorId: string | null,
+  partIds: string[],
+  label: string,
+): Promise<string> {
+  const name = label.trim()
+  if (!name) throw new Error('The combined part needs a name.')
+  const ids = [...new Set(partIds)]
+  if (ids.length < 2) throw new Error('Pick at least two parts to combine.')
+  const { data, error } = await supabase
+    .from('job_parts')
+    .select('id, label, qty, printed_n, passed_n, reprint_n, copy_states, spare_n')
+    .eq('shop_id', shopId)
+    .eq('job_id', jobId)
+    .in('id', ids)
+  if (error) throw error
+  const rows = ((data ?? []) as any[]).sort((a, b) => ids.indexOf(String(a.id)) - ids.indexOf(String(b.id)))
+  if (rows.length !== ids.length) throw new Error('Those parts are not all on this project.')
+  const [keep, ...rest] = rows
+  let offset = 0
+  const states: PartStatus[] = []
+  let spare = 0
+  for (const r of rows) {
+    const st = statesOf({ qty: Number(r.qty), printedN: Number(r.printed_n), passedN: Number(r.passed_n), reprintN: Number(r.reprint_n), copyStates: r.copy_states })
+    const { data: evs, error: eErr } = await supabase.from('part_events').select('id, copies, kind').eq('part_id', r.id)
+    if (eErr) throw eErr
+    for (const e of (evs ?? []) as any[]) {
+      const { error: uErr } = await supabase
+        .from('part_events')
+        .update({ part_id: keep.id, copies: shiftCopies(e.copies ?? null, offset, st.length, e.kind === 'status') })
+        .eq('id', e.id)
+      if (uErr) throw uErr
+    }
+    if (r.id !== keep.id) {
+      const { error: sErr } = await supabase.from('slice_sections').update({ part_id: keep.id }).eq('part_id', r.id)
+      if (sErr) throw sErr
+    }
+    states.push(...st)
+    spare += Number(r.spare_n) || 0
+    offset += st.length
+  }
+  const n = countsOf(states)
+  const { error: pErr } = await supabase
+    .from('job_parts')
+    .update({ label: name, qty: states.length, copy_states: JSON.stringify(states), printed_n: n.printed, passed_n: n.passed, reprint_n: n.reprint, status: statusOf(n), spare_n: spare })
+    .eq('id', keep.id)
+    .eq('shop_id', shopId)
+  if (pErr) throw pErr
+  if (rest.length) {
+    const { error: dErr } = await supabase.from('job_parts').delete().eq('shop_id', shopId).in('id', rest.map((r) => r.id))
+    if (dErr) throw dErr
+  }
+  const said = `Combined ${rows.map((r) => `"${r.label}" ×${r.qty}`).join(', ')} into "${name}" ×${states.length}.`
+  await supabase.from('part_events').insert({ part_id: keep.id, job_id: jobId, kind: 'note', note: said, actor_id: actorId })
+  await supabase.from('job_events').insert({ job_id: jobId, actor_id: actorId, kind: 'edit', body: said })
+  return String(keep.id)
 }

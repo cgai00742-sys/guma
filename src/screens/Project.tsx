@@ -77,6 +77,7 @@ import {
   markPlateFailed,
   markPlatePrinted,
   markPlateParts,
+  mergeParts,
   correctPrintRun,
   deletePrintRun,
   moveSliceSection,
@@ -2117,6 +2118,45 @@ function SortPick({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Duplicates made one (CG, 27 Oct: "Falina (Instance 1)", "(Instance 2)",
+ * "(Instance 3)", one copy each, are one part of three). The name starts as
+ * what they share; every copy, print and history line comes along.
+ */
+function CombineParts({
+  parts,
+  busy,
+  onCombine,
+}: {
+  parts: PartRow[]
+  busy: boolean
+  onCombine: (label: string) => void
+}) {
+  const shared = parts[0]?.label.replace(/\s*\((instance\s*)?\d+\)\s*$/i, '').trim() ?? ''
+  const [name, setName] = useState(shared)
+  const total = parts.reduce((t, p) => t + p.qty, 0)
+  const printed = parts.reduce((t, p) => t + p.copyStates.filter((st) => st === 'printed' || st === 'passed').length, 0)
+  return (
+    <div className="pane" role="group" aria-label="Combine parts" style={{ marginTop: 10, padding: '10px 14px' }}>
+      <div className="btnrow" style={{ alignItems: 'flex-end', margin: 0 }}>
+        <div className="fld" style={{ margin: 0, flex: 1, minWidth: 220 }}>
+          <label className="lbl" htmlFor="combine-name">
+            Combine {parts.length} parts into one
+          </label>
+          <input id="combine-name" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <button type="button" className="btn sm primary" disabled={busy || !name.trim()} onClick={() => onCombine(name)}>
+          Combine into “{name.trim() || '…'}”
+        </button>
+      </div>
+      <div className="hint" style={{ marginTop: 6 }}>
+        {parts.map((p) => p.label).join(', ')} become one part of {total} cop{total === 1 ? 'y' : 'ies'}
+        {printed ? `, ${printed} already printed` : ''}. Every print, plate and history line comes with them.
+      </div>
     </div>
   )
 }
@@ -5485,6 +5525,21 @@ function BuildSheet({
         </div>
       ) : detail.parts.length === 0 ? null : (
         <>
+        {picked.size > 1 && !locked && (
+          <CombineParts
+            key={[...picked].sort().join(',')}
+            parts={detail.parts.filter((x) => picked.has(x.id))}
+            busy={busy || saving}
+            onCombine={(label) =>
+              guard(async () => {
+                // In list order, so the first row picked keeps its copies first.
+                const ids = detail.parts.filter((x) => picked.has(x.id)).map((x) => x.id)
+                await mergeParts(ctx.shop.id, detail.jobId, ctx.profile.id, ids, label)
+                setPicked(new Set())
+              })
+            }
+          />
+        )}
         {picked.size > 0 && (
           <CopiesBar
             parts={detail.parts}

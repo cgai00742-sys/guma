@@ -336,3 +336,24 @@ export function plateCopies(
     }
   return out.sort((a, b) => a - b)
 }
+
+/**
+ * One copy-number list moved into a merged part (CG, 27 Oct: duplicates
+ * like "Falina (Instance 1/2/3)" combined into one part). A part's copies
+ * keep their order and follow the parts before them: copy 2 of the third
+ * part, after parts of 1 and 1 copies, is copy 4. An event that named no
+ * copies meant all of that part's -- it is spelled out, so it cannot later
+ * be read as all of the merged part's.
+ */
+export function shiftCopies(copies: string | null, offset: number, qty: number, named: boolean): string | null {
+  if (!copies) {
+    if (!named) return null
+    return Array.from({ length: qty }, (_, i) => offset + i + 1).join(',')
+  }
+  return copies
+    .split(',')
+    .map((x) => Number(x.trim()))
+    .filter((x) => Number.isInteger(x) && x > 0)
+    .map((x) => x + offset)
+    .join(',')
+}

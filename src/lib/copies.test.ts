@@ -77,3 +77,12 @@ describe('each copy in its own place (CG, 8 Oct: a dropdown per instance)', () =
     expect(() => resizeStates(s, 1)).toThrow(/cannot be fewer than 2/)
   })
 })
+
+describe('copies moved into a combined part (CG, 27 Oct)', () => {
+  it('follow the copies before them, and an all-copies event is spelled out', async () => {
+    const { shiftCopies } = await import('./copies')
+    expect(shiftCopies('1,2', 3, 2, true)).toBe('4,5')
+    expect(shiftCopies(null, 2, 3, true)).toBe('3,4,5')
+    expect(shiftCopies(null, 2, 3, false)).toBeNull()
+  })
+})
