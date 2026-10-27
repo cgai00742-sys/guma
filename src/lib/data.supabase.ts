@@ -13,6 +13,8 @@ import { describePartEdit, describeProjectEdits, type ProjectBefore } from './ed
 import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
 import { feeFor } from './selling'
+import type { EquipmentInput, EquipmentRow, EquipmentUseInput, HardwareInput, HardwareRow, HardwareUseInput, HardwareUseRow, JobExtras } from './data.types'
+import { validateEquipment, validateHardware } from './data.types'
 import { matchShelfPhotos as pickShelfPhotos } from './shelfPhotos'
 import { changeCopies, copyList, countsOf, describeCopiesChange, movable, moveStates, plateCopies, queuedCopies, movedCopies, planMerge, renumberCopies, setStates, statesOf, statusOf } from './copies'
 import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
@@ -631,7 +633,8 @@ const JOB_SELECT = `id, ref, title, brief, kind, created_at, updated_at, taken_i
    batches ( units_made ),
    job_actuals ( material_cost, machine_cost, power_cost, wear_cost, runs,
                  design_hours, finishing_hours, admin_hours, material_units,
-                 failed_units, machine_hours, failed_runs ),
+                 failed_units, machine_hours, failed_runs,
+                 equipment_hours, equipment_cost, hardware_cost ),
    job_events ( at ),
    job_gates ( phase, item_key, skipped )`
 
@@ -671,6 +674,9 @@ function actualsFrom(r: any): ProjectActuals {
     designHours: Number(a.design_hours ?? 0),
     finishingHours: Number(a.finishing_hours ?? 0),
     adminHours: Number(a.admin_hours ?? 0),
+    equipmentHours: Number(a.equipment_hours ?? 0),
+    equipmentCost: Number(a.equipment_cost ?? 0),
+    hardwareCost: Number(a.hardware_cost ?? 0),
   }
 }
 
@@ -684,6 +690,8 @@ function actualCostOf(a: ProjectActuals, designHourly: number, finishingHourly: 
     a.materialCost +
     (a.powerCost > 0 ? a.powerCost : a.machineCost) +
     a.wearCost +
+    (a.equipmentCost ?? 0) +
+    (a.hardwareCost ?? 0) +
     a.designHours * designHourly +
     (a.finishingHours + a.adminHours) * finishingHourly
   )
@@ -3929,6 +3937,24 @@ export async function finishAssembly(
   const { data: items, error: iErr } = await supabase.from('made_items').select('label, unit_cost').eq('assembly_id', assemblyId)
   if (iErr) throw iErr
   if (!items?.length) throw new Error('Nothing is in it yet.')
+  // See data.local.ts: its hardware is used now, and is part of the unit cost.
+  const { data: hw, error: hErr } = await supabase
+    .from('assembly_hardware')
+    .select('item_id, per_unit, hardware_items ( unit_cost )')
+    .eq('assembly_id', assemblyId)
+  if (hErr) throw hErr
+  const hwRows = ((hw ?? []) as any[]).map((h) => ({
+    item_id: h.item_id,
+    per_unit: Number(h.per_unit),
+    unit_cost: Number((Array.isArray(h.hardware_items) ? h.hardware_items[0] : h.hardware_items)?.unit_cost ?? 0),
+  }))
+  if (hwRows.length) {
+    const { error: wErr } = await supabase.from('hardware_use').insert(
+      hwRows.map((h) => ({ shop_id: shopId, job_id: a.job_id, item_id: h.item_id, qty: h.per_unit, unit_cost: h.unit_cost, source: 'assembly', assembly_id: assemblyId, note: `In ${a.name}` })),
+    )
+    if (wErr) throw wErr
+  }
+  const hwCost = hwRows.reduce((t, h) => t + h.per_unit * h.unit_cost, 0)
   let batchId: string | null = null
   if (to.kind === 'shelf') {
     const productId = to.productId ?? (await saveProduct(shopId, { name: to.name || a.name, designJobId: a.job_id }))
@@ -3936,7 +3962,7 @@ export async function finishAssembly(
       productId,
       jobId: a.job_id,
       unitsMade: 1,
-      unitCost: Math.round((items as any[]).reduce((t, i) => t + Number(i.unit_cost), 0) * 1e6) / 1e6,
+      unitCost: Math.round(((items as any[]).reduce((t, i) => t + Number(i.unit_cost), 0) + hwCost) * 1e6) / 1e6,
       madeOn: to.madeOn,
       note: `${a.name}: ${shelfNote((items as any[]).map((i) => i.label))}`,
     })
@@ -4164,4 +4190,200 @@ export async function mergeParts(
   await supabase.from('part_events').insert({ part_id: keep.id, job_id: jobId, kind: 'note', note: said, actor_id: actorId })
   await supabase.from('job_events').insert({ job_id: jobId, actor_id: actorId, kind: 'edit', body: said })
   return String(keep.id)
+}
+
+/* ---- Equipment and hardware (0047; see data.local.ts) ------------------ */
+
+export async function listEquipment(shopId: string): Promise<EquipmentRow[]> {
+  const { data, error } = await supabase
+    .from('equipment')
+    .select('id, name, kind, tracking, watts, price, life_hours, archived, equipment_printers ( printer_id )')
+    .eq('shop_id', shopId)
+    .order('archived')
+    .order('name')
+  if (error) throw error
+  return ((data ?? []) as any[]).map((r) => ({
+    id: String(r.id),
+    name: String(r.name),
+    kind: r.kind,
+    tracking: r.tracking,
+    watts: r.watts == null ? null : Number(r.watts),
+    price: r.price == null ? null : Number(r.price),
+    lifeHours: r.life_hours == null ? null : Number(r.life_hours),
+    archived: !!r.archived,
+    printerIds: ((r.equipment_printers ?? []) as any[]).map((x) => String(x.printer_id)),
+  }))
+}
+
+export async function saveEquipment(shopId: string, input: EquipmentInput): Promise<string> {
+  const next = validateEquipment(input)
+  const row = { name: next.name, kind: next.kind, tracking: next.tracking, watts: next.watts, price: next.price, life_hours: next.lifeHours }
+  let id = next.id
+  if (id) {
+    const { error } = await supabase.from('equipment').update(row).eq('id', id).eq('shop_id', shopId)
+    if (error) throw error
+  } else {
+    const { data, error } = await supabase.from('equipment').insert({ ...row, shop_id: shopId }).select('id').single()
+    if (error) throw error
+    id = String(data.id)
+  }
+  const { error: dErr } = await supabase.from('equipment_printers').delete().eq('equipment_id', id)
+  if (dErr) throw dErr
+  if (next.printerIds.length) {
+    const { error: iErr } = await supabase.from('equipment_printers').insert(next.printerIds.map((p) => ({ equipment_id: id, printer_id: p })))
+    if (iErr) throw iErr
+  }
+  return id
+}
+
+export async function archiveEquipment(shopId: string, id: string, archived: boolean): Promise<void> {
+  const { error } = await supabase.from('equipment').update({ archived }).eq('id', id).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+export async function listHardware(shopId: string): Promise<HardwareRow[]> {
+  const [items, stock] = await Promise.all([
+    supabase.from('hardware_items').select('id, name, unit_cost, markup_pct, stock_base, reorder_at, archived').eq('shop_id', shopId).order('archived').order('name'),
+    supabase.from('hardware_stock').select('item_id, used').eq('shop_id', shopId),
+  ])
+  if (items.error) throw items.error
+  if (stock.error) throw stock.error
+  const used = new Map(((stock.data ?? []) as any[]).map((s) => [String(s.item_id), Number(s.used ?? 0)]))
+  return ((items.data ?? []) as any[]).map((r) => {
+    const u = used.get(String(r.id)) ?? 0
+    return {
+      id: String(r.id),
+      name: String(r.name),
+      unitCost: Number(r.unit_cost),
+      markupPct: Number(r.markup_pct),
+      used: u,
+      available: Number(r.stock_base) - u,
+      reorderAt: Number(r.reorder_at),
+      archived: !!r.archived,
+    }
+  })
+}
+
+export async function saveHardware(shopId: string, input: HardwareInput): Promise<string> {
+  const next = validateHardware(input)
+  let used = 0
+  if (next.id) {
+    const { data } = await supabase.from('hardware_stock').select('used').eq('item_id', next.id).maybeSingle()
+    used = Number((data as any)?.used ?? 0)
+  }
+  const row = { name: next.name, unit_cost: next.unitCost, markup_pct: next.markupPct, stock_base: next.onHand + used, reorder_at: next.reorderAt }
+  if (next.id) {
+    const { error } = await supabase.from('hardware_items').update(row).eq('id', next.id).eq('shop_id', shopId)
+    if (error) throw error
+    return next.id
+  }
+  const { data, error } = await supabase.from('hardware_items').insert({ ...row, shop_id: shopId }).select('id').single()
+  if (error) throw error
+  return String(data.id)
+}
+
+export async function archiveHardware(shopId: string, id: string, archived: boolean): Promise<void> {
+  const { error } = await supabase.from('hardware_items').update({ archived }).eq('id', id).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+export async function listJobExtras(shopId: string, jobId: string): Promise<JobExtras> {
+  const [eq, hw, ph, ah] = await Promise.all([
+    supabase.from('equipment_use').select('id, equipment_id, hours, used_on, note, created_at, equipment ( name )').eq('shop_id', shopId).eq('job_id', jobId),
+    supabase.from('hardware_use').select('id, item_id, qty, unit_cost, source, assembly_id, note, created_at, hardware_items ( name )').eq('shop_id', shopId).eq('job_id', jobId),
+    supabase.from('part_hardware').select('part_id, item_id, per_copy, job_parts!inner ( job_id )').eq('job_parts.job_id', jobId),
+    supabase.from('assembly_hardware').select('assembly_id, item_id, per_unit, assemblies!inner ( job_id )').eq('assemblies.job_id', jobId),
+  ])
+  for (const r of [eq, hw, ph, ah]) if (r.error) throw r.error
+  const one = (x: any) => (Array.isArray(x) ? x[0] : x)
+  return {
+    equipment: ((eq.data ?? []) as any[])
+      .sort((a, b) => String(b.used_on ?? b.created_at).localeCompare(String(a.used_on ?? a.created_at)))
+      .map((r) => ({ id: String(r.id), equipmentId: String(r.equipment_id), equipmentName: String(one(r.equipment)?.name ?? ''), hours: Number(r.hours), usedOn: r.used_on ?? null, note: r.note ?? null })),
+    hardware: ((hw.data ?? []) as any[])
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .map((r) => ({
+        id: String(r.id),
+        itemId: String(r.item_id),
+        itemName: String(one(r.hardware_items)?.name ?? ''),
+        qty: Number(r.qty),
+        unitCost: Number(r.unit_cost),
+        source: r.source as HardwareUseRow['source'],
+        assemblyId: r.assembly_id ?? null,
+        note: r.note ?? null,
+        createdAt: String(r.created_at),
+      })),
+    partHardware: ((ph.data ?? []) as any[]).map((r) => ({ partId: String(r.part_id), itemId: String(r.item_id), perCopy: Number(r.per_copy) })),
+    assemblyHardware: ((ah.data ?? []) as any[]).map((r) => ({ assemblyId: String(r.assembly_id), itemId: String(r.item_id), perUnit: Number(r.per_unit) })),
+  }
+}
+
+export async function logEquipmentUse(shopId: string, jobId: string, actorId: string | null, input: EquipmentUseInput): Promise<string> {
+  const hours = Number(input.hours)
+  if (!Number.isFinite(hours) || hours <= 0) throw new Error('Say how long it ran.')
+  const { data: e, error } = await supabase.from('equipment').select('name, tracking').eq('id', input.equipmentId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  if (!e) throw new Error('That equipment no longer exists.')
+  if (e.tracking !== 'hours') throw new Error(`${e.name} is not tracked by logged hours — change how it is tracked in Shop settings.`)
+  const { data, error: iErr } = await supabase
+    .from('equipment_use')
+    .insert({ shop_id: shopId, job_id: jobId, equipment_id: input.equipmentId, hours, used_on: input.usedOn || null, note: input.note?.trim() || null, actor_id: actorId })
+    .select('id')
+    .single()
+  if (iErr) throw iErr
+  await supabase.from('job_events').insert({ job_id: jobId, actor_id: actorId, kind: 'edit', body: `Logged ${Math.round(hours * 100) / 100} h on ${e.name}.` })
+  return String(data.id)
+}
+
+export async function deleteEquipmentUse(shopId: string, id: string): Promise<void> {
+  const { error } = await supabase.from('equipment_use').delete().eq('id', id).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+export async function addHardwareUse(shopId: string, jobId: string, actorId: string | null, input: HardwareUseInput): Promise<string> {
+  const qty = Number(input.qty)
+  if (!Number.isFinite(qty) || qty <= 0) throw new Error('Say how many were used.')
+  const { data: i, error } = await supabase.from('hardware_items').select('name, unit_cost').eq('id', input.itemId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  if (!i) throw new Error('That hardware no longer exists.')
+  const { data, error: iErr } = await supabase
+    .from('hardware_use')
+    .insert({ shop_id: shopId, job_id: jobId, item_id: input.itemId, qty, unit_cost: Number(i.unit_cost), source: 'manual', note: input.note?.trim() || null, actor_id: actorId })
+    .select('id')
+    .single()
+  if (iErr) throw iErr
+  await supabase.from('job_events').insert({ job_id: jobId, actor_id: actorId, kind: 'edit', body: `Used ${qty} × ${i.name}.` })
+  return String(data.id)
+}
+
+export async function deleteHardwareUse(shopId: string, id: string): Promise<void> {
+  const { error } = await supabase.from('hardware_use').delete().eq('id', id).eq('shop_id', shopId).eq('source', 'manual')
+  if (error) throw error
+}
+
+export async function setPartHardware(shopId: string, partId: string, itemId: string, perCopy: number): Promise<void> {
+  const n = Number(perCopy)
+  if (!Number.isFinite(n) || n < 0) throw new Error('How many must be zero or more.')
+  const { data: p, error: pErr } = await supabase.from('job_parts').select('id').eq('id', partId).eq('shop_id', shopId).maybeSingle()
+  if (pErr) throw pErr
+  if (!p) throw new Error('That part no longer exists.')
+  const q = n === 0
+    ? supabase.from('part_hardware').delete().eq('part_id', partId).eq('item_id', itemId)
+    : supabase.from('part_hardware').upsert({ part_id: partId, item_id: itemId, per_copy: n })
+  const { error } = await q
+  if (error) throw error
+}
+
+export async function setAssemblyHardware(shopId: string, assemblyId: string, itemId: string, perUnit: number): Promise<void> {
+  const n = Number(perUnit)
+  if (!Number.isFinite(n) || n < 0) throw new Error('How many must be zero or more.')
+  const { data: a, error: aErr } = await supabase.from('assemblies').select('status').eq('id', assemblyId).eq('shop_id', shopId).maybeSingle()
+  if (aErr) throw aErr
+  if (!a) throw new Error('That assembly no longer exists.')
+  if (a.status === 'done') throw new Error('That assembly is finished — its hardware was already used.')
+  const q = n === 0
+    ? supabase.from('assembly_hardware').delete().eq('assembly_id', assemblyId).eq('item_id', itemId)
+    : supabase.from('assembly_hardware').upsert({ assembly_id: assemblyId, item_id: itemId, per_unit: n })
+  const { error } = await q
+  if (error) throw error
 }

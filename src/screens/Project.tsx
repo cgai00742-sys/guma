@@ -26,6 +26,7 @@
  * facts the data layer already loaded, so this file holds no rules of its
  * own about what "ready to advance" means.
  */
+import { ProjectExtras } from './EquipmentHardware'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   matchMaterial,
@@ -1099,6 +1100,8 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             setError={setError}
             platesAbove={!inRecord && workFor(detail.phase, detail.facts.kind).includes('build')}
           />
+
+          <ProjectExtras ctx={ctx} detail={detail} busy={busy} readOnly={inRecord} onChanged={reload} setError={setError} />
         </div>
       </details>
 

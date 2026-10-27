@@ -28,7 +28,7 @@ import { toRateSet, type QuoteBuildInput, type ProjectActuals, type ProjectDetai
 import { fmtHours } from './duration'
 
 export interface VarianceLine {
-  key: 'material' | 'machine' | 'wear' | 'labour'
+  key: 'material' | 'machine' | 'wear' | 'labour' | 'equipment' | 'hardware'
   label: string
   quoted: number
   /** null when nothing has been recorded for this line yet. */
@@ -153,6 +153,36 @@ export function compareToQuote(
     },
   ]
 
+  // Equipment that is not a printer, and hardware (0043). Only shown once
+  // something was recorded: a quote has no line for them yet (step 2), and
+  // a row that reads "—" for every project would be noise, not a warning.
+  const base = lines.length
+  const eqCost = actuals.equipmentCost ?? 0
+  if (eqCost > 0)
+    lines.push({
+      key: 'equipment',
+      label: 'Other equipment',
+      quoted: 0,
+      actual: round2(eqCost),
+      delta: null,
+      pct: null,
+      detail:
+        (actuals.equipmentHours ?? 0) > 0
+          ? `${fmtHours(actuals.equipmentHours ?? 0)} logged, plus any riding along with print hours`
+          : 'Riding along with print hours',
+    })
+  const hwCost = actuals.hardwareCost ?? 0
+  if (hwCost > 0)
+    lines.push({
+      key: 'hardware',
+      label: 'Hardware',
+      quoted: 0,
+      actual: round2(hwCost),
+      delta: null,
+      pct: null,
+      detail: 'Magnets, inserts and other pieces used',
+    })
+
   for (const l of lines) {
     if (l.actual === null) continue
     l.delta = round2(l.actual - l.quoted)
@@ -182,7 +212,9 @@ export function compareToQuote(
     actualMarginPct:
       actualCost === null || netRevenue <= 0 ? null : (netRevenue - actualCost) / netRevenue,
     hasActuals,
-    partial: hasActuals && recorded.length < lines.length,
+    // Over the four lines every project has: equipment and hardware are
+    // only listed when recorded, so they can never make a total partial.
+    partial: hasActuals && lines.slice(0, base).filter((l) => l.actual !== null).length < base,
   }
 }
 

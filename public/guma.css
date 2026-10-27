@@ -1826,3 +1826,24 @@ tr.shelfrow.done > td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
 .cameoff-name{flex:1;min-width:0;font-size:13px}
 .cameoff-row .seg{flex:none}
 .cameoff-row .segbtn.printed.on{background:var(--ok);color:#06140e;border-color:var(--ok)}
+
+/* Equipment and hardware in Shop settings (0043). */
+.eqrow{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px}
+.eqrow.low{border-color:color-mix(in srgb, var(--warn) 55%, var(--line))}
+.hwcount{font-family:var(--mono);font-size:12px;color:var(--ok);white-space:nowrap}
+.hwcount.low{color:var(--warn)}
+.trackpick{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-top:4px}
+.trackopt{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px}
+.trackopt.on{border-color:var(--biolum);background:color-mix(in srgb, var(--biolum) 8%, transparent)}
+.trackopt input{margin-top:3px}
+.pickline{display:inline-flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0;font-size:13px}
+/* Choice rows inside a .fld: not field labels, and their inputs not full
+   width (CG, 27 Oct -- the .fld rules once pulled checkboxes away from their
+   names). Specific enough to beat `.fld label` and `.fld input`. */
+.fld label.trackopt,.fld label.pickline{display:flex;color:var(--txt);font-size:13px;line-height:18px;font-weight:400;text-transform:none;letter-spacing:0;margin-bottom:0}
+.fld label.pickline{display:inline-flex}
+.fld .trackopt input,.fld .pickline input{width:auto;flex:none}
+
+.extras-block{margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px}
+.extras-block .histitem{display:flex;gap:10px;align-items:baseline;padding:3px 0;font-size:13px}
+.extras{margin-top:6px}

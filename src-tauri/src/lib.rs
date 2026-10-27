@@ -260,6 +260,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0042_product_photos.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 43,
+      description: "equipment that is not a printer, and hardware counted per piece",
+      sql: include_str!("../migrations/0043_equipment_hardware.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

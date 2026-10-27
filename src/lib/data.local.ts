@@ -57,6 +57,8 @@ import {
   type StockHoldInput,
 } from './data.types'
 import type { SeriesRow, SeriesInput } from './data.types'
+import type { EquipmentInput, EquipmentRow, EquipmentUseInput, HardwareInput, HardwareRow, HardwareUseInput, HardwareUseRow, JobExtras } from './data.types'
+import { validateEquipment, validateHardware } from './data.types'
 import { osCurrency, osLocale } from './locale'
 import { LATEST_RATE_CARD } from './rateCards'
 import { activeDbUrl, isDemo } from './workspace'
@@ -850,6 +852,8 @@ const JOB_LIST_SQL = `
          coalesce(a.material_cost, 0)
            + coalesce(case when a.power_cost > 0 then a.power_cost else a.machine_cost end, 0)
            + coalesce(a.wear_cost, 0)
+           + coalesce(a.equipment_cost, 0)
+           + coalesce(a.hardware_cost, 0)
            + coalesce(a.design_hours, 0) * coalesce(rc.design_hourly, 0)
            + (coalesce(a.finishing_hours, 0) + coalesce(a.admin_hours, 0))
              * coalesce(rc.finishing_hourly, 0) as actual_cost,
@@ -2482,6 +2486,9 @@ function toActuals(a: Record<string, number> | undefined): ProjectActuals {
     designHours: n('design_hours'),
     finishingHours: n('finishing_hours'),
     adminHours: n('admin_hours'),
+    equipmentHours: n('equipment_hours'),
+    equipmentCost: n('equipment_cost'),
+    hardwareCost: n('hardware_cost'),
   }
 }
 
@@ -4735,6 +4742,21 @@ export async function finishAssembly(
     [assemblyId],
   )
   if (!items.length) throw new Error('Nothing is in it yet.')
+  // Its hardware (CG, 27 Oct: magnets in a BathyTopo model) is used now --
+  // glued in, whether it goes to the shelf or is kept -- at today's cost,
+  // and is part of what the unit cost.
+  const hw = await d.select<{ item_id: string; per_unit: number; unit_cost: number }[]>(
+    `select ah.item_id, ah.per_unit, i.unit_cost from assembly_hardware ah
+       join hardware_items i on i.id = ah.item_id where ah.assembly_id = ?`,
+    [assemblyId],
+  )
+  for (const h of hw)
+    await d.execute(
+      `insert into hardware_use (id, shop_id, job_id, item_id, qty, unit_cost, source, assembly_id, note)
+       values (?, ?, ?, ?, ?, ?, 'assembly', ?, ?)`,
+      [uuid(), shopId, a.job_id, h.item_id, Number(h.per_unit), Number(h.unit_cost), assemblyId, `In ${a.name}`],
+    )
+  const hwCost = hw.reduce((t, h) => t + Number(h.per_unit) * Number(h.unit_cost), 0)
   let batchId: string | null = null
   if (to.kind === 'shelf') {
     const productId = to.productId ?? (await saveProduct(shopId, { name: to.name || a.name, designJobId: a.job_id }))
@@ -4742,7 +4764,7 @@ export async function finishAssembly(
       productId,
       jobId: a.job_id,
       unitsMade: 1,
-      unitCost: Math.round(items.reduce((t, i) => t + Number(i.unit_cost), 0) * 1e6) / 1e6,
+      unitCost: Math.round((items.reduce((t, i) => t + Number(i.unit_cost), 0) + hwCost) * 1e6) / 1e6,
       madeOn: to.madeOn,
       note: `${a.name}: ${shelfNote(items.map((i) => i.label))}`,
     })
@@ -4988,3 +5010,239 @@ export async function mergeParts(
   return keep.id
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Equipment and hardware (0043)                                       */
+/* ------------------------------------------------------------------ */
+
+export async function listEquipment(shopId: string): Promise<EquipmentRow[]> {
+  const d = await db()
+  const rows = await d.select<
+    { id: string; name: string; kind: string; tracking: string; watts: number | null; price: number | null; life_hours: number | null; archived: number }[]
+  >('select id, name, kind, tracking, watts, price, life_hours, archived from equipment where shop_id = ? order by archived, name', [shopId])
+  const links = await d.select<{ equipment_id: string; printer_id: string }[]>(
+    `select ep.equipment_id, ep.printer_id from equipment_printers ep join equipment e on e.id = ep.equipment_id where e.shop_id = ?`,
+    [shopId],
+  )
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    kind: r.kind as EquipmentRow['kind'],
+    tracking: r.tracking as EquipmentRow['tracking'],
+    watts: r.watts == null ? null : Number(r.watts),
+    price: r.price == null ? null : Number(r.price),
+    lifeHours: r.life_hours == null ? null : Number(r.life_hours),
+    archived: !!Number(r.archived),
+    printerIds: links.filter((l) => l.equipment_id === r.id).map((l) => l.printer_id),
+  }))
+}
+
+export async function saveEquipment(shopId: string, input: EquipmentInput): Promise<string> {
+  const next = validateEquipment(input)
+  const d = await db()
+  const id = next.id ?? uuid()
+  if (next.id) {
+    const [e] = await d.select<{ id: string }[]>('select id from equipment where id = ? and shop_id = ?', [next.id, shopId])
+    if (!e) throw new Error('That equipment no longer exists.')
+    await d.execute(
+      'update equipment set name = ?, kind = ?, tracking = ?, watts = ?, price = ?, life_hours = ? where id = ? and shop_id = ?',
+      [next.name, next.kind, next.tracking, next.watts, next.price, next.lifeHours, id, shopId],
+    )
+  } else {
+    await d.execute(
+      'insert into equipment (id, shop_id, name, kind, tracking, watts, price, life_hours) values (?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, shopId, next.name, next.kind, next.tracking, next.watts, next.price, next.lifeHours],
+    )
+  }
+  await d.execute('delete from equipment_printers where equipment_id = ?', [id])
+  for (const p of next.printerIds) {
+    const [ok] = await d.select<{ id: string }[]>('select id from printers where id = ? and shop_id = ?', [p, shopId])
+    if (ok) await d.execute('insert into equipment_printers (equipment_id, printer_id) values (?, ?)', [id, p])
+  }
+  return id
+}
+
+export async function archiveEquipment(shopId: string, id: string, archived: boolean): Promise<void> {
+  const d = await db()
+  await d.execute('update equipment set archived = ? where id = ? and shop_id = ?', [archived ? 1 : 0, id, shopId])
+}
+
+export async function listHardware(shopId: string): Promise<HardwareRow[]> {
+  const d = await db()
+  const rows = await d.select<
+    { id: string; name: string; unit_cost: number; markup_pct: number; stock_base: number; reorder_at: number; archived: number; used: number }[]
+  >(
+    `select i.id, i.name, i.unit_cost, i.markup_pct, i.stock_base, i.reorder_at, i.archived, coalesce(s.used, 0) as used
+       from hardware_items i left join hardware_stock s on s.item_id = i.id
+      where i.shop_id = ? order by i.archived, i.name`,
+    [shopId],
+  )
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    unitCost: Number(r.unit_cost),
+    markupPct: Number(r.markup_pct),
+    used: Number(r.used),
+    available: Number(r.stock_base) - Number(r.used),
+    reorderAt: Number(r.reorder_at),
+    archived: !!Number(r.archived),
+  }))
+}
+
+/** "On hand" is what is there NOW; stored as that plus what has been used,
+ *  so later use counts down from it and history never shifts it. */
+export async function saveHardware(shopId: string, input: HardwareInput): Promise<string> {
+  const next = validateHardware(input)
+  const d = await db()
+  const id = next.id ?? uuid()
+  const [u] = await d.select<{ used: number }[]>('select used from hardware_stock where item_id = ?', [id])
+  const base = next.onHand + Number(u?.used ?? 0)
+  if (next.id) {
+    const [h] = await d.select<{ id: string }[]>('select id from hardware_items where id = ? and shop_id = ?', [next.id, shopId])
+    if (!h) throw new Error('That hardware no longer exists.')
+    await d.execute(
+      'update hardware_items set name = ?, unit_cost = ?, markup_pct = ?, stock_base = ?, reorder_at = ? where id = ? and shop_id = ?',
+      [next.name, next.unitCost, next.markupPct, base, next.reorderAt, id, shopId],
+    )
+  } else {
+    await d.execute(
+      'insert into hardware_items (id, shop_id, name, unit_cost, markup_pct, stock_base, reorder_at) values (?, ?, ?, ?, ?, ?, ?)',
+      [id, shopId, next.name, next.unitCost, next.markupPct, base, next.reorderAt],
+    )
+  }
+  return id
+}
+
+export async function archiveHardware(shopId: string, id: string, archived: boolean): Promise<void> {
+  const d = await db()
+  await d.execute('update hardware_items set archived = ? where id = ? and shop_id = ?', [archived ? 1 : 0, id, shopId])
+}
+
+async function ownedJob(shopId: string, jobId: string): Promise<void> {
+  const d = await db()
+  const [j] = await d.select<{ id: string }[]>('select id from jobs where id = ? and shop_id = ?', [jobId, shopId])
+  if (!j) throw new Error('That project is not in this shop.')
+}
+
+export async function listJobExtras(shopId: string, jobId: string): Promise<JobExtras> {
+  const d = await db()
+  const eq = await d.select<{ id: string; equipment_id: string; name: string; hours: number; used_on: string | null; note: string | null }[]>(
+    `select u.id, u.equipment_id, e.name, u.hours, u.used_on, u.note from equipment_use u
+       join equipment e on e.id = u.equipment_id
+      where u.shop_id = ? and u.job_id = ? order by coalesce(u.used_on, u.created_at) desc, u.rowid desc`,
+    [shopId, jobId],
+  )
+  const hw = await d.select<
+    { id: string; item_id: string; name: string; qty: number; unit_cost: number; source: string; assembly_id: string | null; note: string | null; created_at: string }[]
+  >(
+    `select h.id, h.item_id, i.name, h.qty, h.unit_cost, h.source, h.assembly_id, h.note, h.created_at from hardware_use h
+       join hardware_items i on i.id = h.item_id
+      where h.shop_id = ? and h.job_id = ? order by h.created_at desc, h.rowid desc`,
+    [shopId, jobId],
+  )
+  const ph = await d.select<{ part_id: string; item_id: string; per_copy: number }[]>(
+    'select ph.part_id, ph.item_id, ph.per_copy from part_hardware ph join job_parts p on p.id = ph.part_id where p.job_id = ? and p.shop_id = ?',
+    [jobId, shopId],
+  )
+  const ah = await d.select<{ assembly_id: string; item_id: string; per_unit: number }[]>(
+    'select ah.assembly_id, ah.item_id, ah.per_unit from assembly_hardware ah join assemblies a on a.id = ah.assembly_id where a.job_id = ? and a.shop_id = ?',
+    [jobId, shopId],
+  )
+  return {
+    equipment: eq.map((r) => ({ id: r.id, equipmentId: r.equipment_id, equipmentName: r.name, hours: Number(r.hours), usedOn: r.used_on, note: r.note })),
+    hardware: hw.map((r) => ({
+      id: r.id,
+      itemId: r.item_id,
+      itemName: r.name,
+      qty: Number(r.qty),
+      unitCost: Number(r.unit_cost),
+      source: r.source as HardwareUseRow['source'],
+      assemblyId: r.assembly_id,
+      note: r.note,
+      createdAt: r.created_at,
+    })),
+    partHardware: ph.map((r) => ({ partId: r.part_id, itemId: r.item_id, perCopy: Number(r.per_copy) })),
+    assemblyHardware: ah.map((r) => ({ assemblyId: r.assembly_id, itemId: r.item_id, perUnit: Number(r.per_unit) })),
+  }
+}
+
+export async function logEquipmentUse(shopId: string, jobId: string, actorId: string | null, input: EquipmentUseInput): Promise<string> {
+  const hours = Number(input.hours)
+  if (!Number.isFinite(hours) || hours <= 0) throw new Error('Say how long it ran.')
+  await ownedJob(shopId, jobId)
+  const d = await db()
+  const [e] = await d.select<{ name: string; tracking: string }[]>('select name, tracking from equipment where id = ? and shop_id = ?', [input.equipmentId, shopId])
+  if (!e) throw new Error('That equipment no longer exists.')
+  if (e.tracking !== 'hours')
+    throw new Error(`${e.name} is not tracked by logged hours — change how it is tracked in Shop settings.`)
+  const id = uuid()
+  await d.execute(
+    'insert into equipment_use (id, shop_id, job_id, equipment_id, hours, used_on, note, actor_id) values (?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, shopId, jobId, input.equipmentId, hours, input.usedOn || null, input.note?.trim() || null, actorId],
+  )
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [
+    jobId,
+    actorId,
+    `Logged ${Math.round(hours * 100) / 100} h on ${e.name}.`,
+  ])
+  return id
+}
+
+export async function deleteEquipmentUse(shopId: string, id: string): Promise<void> {
+  const d = await db()
+  await d.execute('delete from equipment_use where id = ? and shop_id = ?', [id, shopId])
+}
+
+export async function addHardwareUse(shopId: string, jobId: string, actorId: string | null, input: HardwareUseInput): Promise<string> {
+  const qty = Number(input.qty)
+  if (!Number.isFinite(qty) || qty <= 0) throw new Error('Say how many were used.')
+  await ownedJob(shopId, jobId)
+  const d = await db()
+  const [i] = await d.select<{ name: string; unit_cost: number }[]>('select name, unit_cost from hardware_items where id = ? and shop_id = ?', [input.itemId, shopId])
+  if (!i) throw new Error('That hardware no longer exists.')
+  const id = uuid()
+  await d.execute(
+    `insert into hardware_use (id, shop_id, job_id, item_id, qty, unit_cost, source, note, actor_id) values (?, ?, ?, ?, ?, ?, 'manual', ?, ?)`,
+    [id, shopId, jobId, input.itemId, qty, Number(i.unit_cost), input.note?.trim() || null, actorId],
+  )
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'edit', ?)`, [jobId, actorId, `Used ${qty} × ${i.name}.`])
+  return id
+}
+
+export async function deleteHardwareUse(shopId: string, id: string): Promise<void> {
+  const d = await db()
+  await d.execute("delete from hardware_use where id = ? and shop_id = ? and source = 'manual'", [id, shopId])
+}
+
+/** How many of a piece each copy of a part uses. 0 takes it off. */
+export async function setPartHardware(shopId: string, partId: string, itemId: string, perCopy: number): Promise<void> {
+  const n = Number(perCopy)
+  if (!Number.isFinite(n) || n < 0) throw new Error('How many must be zero or more.')
+  const d = await db()
+  const [p] = await d.select<{ id: string }[]>('select id from job_parts where id = ? and shop_id = ?', [partId, shopId])
+  const [i] = await d.select<{ id: string }[]>('select id from hardware_items where id = ? and shop_id = ?', [itemId, shopId])
+  if (!p || !i) throw new Error('That part or hardware no longer exists.')
+  if (n === 0) await d.execute('delete from part_hardware where part_id = ? and item_id = ?', [partId, itemId])
+  else
+    await d.execute(
+      'insert into part_hardware (part_id, item_id, per_copy) values (?, ?, ?) on conflict (part_id, item_id) do update set per_copy = excluded.per_copy',
+      [partId, itemId, n],
+    )
+}
+
+/** How many of a piece one finished assembly uses. 0 takes it off. */
+export async function setAssemblyHardware(shopId: string, assemblyId: string, itemId: string, perUnit: number): Promise<void> {
+  const n = Number(perUnit)
+  if (!Number.isFinite(n) || n < 0) throw new Error('How many must be zero or more.')
+  const d = await db()
+  const [a] = await d.select<{ status: string }[]>('select status from assemblies where id = ? and shop_id = ?', [assemblyId, shopId])
+  const [i] = await d.select<{ id: string }[]>('select id from hardware_items where id = ? and shop_id = ?', [itemId, shopId])
+  if (!a || !i) throw new Error('That assembly or hardware no longer exists.')
+  if (a.status === 'done') throw new Error('That assembly is finished — its hardware was already used.')
+  if (n === 0) await d.execute('delete from assembly_hardware where assembly_id = ? and item_id = ?', [assemblyId, itemId])
+  else
+    await d.execute(
+      'insert into assembly_hardware (assembly_id, item_id, per_unit) values (?, ?, ?) on conflict (assembly_id, item_id) do update set per_unit = excluded.per_unit',
+      [assemblyId, itemId, n],
+    )
+}

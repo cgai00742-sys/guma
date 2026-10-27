@@ -9,6 +9,7 @@
  * migration — this screen just never grew the UI to reach them until now.
  * Nothing here is a constant in the code — that is the whole point.
  */
+import { EquipmentPane, HardwarePane } from './EquipmentHardware'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { isDemo, switchWorkspace } from '../lib/workspace'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -310,8 +311,18 @@ export default function Settings({ ctx, onSaved }: { ctx: ShopContext; onSaved: 
       {tab === 'costs' && <CostsPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'identity' && <IdentityPane ctx={ctx} onSaved={onSaved} />}
       {tab === 'terms' && <QuoteTermsPane ctx={ctx} onSaved={onSaved} />}
-      {tab === 'machines' && <MachinesPane ctx={ctx} onSaved={onSaved} />}
-      {tab === 'materials' && <MaterialsPane ctx={ctx} onSaved={onSaved} />}
+      {tab === 'machines' && (
+        <>
+          <MachinesPane ctx={ctx} onSaved={onSaved} />
+          <EquipmentPane ctx={ctx} />
+        </>
+      )}
+      {tab === 'materials' && (
+        <>
+          <MaterialsPane ctx={ctx} onSaved={onSaved} />
+          <HardwarePane ctx={ctx} />
+        </>
+      )}
       {tab === 'workspace' && <WorkspacePane ctx={ctx} />}
 
       {tab === 'rates' && error && (

@@ -981,6 +981,12 @@ export interface ProjectActuals {
   designHours: number
   finishingHours: number
   adminHours: number
+  /** Equipment that is not a printer (0043): hours logged, and what it all
+   *  cost -- logged hours plus riding along with print hours. */
+  equipmentHours?: number
+  equipmentCost?: number
+  /** Hardware (0043): logged, assembly and per-copy pieces. */
+  hardwareCost?: number
 }
 
 /** Shared by both backends' recordPrintRun, so the two cannot validate
@@ -1632,4 +1638,129 @@ export function shelfNote(labels: string[]): string {
   const by = new Map<string, number>()
   for (const l of labels) by.set(l, (by.get(l) ?? 0) + 1)
   return [...by].map(([l, n]) => `${n} × ${l}`).join(', ')
+}
+
+/* ---- equipment and hardware (0043) ------------------------------------ */
+export type EquipmentKind = 'dryer' | 'wash_cure' | 'fume' | 'enclosure' | 'iron' | 'heat_gun' | 'dehumidifier' | 'other'
+export type EquipmentTracking = 'hours' | 'printers' | 'overhead'
+
+export interface EquipmentRow {
+  id: string
+  name: string
+  kind: EquipmentKind
+  tracking: EquipmentTracking
+  watts: number | null
+  price: number | null
+  lifeHours: number | null
+  archived: boolean
+  /** The printers it serves, when it rides along with them. */
+  printerIds: string[]
+}
+
+export interface EquipmentInput {
+  id?: string
+  name: string
+  kind: EquipmentKind
+  tracking: EquipmentTracking
+  watts: number | null
+  price: number | null
+  lifeHours: number | null
+  printerIds: string[]
+}
+
+export interface EquipmentUseRow {
+  id: string
+  equipmentId: string
+  equipmentName: string
+  hours: number
+  usedOn: string | null
+  note: string | null
+}
+
+export interface EquipmentUseInput {
+  equipmentId: string
+  hours: number
+  usedOn: string | null
+  note: string | null
+}
+
+export interface HardwareRow {
+  id: string
+  name: string
+  unitCost: number
+  markupPct: number
+  /** On hand now: what was counted, less everything used since. */
+  available: number
+  used: number
+  reorderAt: number
+  archived: boolean
+}
+
+export interface HardwareInput {
+  id?: string
+  name: string
+  unitCost: number
+  markupPct: number
+  /** How many are on hand right now. */
+  onHand: number
+  reorderAt: number
+}
+
+export interface HardwareUseRow {
+  id: string
+  itemId: string
+  itemName: string
+  qty: number
+  unitCost: number
+  source: 'manual' | 'assembly'
+  assemblyId: string | null
+  note: string | null
+  createdAt: string
+}
+
+export interface HardwareUseInput {
+  itemId: string
+  qty: number
+  note: string | null
+}
+
+/** Everything equipment and hardware about one project. */
+export interface JobExtras {
+  equipment: EquipmentUseRow[]
+  hardware: HardwareUseRow[]
+  partHardware: { partId: string; itemId: string; perCopy: number }[]
+  assemblyHardware: { assemblyId: string; itemId: string; perUnit: number }[]
+}
+
+/** Shared validation, so the two backends cannot disagree. */
+export function validateEquipment(next: EquipmentInput): EquipmentInput {
+  const name = next.name.trim()
+  if (!name) throw new Error('Equipment needs a name.')
+  const num = (v: number | null, what: string, positive = false) => {
+    if (v == null || (v as unknown) === '') return null
+    const n = Number(v)
+    if (!Number.isFinite(n) || n < 0 || (positive && n === 0)) throw new Error(`${what} must be ${positive ? 'more than zero' : 'zero or more'}.`)
+    return n
+  }
+  return {
+    ...next,
+    name,
+    watts: num(next.watts, 'Power'),
+    price: num(next.price, 'Price'),
+    lifeHours: num(next.lifeHours, 'Expected life', true),
+    printerIds: next.tracking === 'printers' ? [...new Set(next.printerIds)] : [],
+  }
+}
+
+export function validateHardware(next: HardwareInput): HardwareInput {
+  const name = next.name.trim()
+  if (!name) throw new Error('Hardware needs a name.')
+  for (const [v, what] of [
+    [next.unitCost, 'Cost per unit'],
+    [next.markupPct, 'Markup'],
+    [next.onHand, 'On hand'],
+    [next.reorderAt, 'Reorder point'],
+  ] as const)
+    if (!Number.isFinite(Number(v)) || Number(v) < 0) throw new Error(`${what} must be zero or more.`)
+  return { ...next, name, unitCost: Number(next.unitCost), markupPct: Number(next.markupPct), onHand: Number(next.onHand), reorderAt: Number(next.reorderAt) }
 }

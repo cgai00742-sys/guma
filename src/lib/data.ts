@@ -848,3 +848,44 @@ export async function mergeParts(
 ): Promise<string> {
   return (await backend()).mergeParts(shopId, jobId, actorId, partIds, label, need)
 }
+
+/* ---- equipment and hardware (0043) ---- */
+export async function listEquipment(shopId: string): Promise<import('./data.types').EquipmentRow[]> {
+  return (await backend()).listEquipment(shopId)
+}
+export async function saveEquipment(shopId: string, input: import('./data.types').EquipmentInput): Promise<string> {
+  return (await backend()).saveEquipment(shopId, input)
+}
+export async function archiveEquipment(shopId: string, id: string, archived: boolean): Promise<void> {
+  return (await backend()).archiveEquipment(shopId, id, archived)
+}
+export async function listHardware(shopId: string): Promise<import('./data.types').HardwareRow[]> {
+  return (await backend()).listHardware(shopId)
+}
+export async function saveHardware(shopId: string, input: import('./data.types').HardwareInput): Promise<string> {
+  return (await backend()).saveHardware(shopId, input)
+}
+export async function archiveHardware(shopId: string, id: string, archived: boolean): Promise<void> {
+  return (await backend()).archiveHardware(shopId, id, archived)
+}
+export async function listJobExtras(shopId: string, jobId: string): Promise<import('./data.types').JobExtras> {
+  return (await backend()).listJobExtras(shopId, jobId)
+}
+export async function logEquipmentUse(shopId: string, jobId: string, actorId: string | null, input: import('./data.types').EquipmentUseInput): Promise<string> {
+  return (await backend()).logEquipmentUse(shopId, jobId, actorId, input)
+}
+export async function deleteEquipmentUse(shopId: string, id: string): Promise<void> {
+  return (await backend()).deleteEquipmentUse(shopId, id)
+}
+export async function addHardwareUse(shopId: string, jobId: string, actorId: string | null, input: import('./data.types').HardwareUseInput): Promise<string> {
+  return (await backend()).addHardwareUse(shopId, jobId, actorId, input)
+}
+export async function deleteHardwareUse(shopId: string, id: string): Promise<void> {
+  return (await backend()).deleteHardwareUse(shopId, id)
+}
+export async function setPartHardware(shopId: string, partId: string, itemId: string, perCopy: number): Promise<void> {
+  return (await backend()).setPartHardware(shopId, partId, itemId, perCopy)
+}
+export async function setAssemblyHardware(shopId: string, assemblyId: string, itemId: string, perUnit: number): Promise<void> {
+  return (await backend()).setAssemblyHardware(shopId, assemblyId, itemId, perUnit)
+}

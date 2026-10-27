@@ -2049,3 +2049,93 @@ describe('a stopped plate with several of the same piece, some good (CG, 27 Oct)
     )
   })
 })
+
+describe('equipment and hardware (CG, 27 Oct)', () => {
+  it('Shop settings: a dryer asks how it is tracked, suggests its numbers, and saves', async () => {
+    const { ctx } = await seedShop()
+    const user = userEvent.setup()
+    const { default: Settings } = await import('./Settings')
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=machines']}>
+        <Routes>
+          <Route path="/settings" element={<Settings ctx={ctx as any} onSaved={() => undefined} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    const pane = await screen.findByRole('region', { name: /other equipment/i })
+    await user.click(within(pane).getByRole('button', { name: /add equipment/i }))
+    const form = within(pane).getByRole('group', { name: /new equipment/i })
+    // A dryer suggests its average draw and logged hours.
+    expect((within(form).getByLabelText(/average power/i) as HTMLInputElement).value).toBe('150')
+    expect((within(form).getByRole('radio', { name: /log hours as you use it/i }) as HTMLInputElement).checked).toBe(true)
+    await user.type(within(form).getByLabelText(/^name$/i), 'Sunlu S4 Pro')
+    await user.type(within(form).getByLabelText(/what it cost/i), '140')
+    // 0.15 kW x $0.4299 + $140 / 5,000 h = $0.09 an hour
+    expect(form.textContent).toMatch(/An hour of it costs \$0\.09/)
+    await user.click(within(form).getByRole('button', { name: /^save$/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare('select name, kind, tracking, watts, price, life_hours from equipment').all()).toEqual([
+      { name: 'Sunlu S4 Pro', kind: 'dryer', tracking: 'hours', watts: 150, price: 140, life_hours: 5000 },
+    ]))
+    // Alongside printers needs at least one printer picked.
+    await user.click(within(pane).getByRole('button', { name: /add equipment/i }))
+    const f2 = within(pane).getByRole('group', { name: /new equipment/i })
+    await user.selectOptions(within(f2).getByLabelText(/what it is/i), 'fume')
+    expect((within(f2).getByRole('radio', { name: /alongside printers/i }) as HTMLInputElement).checked).toBe(true)
+    await user.type(within(f2).getByLabelText(/^name$/i), 'Extractor')
+    expect((within(f2).getByRole('button', { name: /pick at least one printer/i }) as HTMLButtonElement).disabled).toBe(true)
+    await user.click(within(within(f2).getByRole('group', { name: /printers it serves/i })).getByRole('checkbox'))
+    await user.click(within(f2).getByRole('button', { name: /^save$/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) n from equipment_printers').get()).toEqual({ n: 1 }))
+  })
+
+  it('Shop settings: a custom piece — name, how many, cost each, markup', async () => {
+    const { ctx } = await seedShop()
+    const user = userEvent.setup()
+    const { default: Settings } = await import('./Settings')
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=materials']}>
+        <Routes>
+          <Route path="/settings" element={<Settings ctx={ctx as any} onSaved={() => undefined} />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    const pane = await screen.findByRole('region', { name: /^hardware$/i })
+    await user.click(within(pane).getByRole('button', { name: /add hardware/i }))
+    const form = within(pane).getByRole('group', { name: /new hardware/i })
+    await user.type(within(form).getByLabelText(/what it is/i), '6×2 mm magnet')
+    await user.type(within(form).getByLabelText(/how many on hand/i), '200')
+    await user.type(within(form).getByLabelText(/cost per unit/i), '0.08')
+    await user.clear(within(form).getByLabelText(/markup/i))
+    await user.type(within(form).getByLabelText(/markup/i), '25')
+    expect(form.textContent).toMatch(/Costs you \$0\.08 each; a client pays \$0\.10/)
+    await user.click(within(form).getByRole('button', { name: /^save$/i }))
+    expect(await within(pane).findByText(/200 on hand/)).toBeDefined()
+  })
+
+  it('on a project: pieces per copy count as copies come off, and dryer hours are logged', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    const mag = await (data as any).saveHardware(ctx.shop.id, { name: 'Magnet', unitCost: 0.1, markupPct: 0, onHand: 50, reorderAt: 5 })
+    await (data as any).saveEquipment(ctx.shop.id, { name: 'Sunlu S4 Pro', kind: 'dryer', tracking: 'hours', watts: 150, price: 140, lifeHours: 5000, printerIds: [] })
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await answerToday(user)
+    await user.click(await screen.findByRole('button', { name: /record the print/i }))
+    const region = await screen.findByRole('region', { name: /equipment and hardware/i })
+    // Buoy shell: 6 magnets a copy; both copies came off.
+    const per = within(region).getByRole('group', { name: /hardware per part/i })
+    await user.selectOptions(within(per).getByLabelText(/uses hardware/i), within(per).getByRole('option', { name: /buoy shell/i }))
+    await user.type(within(per).getByLabelText(/how many/i), '6')
+    await user.click(within(per).getByRole('button', { name: /^set$/i }))
+    expect(await within(region).findByText(/2 copies off, 12 used/)).toBeDefined()
+    expect(currentDb.sqlite.prepare('select hardware_cost from job_actuals where job_id = ?').get(jobId)).toEqual({ hardware_cost: 1.2000000000000002 })
+    // The dryer, logged.
+    const log = within(region).getByRole('group', { name: /log equipment hours/i })
+    await user.type(within(log).getByLabelText('How long'), '2')
+    await user.click(within(log).getByRole('button', { name: /log it/i }))
+    await waitFor(() => expect((currentDb.sqlite.prepare('select equipment_hours from job_actuals where job_id = ?').get(jobId) as any).equipment_hours).toBe(2))
+    await waitFor(() => expect(region.textContent).toMatch(/Sunlu S4 Pro — 2h/))
+    expect(mag).toBeDefined()
+  })
+})
