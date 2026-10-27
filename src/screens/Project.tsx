@@ -2623,13 +2623,14 @@ function MadeItems({
           const st = assemblyStatus(a.needs, inside)
           const cost = inside.reduce((t, i) => t + i.unitCost, 0)
           return (
-            <div key={a.id} className="asm" role="group" aria-label={`Assembly ${a.name}`}>
+            <div key={a.id} className={`asm ${a.needs.length && st.complete ? 'done' : ''}`.trim()} role="group" aria-label={`Assembly ${a.name}`}>
               <div className="asmhead">
                 <b>{a.name}</b>
                 <span className="pmeta">
                   {inside.length} piece{inside.length === 1 ? '' : 's'} · {money(cost)}
-                  {a.needs.length ? (st.complete ? ' · has everything it needs' : ` · ${st.missing} still missing`) : ''}
+                  {a.needs.length > 0 && !st.complete ? ` · ${st.missing} still missing` : ''}
                 </span>
+                {a.needs.length > 0 && st.complete && <span className="done-tag">✓ has everything it needs</span>}
               </div>
               {st.lines.length > 0 && (
                 <div className="asmneeds">
@@ -4101,7 +4102,7 @@ function SliceRuns({
             ? { cls: 'ok', text: runs.length > 1 ? `printed · ${runs.length} prints` : 'printed' }
             : { cls: 'crit', text: latest.outcome === 'failed' ? 'failed' : 'stopped part way' }
         return (
-          <div className="plate" key={s.id} data-testid={`plate-${s.id}`}>
+          <div className={`plate ${status.cls === 'ok' ? 'done' : ''}`.trim()} key={s.id} data-testid={`plate-${s.id}`}>
             <div className="platehead">
               {/* The slicer's own picture of the plate: the quickest way to
                   tell two plates apart (CG, 22 Oct). */}
@@ -5645,7 +5646,7 @@ function BuildSheet({
                   <tr
                     className={`partrow ${copiesOpen === p.id ? 'open' : ''} ${
                       landed > 0 && i >= detail.parts.length - landed ? 'landed' : ''
-                    }`.trim()}
+                    } ${partDone(statesOf(p)) ? 'done' : ''}`.trim()}
                   >
                     <td className="pick">
                       <input
@@ -5743,13 +5744,14 @@ function BuildSheet({
                                 color:
                                   c.reprint > 0
                                     ? 'var(--red)'
-                                    : p.status === 'passed'
+                                    : p.status === 'passed' || partDone(states)
                                       ? 'var(--ok)'
                                       : c.printed + c.passed > 0
                                         ? 'var(--warn)'
                                         : undefined,
                               }}
                             >
+                              {partDone(states) && '✓ '}
                               {describeCopies(c)}
                               {p.spareN > 0 && ` · ${p.spareN} spare${p.spareN === 1 ? '' : 's'}`}
                               {queued.size > 0 && ` · ${queued.size} reprint${queued.size === 1 ? '' : 's'} queued`}
@@ -6062,7 +6064,7 @@ function BuildSheet({
 
       {detail.parts.length > 0 && !plateOnly && (
         <div className="sheetsum">
-          <span>One box per copy: amber = printed · green = passed · red = going back · dashed = reprint queued</span>
+          <span>One box per copy: amber = printed · green = every copy done (✓) or passed · red = going back · dashed = reprint queued</span>
           <span style={{ marginLeft: 'auto' }}>
             {detail.facts.parts} part{detail.facts.parts === 1 ? '' : 's'} ·{' '}
             {(() => {
@@ -7906,11 +7908,20 @@ const COPY_MOVE_LABEL: Record<PartStatus, string> = {
  * and copy 3 is always the third box. Past a dozen copies the boxes stop
  * helping and the line below carries it alone.
  */
+/**
+ * Every copy the part needs has come off, clean (CG, 27 Oct: "turn completed
+ * parts printed to green ... across the program for things that are
+ * completed or filled"). Green is the app's word for done.
+ */
+function partDone(states: PartStatus[]): boolean {
+  return states.length > 0 && states.every((st) => st === 'printed' || st === 'passed')
+}
+
 function CopyBar({ states, queued }: { states: PartStatus[]; queued?: Set<number> }) {
   if (states.length > 12) return null
   const cls: Record<PartStatus, string> = { pending: '', printed: 'on', passed: 'ok', reprint: 'fail' }
   return (
-    <span className="copybar" aria-hidden="true">
+    <span className={`copybar ${partDone(states) && !queued?.size ? 'done' : ''}`.trim()} aria-hidden="true">
       {states.map((st, i) =>
         queued?.has(i) ? (
           <i key={i} className="queued" title={`Copy ${i + 1}: reprint queued`} />
@@ -8024,7 +8035,7 @@ function EachCopy({
           // right now shows its newest reason below, with its ways forward.
           const past = st === 'reprint' ? story.fails.slice(0, -1) : story.fails
           return (
-          <div key={i} className={`copycard ${st}${queued ? ' queued' : ''}`}>
+          <div key={i} className={`copycard ${st}${queued ? ' queued' : ''}${partDone(states) ? ' done' : ''}`}>
             <div className="copyhead">
               <span className="copyno">Copy {i + 1}</span>
               <span className={`copypill ${queued ? 'queued' : st}`}>{queued ? 'Reprint queued' : COPY_SHORT[st]}</span>

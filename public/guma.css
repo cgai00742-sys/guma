@@ -1786,3 +1786,19 @@ td.pick input,th.pick input{margin:0;cursor:pointer}
 .platesrc{display:flex;align-items:baseline;gap:8px;max-width:min(440px, 42vw);min-width:0}
 .platesrc .srcname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .platesrc .srcmore{flex:none;color:var(--txt-3);font-size:10.5px;border:1px solid var(--line);border-radius:999px;padding:0 6px}
+
+/* Done is green, everywhere (CG, 27 Oct). A part whose every copy has come
+   off clean: its boxes, its count and a green edge on the row. */
+.copybar.done i.on,.copybar.done i.ok{background:var(--ok)}
+.copybar.done i.ok{box-shadow:inset 0 0 0 1.5px color-mix(in srgb, #fff 55%, transparent)}
+tr.partrow.done > td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
+tr.partrow.done td{background:color-mix(in srgb, var(--ok) 4%, transparent)}
+.copycard.done{border-color:color-mix(in srgb, var(--ok) 55%, var(--line))}
+.copycard.done .copypill{color:var(--ok);background:color-mix(in srgb, var(--ok) 14%, transparent)}
+.plate.done{box-shadow:inset 3px 0 0 var(--ok)}
+.asm.done{border-color:color-mix(in srgb, var(--ok) 55%, var(--line));box-shadow:inset 3px 0 0 var(--ok)}
+.tag.done,.done-tag{color:var(--ok);border:1px solid color-mix(in srgb, var(--ok) 40%, transparent);background:color-mix(in srgb, var(--ok) 10%, transparent);border-radius:999px;padding:1px 8px;font-size:11px}
+tr.shelfrow.done > td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
+/* A finished thing's button reads as done, not as greyed out. */
+.btn.done-tag:disabled{opacity:1;filter:none;cursor:default;color:var(--ok);background:color-mix(in srgb, var(--ok) 10%, transparent);border-color:color-mix(in srgb, var(--ok) 40%, transparent)}
+.chip.done{color:var(--ok);border-color:color-mix(in srgb, var(--ok) 40%, transparent);background:color-mix(in srgb, var(--ok) 10%, transparent)}

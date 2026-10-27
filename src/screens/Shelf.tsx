@@ -391,7 +391,8 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                 return (
                   <Fragment key={r.productId}>
                     <tr
-                      className="row click"
+                      // Done is green (CG, 27 Oct): every unit made has sold.
+                      className={`row click shelfrow ${r.unitsMade > 0 && r.unitsLeft === 0 ? 'done' : ''}`.trim()}
                       onClick={() => setOpenId(open ? null : r.productId)}
                     >
                       <td>
@@ -413,7 +414,9 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                       </td>
                       <td className="r">{r.unitsMade}</td>
                       <td className="r">{r.unitsSold}</td>
-                      <td className="r">{r.unitsLeft}</td>
+                      <td className="r">
+                        {r.unitsMade > 0 && r.unitsLeft === 0 ? <span className="done-tag">✓ sold out</span> : r.unitsLeft}
+                      </td>
                       <td className="r">{money(r.revenue)}</td>
                       <td className="r">{r.fees > 0 ? `−${money(r.fees)}` : '—'}</td>
                       <td className={`r ${r.shippingCharged - r.shippingCost < 0 ? 'neg' : ''}`}>
@@ -609,12 +612,12 @@ function Batches({
               )}
               <button
                 type="button"
-                className="btn sm"
+                className={`btn sm ${Number(b.units_left) < 1 ? 'done-tag' : ''}`.trim()}
                 disabled={busy || Number(b.units_left) < 1}
                 style={{ marginLeft: 'auto' }}
                 onClick={() => onSell(b.id, Number(b.units_left))}
               >
-                {Number(b.units_left) < 1 ? 'All sold' : 'Record a sale'}
+                {Number(b.units_left) < 1 ? '✓ All sold' : 'Record a sale'}
               </button>
               {mine.length === 0 &&
                 (removing === b.id ? (

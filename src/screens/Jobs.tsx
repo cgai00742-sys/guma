@@ -313,7 +313,7 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
                       </td>
                       <td>
                         {j.facts.takenInAt ? (
-                          <span className="chip">{phaseLabel(j.phase, j.facts.kind)}</span>
+                          <span className={`chip ${j.phase === 'delivered' ? 'done' : ''}`.trim()}>{j.phase === 'delivered' ? '✓ ' : ''}{phaseLabel(j.phase, j.facts.kind)}</span>
                         ) : (
                           <span
                             className="chip"

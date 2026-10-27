@@ -543,7 +543,9 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     await user.click(screen.getByRole('button', { name: /^all$/i }))
     expect((screen.getByLabelText(/how many came off/i) as HTMLInputElement).value).toBe('5')
     await user.click(screen.getByRole('button', { name: /^save$/i }))
-    await waitFor(() => expect(line()).toBe('5 of 5 printed'))
+    await waitFor(() => expect(line()).toBe('✓ 5 of 5 printed'))
+    // Done is green (CG, 27 Oct): every copy came off, so the row says so.
+    expect(screen.getByRole('button', { name: /each copy of hull/i }).closest('tr')?.className).toMatch(/\bdone\b/)
     expect(counts()).toEqual({ printed_n: 5, passed_n: 0, reprint_n: 0, status: 'printed' })
     expect(document.querySelectorAll('.copybar i.on')).toHaveLength(5)
   })

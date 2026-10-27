@@ -353,7 +353,7 @@ function SeriesCard({
                         </span>
                       </td>
                       <td>
-                        <span className="chip">{phaseLabel(r.phase, r.facts.kind)}</span>
+                        <span className={`chip ${r.phase === 'delivered' ? 'done' : ''}`.trim()}>{r.phase === 'delivered' ? '✓ ' : ''}{phaseLabel(r.phase, r.facts.kind)}</span>
                       </td>
                       <td className="r mono">
                         {r.facts.materialUnits ? `${Math.round(r.facts.materialUnits)} g` : '—'}
@@ -577,7 +577,7 @@ function OneSeries({
                     </span>
                   </td>
                   <td>
-                    <span className="chip">{phaseLabel(r.phase, r.facts.kind)}</span>
+                    <span className={`chip ${r.phase === 'delivered' ? 'done' : ''}`.trim()}>{r.phase === 'delivered' ? '✓ ' : ''}{phaseLabel(r.phase, r.facts.kind)}</span>
                   </td>
                   <td className="r mono">{r.facts.materialUnits ? `${Math.round(r.facts.materialUnits)} g` : '—'}</td>
                   <td className="r mono">
