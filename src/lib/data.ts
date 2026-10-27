@@ -832,7 +832,7 @@ export async function markPlateParts(
   actorId: string | null,
   sliceImportId: string,
   runId: string | null,
-  ok: string[],
+  ok: Record<string, number>,
   reason: string | null,
 ): Promise<{ printed: number; failed: number }> {
   return (await backend()).markPlateParts(shopId, jobId, actorId, sliceImportId, runId, ok, reason)

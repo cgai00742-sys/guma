@@ -106,7 +106,9 @@ export function guessSort(
   const taken = [...parts.map((p) => p.label), ...earlier.map((b) => b.label)]
   const out: SortGuess[] = []
   /** Parts already given to an object of this file. */
-  const used = new Set<string>()
+  /** Open copies each part still has, as objects of this file take them. */
+  const left = new Map(parts.map((p) => [p.id, (p.copyStates ?? []).filter((st) => st === 'pending').length]))
+  const take = (id: string, n: number) => left.set(id, (left.get(id) ?? 0) - n)
   for (const o of objects) {
     const size = perCopyOf(o)
     const key = o.label.trim().toLowerCase()
@@ -128,14 +130,14 @@ export function guessSort(
       !failing && !(same && same.variants.length)
         ? parts.find(
             (p) =>
-              !used.has(p.id) &&
+              (left.get(p.id) ?? 0) > 0 &&
               p.variants.length === 0 &&
               (p.copyStates ?? []).includes('pending') &&
               baseName(p.label) === baseName(o.label),
           ) ?? null
         : null
     if (waiting) {
-      used.add(waiting.id)
+      take(waiting.id, Math.max(1, o.qty || 1))
       out.push({
         choice: { kind: 'part', partId: waiting.id },
         why:
@@ -146,7 +148,7 @@ export function guessSort(
       continue
     }
     if (failing) {
-      used.add(failing.id)
+      take(failing.id, Math.max(1, o.qty || 1))
       const sizes = partSizes(failing)
       const n = owed(failing)
       const fits = !sizes.length || sizes.some((s) => sameSize(s, size))

@@ -1813,9 +1813,10 @@ describe('a plate stopped part way asks what came off OK (CG, 24 Oct)', () => {
     if (!(box as HTMLInputElement).checked) await user.click(box)
     await user.selectOptions(screen.getByLabelText(/how it went/i), 'cancelled')
     const ask = screen.getByRole('group', { name: /what came off ok/i })
-    expect(ask.textContent).toMatch(/Nothing ticked: every part on the plate is marked failed/)
-    await user.click(within(ask).getByLabelText('Cap'))
-    expect(ask.textContent).toMatch(/Cap marked printed; Buoy shell marked failed/)
+    expect(ask.textContent).toMatch(/Everything on the plate is marked failed/)
+    // One plain switch per object (CG, 27 Oct).
+    await user.click(within(within(ask).getByRole('group', { name: /how cap came off/i })).getByRole('button', { name: /came off/i }))
+    expect(ask.textContent).toMatch(/1 of 2 came off and are marked printed; the other 1 are marked failed/)
     await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
     const mins = [...document.querySelectorAll('input')].filter((i) => /minutes/i.test(i.getAttribute('aria-label') ?? ''))
     await user.type(mins[0], '30')
@@ -1835,7 +1836,9 @@ describe('a plate stopped part way asks what came off OK (CG, 24 Oct)', () => {
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'cancelled')
-    await user.click(within(screen.getByRole('group', { name: /what came off ok/i })).getByLabelText('Buoy shell'))
+    await user.click(
+      within(within(screen.getByRole('group', { name: /what came off ok/i })).getByRole('group', { name: /how buoy shell ×2 came off/i })).getByRole('button', { name: /came off/i }),
+    )
     await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
     await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) n from print_runs').get()).toEqual({ n: 1 }))
@@ -1864,7 +1867,9 @@ describe('a failed copy gets filled by the next good print of the same piece (CG
     await addAsEstimate(user)
     await user.click(await screen.findByRole('button', { name: /this print happened/i }))
     await user.selectOptions(await screen.findByLabelText(/how it went/i), 'cancelled')
-    await user.click(within(screen.getByRole('group', { name: /what came off ok/i })).getByLabelText('Buoy shell'))
+    await user.click(
+      within(within(screen.getByRole('group', { name: /what came off ok/i })).getByRole('group', { name: /how buoy shell ×2 came off/i })).getByRole('button', { name: /came off/i }),
+    )
     await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
     await user.click(screen.getByRole('button', { name: /^record it$/i }))
     await waitFor(() => expect(capStates()).toBe('["reprint"]'))
@@ -2004,5 +2009,43 @@ describe('duplicates combined into one part (CG, 27 Oct)', () => {
     expect(currentDb.sqlite.prepare("select body from job_events where body like 'Combined%'").get()).toEqual({
       body: 'Combined "Cap (Instance 1)" ×1, "Cap (Instance 2)" ×2 into "Cap" ×2.',
     })
+  })
+})
+
+describe('a stopped plate with several of the same piece, some good (CG, 27 Oct)', () => {
+  it('marks only the objects that came off, copy by copy', async () => {
+    const FOUR = [1, 2, 3, 4]
+      .map((n) => `; printing object Diagonal (Instance ${n}) id:${n - 1} copy 0`)
+      .join('\n') + `
+; filament used [g] = 13.6
+; total filament used [g] = 13.6
+; estimated printing time (normal mode) = 0h 24m
+; filament_type = PETG
+; printer_model = XL
+`
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    const data = await import('../lib/data')
+    await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Diagonal', qty: 5, note: null })
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([FOUR], 'Diagonals.gcode'))
+    await answerToday(user)
+    await user.selectOptions(await screen.findByLabelText(/how it went/i), 'failed')
+    const ask = screen.getByRole('group', { name: /what came off ok/i })
+    for (const n of [1, 3])
+      await user.click(within(within(ask).getByRole('group', { name: new RegExp(`how diagonal \\(instance ${n}\\) came off`, 'i') })).getByRole('button', { name: /came off/i }))
+    expect(ask.textContent).toMatch(/2 of 4 came off/)
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
+    const mins = [...document.querySelectorAll('input')].filter((i) => /minutes/i.test(i.getAttribute('aria-label') ?? ''))
+    await user.type(mins[0], '20')
+    await user.type(screen.getByLabelText(/the failed print weighs/i), '10')
+    await user.click([...document.querySelectorAll('button')].find((b) => /build sheet and record/i.test(b.textContent ?? ''))!)
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare("select qty, copy_states from job_parts where label = 'Diagonal'").get()).toEqual({
+        qty: 5,
+        copy_states: '["printed","printed","reprint","reprint","pending"]',
+      }),
+    )
   })
 })

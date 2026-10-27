@@ -3009,16 +3009,20 @@ export async function markPlateParts(
   actorId: string | null,
   sliceImportId: string,
   runId: string | null,
-  ok: string[],
+  ok: Record<string, number>,
   reason: string | null,
 ): Promise<{ printed: number; failed: number }> {
+  // ok: how many of each part's copies on this plate came off fine (CG, 27
+  // Oct: four Diagonals on one plate, some good, some not). The rest of that
+  // part's copies on the plate failed.
   const why = reason?.trim() || 'The plate failed.'
-  const partIds = await platePartIds(shopId, jobId, sliceImportId)
+  const parts = await platePartIds(shopId, jobId, sliceImportId)
   let printed = 0
   let failed = 0
-  for (const id of partIds) {
-    if (ok.includes(id)) printed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'printed', null, id)
-    else failed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', why, id)
+  for (const { id, per } of parts) {
+    const good = Math.max(0, Math.min(per, Math.floor(ok[id] ?? 0)))
+    if (good > 0) printed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'printed', null, id, good)
+    if (per - good > 0) failed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', why, id, per - good)
   }
   return { printed, failed }
 }
@@ -3033,6 +3037,8 @@ async function movePlate(
   to: 'printed' | 'reprint',
   note: string | null,
   onlyPart: string | null = null,
+  /** How many of the part's copies on the plate to move, when not all. */
+  count: number | null = null,
 ): Promise<number> {
   const d = await db()
   const rows = await d.select<
@@ -3066,7 +3072,7 @@ async function movePlate(
     const pick = plateCopies(
       states,
       queuedCopies(queued, r.part_id, sliceImportId, states),
-      Math.max(1, Number(r.per_plate)),
+      count ?? Math.max(1, Number(r.per_plate)),
       to === 'printed' ? ['reprint', 'pending'] : ['pending'],
     )
     if (!pick.length) continue
@@ -4899,14 +4905,15 @@ export async function matchShelfPhotos(shopId: string): Promise<{ matched: numbe
 }
 
 /** The parts one plate makes, each once. */
-async function platePartIds(shopId: string, jobId: string, sliceImportId: string): Promise<string[]> {
+async function platePartIds(shopId: string, jobId: string, sliceImportId: string): Promise<{ id: string; per: number }[]> {
   const d = await db()
-  const rows = await d.select<{ part_id: string }[]>(
-    `select distinct s.part_id from slice_sections s join slice_imports i on i.id = s.import_id
-      where s.import_id = ? and i.job_id = ? and i.shop_id = ? and s.part_id is not null`,
+  const rows = await d.select<{ part_id: string; per: number }[]>(
+    `select s.part_id, sum(max(1, coalesce(s.qty, 1))) as per from slice_sections s join slice_imports i on i.id = s.import_id
+      where s.import_id = ? and i.job_id = ? and i.shop_id = ? and s.part_id is not null
+      group by s.part_id`,
     [sliceImportId, jobId, shopId],
   )
-  return rows.map((r) => r.part_id)
+  return rows.map((r) => ({ id: r.part_id, per: Number(r.per) }))
 }
 
 /**

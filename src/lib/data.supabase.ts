@@ -2385,16 +2385,20 @@ export async function markPlateParts(
   actorId: string | null,
   sliceImportId: string,
   runId: string | null,
-  ok: string[],
+  ok: Record<string, number>,
   reason: string | null,
 ): Promise<{ printed: number; failed: number }> {
+  // ok: how many of each part's copies on this plate came off fine (CG, 27
+  // Oct: four Diagonals on one plate, some good, some not). The rest of that
+  // part's copies on the plate failed.
   const why = reason?.trim() || 'The plate failed.'
-  const partIds = await platePartIds(shopId, jobId, sliceImportId)
+  const parts = await platePartIds(shopId, jobId, sliceImportId)
   let printed = 0
   let failed = 0
-  for (const id of partIds) {
-    if (ok.includes(id)) printed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'printed', null, id)
-    else failed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', why, id)
+  for (const { id, per } of parts) {
+    const good = Math.max(0, Math.min(per, Math.floor(ok[id] ?? 0)))
+    if (good > 0) printed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'printed', null, id, good)
+    if (per - good > 0) failed += await movePlate(shopId, jobId, actorId, sliceImportId, runId, 'reprint', why, id, per - good)
   }
   return { printed, failed }
 }
@@ -2409,6 +2413,8 @@ async function movePlate(
   to: 'printed' | 'reprint',
   note: string | null,
   onlyPart: string | null = null,
+  /** How many of the part's copies on the plate to move, when not all. */
+  count: number | null = null,
 ): Promise<number> {
   const { data, error } = await supabase
     .from('slice_sections')
@@ -2447,7 +2453,7 @@ async function movePlate(
     const pick = plateCopies(
       states,
       queuedCopies((queued ?? []) as any[], partId, sliceImportId, states),
-      perPlate,
+      count ?? perPlate,
       to === 'printed' ? ['reprint', 'pending'] : ['pending'],
     )
     if (!pick.length) continue
@@ -4080,15 +4086,17 @@ export async function matchShelfPhotos(shopId: string): Promise<{ matched: numbe
 }
 
 /** See data.local.ts's platePartIds. */
-async function platePartIds(shopId: string, jobId: string, sliceImportId: string): Promise<string[]> {
+async function platePartIds(shopId: string, jobId: string, sliceImportId: string): Promise<{ id: string; per: number }[]> {
   const { data, error } = await supabase
     .from('slice_sections')
-    .select('part_id, slice_imports!inner ( job_id, shop_id )')
+    .select('part_id, qty, slice_imports!inner ( job_id, shop_id )')
     .eq('import_id', sliceImportId)
     .eq('slice_imports.job_id', jobId)
     .eq('slice_imports.shop_id', shopId)
   if (error) throw error
-  return [...new Set(((data ?? []) as any[]).map((r) => r.part_id).filter(Boolean).map(String))]
+  const per = new Map<string, number>()
+  for (const r of (data ?? []) as any[]) if (r.part_id) per.set(String(r.part_id), (per.get(String(r.part_id)) ?? 0) + Math.max(1, Number(r.qty) || 1))
+  return [...per].map(([id, n]) => ({ id, per: n }))
 }
 
 /** See data.local.ts's mergeParts. */

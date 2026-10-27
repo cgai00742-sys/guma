@@ -2176,43 +2176,65 @@ function CombineParts({
 }
 
 /**
- * A plate that stopped or failed: did anything on it come off OK? (CG, 24
- * Oct.) Asked, never assumed -- a stopped plate often has whole objects done
- * and others half-built. Ticked parts are marked printed; the rest failed,
- * so the parts list says exactly what has to print again.
+ * A plate that stopped or failed: what came off anyway (CG, 24 Oct; 27 Oct:
+ * "there isn't a clear way to pick the part that was successful"). One row
+ * per object on the plate -- four Diagonals are four answers -- each a
+ * plain Came off / Failed switch, failed until said otherwise.
  */
 function CameOffOk({
   id,
-  labels,
+  objects,
   ok,
   onChange,
 }: {
   id: string
-  labels: string[]
+  /** key: stable per object; label: its name; part: the part it counts toward. */
+  objects: { key: string; label: string; part: string }[]
   ok: string[]
   onChange: (ok: string[]) => void
 }) {
+  const good = objects.filter((o) => ok.includes(o.key))
+  const set = (key: string, on: boolean) => onChange(on ? [...new Set([...ok, key])] : ok.filter((x) => x !== key))
   return (
-    <div className="fld" role="group" aria-label="What came off OK" id={id} style={{ marginTop: 8 }}>
-      <div className="lbl">Did anything on the plate come off OK?</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, fontSize: 12, marginTop: 4 }}>
-        {labels.map((l) => (
-          <label key={l} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <input
-              type="checkbox"
-              checked={ok.includes(l)}
-              onChange={(e) => onChange(e.target.checked ? [...ok, l] : ok.filter((x) => x !== l))}
-            />
-            {l}
-          </label>
-        ))}
+    <div className="cameoff" role="group" aria-label="What came off OK" id={id}>
+      <div className="cameoff-head">
+        <b>Did anything on the plate come off OK?</b>
+        <span className="cameoff-quick">
+          <button type="button" className="linkbtn" onClick={() => onChange(objects.map((o) => o.key))}>
+            all came off
+          </button>
+          <button type="button" className="linkbtn" onClick={() => onChange([])}>
+            all failed
+          </button>
+        </span>
       </div>
-      <div className="hint" style={{ marginTop: 4 }}>
-        {ok.length === 0
-          ? 'Nothing ticked: every part on the plate is marked failed.'
-          : ok.length === labels.length
-            ? 'Everything ticked: every part is marked printed — then it came off clean; say so above instead.'
-            : `${ok.join(', ')} marked printed; ${labels.filter((l) => !ok.includes(l)).join(', ')} marked failed.`}
+      <div className="cameoff-list">
+        {objects.map((o) => {
+          const on = ok.includes(o.key)
+          return (
+            <div key={o.key} className={`cameoff-row ${on ? 'ok' : 'bad'}`}>
+              <span className="cameoff-name">
+                {o.label}
+                {o.part && o.part !== o.label && <span className="pmeta"> → {o.part}</span>}
+              </span>
+              <span className="seg" role="group" aria-label={`How ${o.label} came off`}>
+                <button type="button" className={`segbtn printed ${on ? 'on' : ''}`} aria-pressed={on} onClick={() => set(o.key, true)}>
+                  ✓ Came off
+                </button>
+                <button type="button" className={`segbtn reprint ${!on ? 'on' : ''}`} aria-pressed={!on} onClick={() => set(o.key, false)}>
+                  ✕ Failed
+                </button>
+              </span>
+            </div>
+          )
+        })}
+      </div>
+      <div className="hint" style={{ marginTop: 6 }}>
+        {good.length === 0
+          ? 'Everything on the plate is marked failed.'
+          : good.length === objects.length
+            ? 'Everything came off — that is a clean print; you can say "Came off clean" above instead.'
+            : `${good.length} of ${objects.length} came off and are marked printed; the other ${objects.length - good.length} are marked failed.`}
       </div>
     </div>
   )
@@ -3186,10 +3208,11 @@ function SliceImport({
       if (!clean && !mine && p.okLabels.length) {
         // Some of it came off: those parts printed, the rest failed.
         const saved = (await listSliceImports(ctx.shop.id, detail.jobId)).find((x) => x.id === res.importId)
-        const okIds = (saved?.sections ?? [])
-          .filter((_, j) => p.okLabels.includes(targetLabel(p, j)))
-          .map((sec) => sec.partId)
-          .filter((x): x is string => !!x)
+        // okLabels holds the objects (by their row on the card) that came off.
+        const okIds: Record<string, number> = {}
+        ;(saved?.sections ?? []).forEach((sec, j) => {
+          if (sec.partId && p.okLabels.includes(String(j))) okIds[sec.partId] = (okIds[sec.partId] ?? 0) + Math.max(1, sec.qty || 1)
+        })
         const r = await markPlateParts(ctx.shop.id, detail.jobId, ctx.profile.id, res.importId, runId, okIds, why)
         marked = r.failed
       } else
@@ -3534,18 +3557,14 @@ function SliceImport({
                 )}
               </div>
             )}
-            {printedNow && p.howWent !== 'success' && !mine &&
-              (() => {
-                const labels = [...new Set(read.sections.map((_, j) => targetLabel(p, j)).filter(Boolean))]
-                return labels.length > 1 ? (
-                  <CameOffOk
-                    id={`imp-ok${sfx}`}
-                    labels={labels}
-                    ok={p.okLabels}
-                    onChange={(okLabels) => patchOne(p.key, { okLabels })}
-                  />
-                ) : null
-              })()}
+            {printedNow && p.howWent !== 'success' && !mine && read.sections.length > 1 && (
+              <CameOffOk
+                id={`imp-ok${sfx}`}
+                objects={read.sections.map((sec, j) => ({ key: String(j), label: sec.qty > 1 ? `${sec.label} ×${sec.qty}` : sec.label, part: targetLabel(p, j) }))}
+                ok={p.okLabels}
+                onChange={(okLabels) => patchOne(p.key, { okLabels })}
+              />
+            )}
             {printedNow && p.partial && (
               <>
                 <ObjectResults
@@ -4049,11 +4068,12 @@ function SliceRuns({
       // workflow starts on the build sheet (CG, 13 Oct). Either way the
       // copies remember this print, so removing it can put them back.
       if (markParts && form.sliceImportId) {
-        const plate = plateParts(form.sliceImportId)
-        const okIds = plate.filter((x) => okParts.includes(x.label)).map((x) => x.id)
+        const okIds: Record<string, number> = {}
+        for (const sec of detail.slices.find((x) => x.id === form.sliceImportId)?.sections ?? [])
+          if (sec.partId && okParts.includes(sec.id)) okIds[sec.partId] = (okIds[sec.partId] ?? 0) + Math.max(1, sec.qty || 1)
         if (form.outcome === 'success')
           await markPlatePrinted(ctx.shop.id, detail.jobId, ctx.profile.id, form.sliceImportId, runId)
-        else if (!mine && okIds.length)
+        else if (!mine && Object.keys(okIds).length)
           await markPlateParts(
             ctx.shop.id,
             detail.jobId,
@@ -4084,14 +4104,6 @@ function SliceRuns({
     }
   }
 
-  /** The parts a plate makes, each once, by name. */
-  function plateParts(importId: string): { id: string; label: string }[] {
-    const ids = [...new Set((detail.slices.find((x) => x.id === importId)?.sections ?? []).map((sec) => sec.partId).filter(Boolean))]
-    return ids.flatMap((id) => {
-      const part = detail.parts.find((x) => x.id === id)
-      return part ? [{ id: part.id, label: part.label }] : []
-    })
-  }
 
   const unit = ctx.materials.find((m) => m.id === form?.materialId)?.unit ?? 'g'
 
@@ -4645,10 +4657,14 @@ function SliceRuns({
                     />
                   </div>
                 )}
-                {form.outcome !== 'success' && !mine && !correcting && plateParts(s.id).length > 1 && (
+                {form.outcome !== 'success' && !mine && !correcting && s.sections.length > 1 && (
                   <CameOffOk
                     id={`sr-ok-${s.id}`}
-                    labels={plateParts(s.id).map((x) => x.label)}
+                    objects={s.sections.map((sec) => ({
+                      key: sec.id,
+                      label: sec.qty > 1 ? `${sec.label} ×${sec.qty}` : sec.label,
+                      part: detail.parts.find((x) => x.id === sec.partId)?.label ?? '',
+                    }))}
                     ok={okParts}
                     onChange={setOkParts}
                   />

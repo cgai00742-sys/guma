@@ -116,7 +116,7 @@ describe('a part with a failed copy owed gets first call on a new file (CG, 26 O
 
 describe('a part on the sheet with no file yet is waiting for one (CG, 26 Oct)', () => {
   const waiting = (id: string, label: string) => ({ ...part(id, label, []), copyStates: ['pending', 'pending', 'pending', 'pending', 'pending'] }) as PartRow
-  it('fills it by name, or the same piece numbered, one object each', () => {
+  it('fills it by name, or the same piece numbered, until its copies are full', () => {
     const gs = guessSort(
       [
         { label: 'Gahet', qty: 1, estGrams: 5, estMinutes: 14 },
@@ -125,14 +125,29 @@ describe('a part on the sheet with no file yet is waiting for one (CG, 26 Oct)',
       'Gahet.bgcode',
       [waiting('a', 'Gahet (Instance 1)'), waiting('b', 'Gahet (Instance 2)')],
     )
+    // "Gahet (Instance 1)" needs 5: both go there before its twin.
     expect(gs.map((g) => g.choice)).toEqual([
       { kind: 'part', partId: 'a' },
-      { kind: 'part', partId: 'b' },
+      { kind: 'part', partId: 'a' },
     ])
     expect(gs[0].why).toMatch(/on the sheet with no file yet/)
   })
   it('says nothing extra when the name is exactly the same', () => {
     const [g] = guessSort([{ label: 'Lahi', qty: 1, estGrams: 5, estMinutes: 14 }], 'x.bgcode', [waiting('l', 'Lahi')])
     expect(g).toEqual({ choice: { kind: 'part', partId: 'l' }, why: null })
+  })
+})
+
+describe('a part waiting for its file takes as many objects as it has open copies (CG, 27 Oct)', () => {
+  it('four Diagonals on a plate fill a Diagonal that needs 5', () => {
+    const d = { ...part('d', 'Diagonal', []), copyStates: ['pending', 'pending', 'pending', 'pending', 'pending'] } as PartRow
+    const objs = [1, 2, 3, 4].map((n) => ({ label: `Diagonal (Instance ${n})`, qty: 1, estGrams: 3.4, estMinutes: 6 }))
+    expect(guessSort(objs, 'x.bgcode', [d]).map((g) => g.choice)).toEqual(objs.map(() => ({ kind: 'part', partId: 'd' })))
+  })
+  it('and stops when they are full', () => {
+    const d = { ...part('d', 'Diagonal', []), copyStates: ['pending'] } as PartRow
+    const gs = guessSort([1, 2].map((n) => ({ label: `Diagonal (Instance ${n})`, qty: 1, estGrams: 3.4, estMinutes: 6 })), 'x.bgcode', [d])
+    expect(gs[0].choice).toEqual({ kind: 'part', partId: 'd' })
+    expect(gs[1].choice.kind).toBe('new')
   })
 })
