@@ -520,6 +520,10 @@ export interface ProjectFacts {
   depositDue: number
   depositOwed: number
   balanceOwed: number
+  /** Every payment less refunds, whatever kind each was recorded as. */
+  paid?: number
+  /** Paid beyond the price that counts -- money the shop may owe back. */
+  overpaid?: number
   /** ISO timestamp of the most recent job_events row, if any. */
   lastActivityAt: string | null
   /** The current rate card's minimum_order, for the under-minimum flag. */

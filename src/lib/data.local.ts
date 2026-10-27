@@ -836,6 +836,8 @@ const JOB_LIST_SQL = `
          coalesce(m.deposit_due, 0)  as deposit_due,
          coalesce(m.deposit_owed, 0) as deposit_owed,
          coalesce(m.balance_owed, 0) as balance_owed,
+         coalesce(m.paid, 0) as paid,
+         coalesce(m.overpaid, 0) as overpaid,
          (select max(at) from job_events e where e.job_id = j.id) as last_activity_at,
          (select skipped from job_gates g where g.job_id = j.id and g.phase = 'approval'
             and g.item_key = 'accepted') as skipped_accepted,
@@ -940,6 +942,8 @@ interface JobListSqlRow {
   deposit_due: number
   deposit_owed: number
   balance_owed: number
+  paid: number
+  overpaid: number
   last_activity_at: string | null
   skipped_accepted: string | null
   skipped_deposit: string | null
@@ -991,6 +995,8 @@ function factsFrom(r: JobListSqlRow): ProjectFacts {
     depositDue: Number(r.deposit_due ?? 0),
     depositOwed: Number(r.deposit_owed ?? 0),
     balanceOwed: Number(r.balance_owed ?? 0),
+    paid: Number(r.paid ?? 0),
+    overpaid: Number(r.overpaid ?? 0),
     lastActivityAt: r.last_activity_at,
     minimumOrder: Number(r.minimum_order ?? 0),
     actualCost: Number(r.actual_cost ?? 0),

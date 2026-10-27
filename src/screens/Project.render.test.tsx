@@ -894,4 +894,30 @@ describe('a project can always be got rid of', () => {
     await waitFor(() => expect(currentDb.sqlite.prepare("select status from quotes where id = 'rev2'").get()).toEqual({ status: 'accepted' }))
     await waitFor(() => expect(screen.queryByTestId('pending-revision')).toBeNull())
   })
+
+  it('delivered with the yes never recorded: agree it, then the payment shows what is owed (CG, 27 Oct)', async () => {
+    const { ctx, jobId } = await seed({ takeIn: true })
+    currentDb.sqlite.prepare("update jobs set phase = 'delivered' where id = ?").run(jobId)
+    currentDb.sqlite
+      .prepare("update quotes set status = 'sent', total = 480, deposit_due = 240, sent_at = '2026-10-10T00:00:00Z' where job_id = ?")
+      .run(jobId)
+    const total = (currentDb.sqlite.prepare('select total from quotes where job_id = ?').get(jobId) as { total: number }).total
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    const tally = await screen.findByTestId('money-tally')
+    expect(tally.textContent).toMatch(/not agreed yet/)
+    expect(screen.queryByText(/deposit owed/i)).toBeNull()
+    const banner = screen.getByTestId('not-agreed')
+    await user.click(within(banner).getByRole('button', { name: /they agreed to/i }))
+    await waitFor(() => expect(screen.queryByTestId('not-agreed')).toBeNull())
+    expect(screen.getByTestId('money-tally').textContent).toMatch(/agreed/)
+
+    await user.click(screen.getByRole('button', { name: /record a payment/i }))
+    const amount = screen.getByLabelText('Amount') as HTMLInputElement
+    expect(Number(amount.value)).toBeCloseTo(total)
+    expect(screen.getByTestId('payment-preview').textContent).toMatch(/→ 0,00\s€ after this/)
+    await user.clear(amount)
+    await user.type(amount, String(Math.round(total) + 100))
+    expect(screen.getByTestId('payment-preview').textContent).toMatch(/more than is owed/)
+  })
 })

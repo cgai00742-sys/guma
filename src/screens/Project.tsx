@@ -106,6 +106,7 @@ import {
   type PartStatus,
   type PrintRunInput,
   type ProjectDetail,
+  type ProjectFacts,
   type ProjectActuals,
   type MaterialRow,
   type ProjectFieldsInput,
@@ -627,14 +628,22 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           <h4>{mm === 'price' ? 'The quote' : mm === 'approve' ? 'Quote and deposit' : 'Money'}</h4>
           <span
             className={`secstat ${
-              facts.depositOwed > 0 || (detail.phase === 'delivered' && facts.balanceOwed > 0)
-                ? 'crit'
-                : facts.quoteStatus === null
+              mm === 'payments' && facts.quoteStatus !== null
+                ? (facts.overpaid ?? 0) >= 0.005 || facts.quoteStatus !== 'accepted'
                   ? 'warn'
-                  : 'ok'
+                  : facts.balanceOwed >= 0.005
+                    ? detail.phase === 'delivered' ? 'crit' : ''
+                    : 'ok'
+                : facts.depositOwed > 0 || (detail.phase === 'delivered' && facts.balanceOwed > 0)
+                  ? 'crit'
+                  : facts.quoteStatus === null
+                    ? 'warn'
+                    : 'ok'
             }`}
           >
-            {facts.quoteStatus === null ? 'not priced' : `quote ${facts.quoteStatus}`}
+            {mm === 'payments' && facts.quoteStatus !== null
+              ? moneyHeadline(facts, money)
+              : facts.quoteStatus === null ? 'not priced' : `quote ${facts.quoteStatus}`}
           </span>
         </summary>
         <div className="pane" style={{ marginBottom: 0 }}>
@@ -649,41 +658,27 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             </div>
           ) : (
             <>
-              <div className="grid3">
-                <Stat label="Quoted" value={facts.quoteTotal == null ? '—' : money(facts.quoteTotal)} />
-                {mm !== 'price' && (
-                  <Stat
-                    label="Deposit owed"
-                    value={money(facts.depositOwed)}
-                    tone={facts.depositOwed > 0 ? 'crit' : 'ok'}
-                    sub={facts.depositDue > 0 ? `of ${money(facts.depositDue)} due` : 'none required'}
-                  />
-                )}
-                {mm === 'payments' && (
-                  <Stat
-                    label="Balance owed"
-                    value={money(facts.balanceOwed)}
-                    tone={
-                      facts.balanceOwed > 0 && detail.phase === 'delivered'
-                        ? 'crit'
-                        : facts.balanceOwed > 0
-                          ? ''
-                          : facts.quoteStatus === 'accepted'
-                            ? 'ok'
-                            : ''
-                    }
-                    // Not "paid in full" on a quote nobody has accepted: nothing
-                    // has been billed yet, which is a different fact.
-                    sub={
-                      facts.quoteStatus !== 'accepted'
-                        ? 'nothing billed yet'
-                        : facts.balanceOwed > 0
-                          ? 'still outstanding'
-                          : 'paid in full'
-                    }
-                  />
-                )}
-              </div>
+              {mm === 'payments' ? (
+                <MoneyTally facts={facts} delivered={detail.phase === 'delivered'} money={money} />
+              ) : (
+                <div className="grid3">
+                  <Stat label="Quoted" value={facts.quoteTotal == null ? '—' : money(facts.quoteTotal)} />
+                  {mm !== 'price' && (
+                    <Stat
+                      label="Deposit owed"
+                      value={money(facts.depositOwed)}
+                      tone={facts.depositOwed > 0 ? 'crit' : 'ok'}
+                      sub={facts.depositDue > 0 ? `of ${money(facts.depositDue)} due` : 'none required'}
+                    />
+                  )}
+                </div>
+              )}
+              {/* Past approval with no accepted quote on record (CG's 16"
+                  Anson, 27 Oct): the status control lives in Approval, so
+                  without this there was no way to say the client agreed. */}
+              {mm === 'payments' && !inRecord && (
+                <NotAgreed detail={detail} money={money} busy={busy} onMark={(st) => void markQuote(st)} />
+              )}
               {/* A revision made after the client accepted -- from In build,
                   say, when copies changed (CG, 12 Oct). The price that
                   counts stays the accepted one until they accept this; the
@@ -733,8 +728,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
               </div>
 
               <div className="hint" style={{ marginTop: 10 }}>
-                Every figure here is derived from the payments below, not stored — record one and
-                all three move at once.
+                {mm === 'payments'
+                  ? 'Owed is the price less everything paid. Record a payment below and it moves at once.'
+                  : 'Every figure here is derived from the payments below, not stored — record one and all three move at once.'}
                 {detail.quote?.status === 'sent' || detail.quote?.status === 'accepted' ? (
                   <>
                     {' '}
@@ -751,13 +747,14 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                 payments={detail.payments}
                 money={money}
                 suggestion={
-                  facts.depositOwed > 0
+                  facts.depositOwed > 0 && detail.phase !== 'delivered'
                     ? { kind: 'deposit', amount: facts.depositOwed }
                     : facts.balanceOwed > 0
                       ? { kind: 'balance', amount: facts.balanceOwed }
                       : null
                 }
                 quoteId={detail.quote?.id ?? null}
+                owed={facts.quoteTotal == null ? null : facts.balanceOwed - (facts.overpaid ?? 0)}
                 busy={busy}
                 onRecord={pay}
               />
@@ -1611,31 +1608,22 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
             leaving it there is how a board stops being read. Nothing is
             deleted and nothing stops counting. */}
         {(detail.phase === 'delivered' || mine) && (
-          <button
-            type="button"
-            className="btn"
-            disabled={busy}
-            title={
-              facts.archivedAt
-                ? 'Puts it back on the board.'
-                : 'Files it off the board. Every figure it contributes still counts — the dashboard, the shop’s own history, what a material has cost on average.'
-            }
-            onClick={() =>
-              void (async () => {
-                setBusy(true)
-                try {
-                  await archiveProject(ctx.shop.id, jobId, ctx.profile.id, !facts.archivedAt)
-                  await reload()
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e))
-                } finally {
-                  setBusy(false)
-                }
-              })()
-            }
-          >
-            {facts.archivedAt ? 'Unarchive' : 'Archive'}
-          </button>
+          <ArchiveButton
+            archived={!!facts.archivedAt}
+            unsettled={mine ? null : unsettledMoney(facts, money)}
+            busy={busy}
+            onToggle={async () => {
+              setBusy(true)
+              try {
+                await archiveProject(ctx.shop.id, jobId, ctx.profile.id, !facts.archivedAt)
+                await reload()
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e))
+              } finally {
+                setBusy(false)
+              }
+            }}
+          />
         )}
         <button
           type="button"
@@ -1704,6 +1692,7 @@ function PaymentLog({
   money,
   suggestion,
   quoteId,
+  owed = null,
   busy,
   onRecord,
 }: {
@@ -1711,6 +1700,8 @@ function PaymentLog({
   money: (n: number) => string
   suggestion: { kind: PaymentKind; amount: number } | null
   quoteId: string | null
+  /** What is owed right now; negative when overpaid. Null with no price. */
+  owed?: number | null
   busy: boolean
   onRecord: (input: PaymentInput) => Promise<void>
 }) {
@@ -1797,6 +1788,7 @@ function PaymentLog({
               <input id="p-when" type="date" value={when} onChange={(e) => setWhen(e.target.value)} />
             </div>
           </div>
+          {owed != null && valid && <PaymentPreview owed={owed} amount={n} kind={kind} money={money} />}
           <div className="grid2">
             <div className="fld">
               <label className="lbl" htmlFor="p-how">
@@ -6995,6 +6987,197 @@ function GateRow({
   )
 }
 
+/**
+ * What is not settled about a project's money, said in one sentence, or
+ * null when it is square. Archiving asks about it once; it never blocks.
+ */
+function unsettledMoney(facts: ProjectFacts, money: (n: number) => string): string | null {
+  if (facts.quoteStatus === null) return null
+  if (facts.quoteStatus !== 'accepted') return 'The client’s yes to a price isn’t on record.'
+  if ((facts.overpaid ?? 0) >= 0.005) return `The client paid ${money(facts.overpaid ?? 0)} more than the price.`
+  if (facts.balanceOwed >= 0.005) return `${money(facts.balanceOwed)} is still owed.`
+  return null
+}
+
+/** Archive, asking once first when the money is not settled. */
+function ArchiveButton({
+  archived,
+  unsettled,
+  busy,
+  onToggle,
+}: {
+  archived: boolean
+  unsettled: string | null
+  busy: boolean
+  onToggle: () => Promise<void>
+}) {
+  const [asking, setAsking] = useState(false)
+  if (asking && !archived && unsettled) {
+    return (
+      <span className="attn warn" data-testid="archive-check" style={{ margin: 0 }}>
+        <span>{unsettled} Archive it anyway?</span>
+        <span className="btnrow" style={{ margin: 0 }}>
+          <button type="button" className="btn sm" disabled={busy} onClick={() => void onToggle().then(() => setAsking(false))}>
+            Archive anyway
+          </button>
+          <button type="button" className="btn sm ghost" onClick={() => setAsking(false)}>
+            Not yet
+          </button>
+        </span>
+      </span>
+    )
+  }
+  return (
+    <button
+      type="button"
+      className="btn"
+      disabled={busy}
+      title={
+        archived
+          ? 'Puts it back on the board.'
+          : 'Files it off the board. Every figure it contributes still counts — the dashboard, the shop’s own history, what a material has cost on average.'
+      }
+      onClick={() => {
+        if (!archived && unsettled) setAsking(true)
+        else void onToggle()
+      }}
+    >
+      {archived ? 'Unarchive' : 'Archive'}
+    </button>
+  )
+}
+
+/** The Money heading's few words once work is under way. */
+function moneyHeadline(facts: ProjectFacts, money: (n: number) => string): string {
+  if (facts.quoteStatus !== 'accepted') return 'price not agreed'
+  if ((facts.overpaid ?? 0) >= 0.005) return `overpaid ${money(facts.overpaid ?? 0)}`
+  if (facts.balanceOwed >= 0.005) return `${money(facts.balanceOwed)} owed`
+  return 'paid in full'
+}
+
+/**
+ * Money once work is under way: the price, what has come in, what is left.
+ * Three figures that add up -- price less paid is owed -- so the shop can
+ * check a payment against them at a glance (CG, 27 Oct). The deposit is an
+ * Approval question and stays there: once work started, a deposit "owed"
+ * next to a balance owed counted the same dollars twice.
+ */
+function MoneyTally({
+  facts,
+  delivered,
+  money,
+}: {
+  facts: ProjectFacts
+  delivered: boolean
+  money: (n: number) => string
+}) {
+  const paid = facts.paid ?? 0
+  const over = facts.overpaid ?? 0
+  const discount =
+    facts.quoteListPrice != null && facts.quotePreTax != null ? facts.quoteListPrice - facts.quotePreTax : 0
+  const agreed = facts.quoteStatus === 'accepted'
+  const owed = facts.balanceOwed
+  return (
+    <div className="grid3" data-testid="money-tally">
+      <Stat
+        label="Price"
+        value={facts.quoteTotal == null ? '—' : money(facts.quoteTotal)}
+        tone={agreed ? '' : 'warn'}
+        sub={!agreed ? 'not agreed yet' : discount >= 0.005 ? `after a ${money(discount)} discount` : 'agreed'}
+      />
+      <Stat
+        label="Paid"
+        value={money(paid)}
+        tone={paid > 0 ? 'ok' : ''}
+        sub={paid > 0 ? 'received, less refunds' : 'nothing received yet'}
+      />
+      {over >= 0.005 ? (
+        <Stat label="Overpaid" value={money(over)} tone="warn" sub="more than the price" />
+      ) : (
+        <Stat
+          label="Owed"
+          value={money(owed)}
+          tone={owed >= 0.005 ? (delivered ? 'crit' : '') : paid > 0 ? 'ok' : ''}
+          sub={owed >= 0.005 ? 'still to come in' : paid > 0 ? 'paid in full' : 'nothing owed'}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Past approval and the client's yes was never recorded. One button says
+ * they agreed to the newest priced version -- the original or a revision.
+ * A draft has no price yet, so it points at Revise instead.
+ */
+function NotAgreed({
+  detail,
+  money,
+  busy,
+  onMark,
+}: {
+  detail: ProjectDetail
+  money: (n: number) => string
+  busy: boolean
+  onMark: (status: QuoteStatus) => void
+}) {
+  const q = detail.quote
+  if (!q || detail.facts.quoteStatus === 'accepted') return null
+  const priced = q.total != null
+  return (
+    <div className="attn warn" data-testid="not-agreed" style={{ marginTop: 12 }}>
+      <span>
+        <strong>The client&rsquo;s yes isn&rsquo;t on record.</strong>{' '}
+        {priced
+          ? `Owed counts from this price once you mark it agreed.`
+          : 'The newest version is a draft with no price yet. Open Revise the quote, send it, then mark it agreed here.'}
+      </span>
+      {priced && (
+        <span className="btnrow" style={{ margin: 0 }}>
+          <button type="button" className="btn sm primary" disabled={busy} onClick={() => onMark('accepted')}>
+            They agreed to {money(q.total ?? 0)}
+          </button>
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** One line under the amount: what is owed now, and after this payment. */
+function PaymentPreview({
+  owed,
+  amount,
+  kind,
+  money,
+}: {
+  owed: number
+  amount: number
+  kind: PaymentKind
+  money: (n: number) => string
+}) {
+  const after = kind === 'refund' ? owed + amount : owed - amount
+  const fmt = (n: number) => (n < -0.005 ? `${money(-n)} overpaid` : money(Math.max(0, n)))
+  const over = kind !== 'refund' && after < -0.005
+  return (
+    <div
+      className={over ? 'attn warn' : 'hint'}
+      data-testid="payment-preview"
+      style={{ marginTop: over ? 8 : 0, marginBottom: 8 }}
+    >
+      {over ? (
+        <span>
+          <strong>{money(-after)} more than is owed.</strong> Check the amount, or revise the quote if the
+          price changed. You can still record it.
+        </span>
+      ) : (
+        <>
+          Owed {fmt(owed)} → {fmt(after)} after this
+        </>
+      )}
+    </div>
+  )
+}
+
 function Stat({
   label,
   value,
@@ -7013,7 +7196,7 @@ function Stat({
         style={{
           fontFamily: 'var(--mono)',
           fontSize: 18,
-          color: tone === 'crit' ? 'var(--red)' : tone === 'ok' ? 'var(--ok)' : 'var(--txt)',
+          color: tone === 'crit' ? 'var(--red)' : tone === 'ok' ? 'var(--ok)' : tone === 'warn' ? 'var(--warn)' : 'var(--txt)',
         }}
       >
         {value}
@@ -8342,14 +8525,16 @@ function PendingRevision({
         <Link to={`/quote/${q.id}/print`} className="btn sm" style={{ textDecoration: 'none' }}>
           See it
         </Link>
-        {q.status === 'draft' && (
+        {q.status === 'draft' && q.total != null && (
           <button type="button" className="btn sm" disabled={busy} onClick={() => onMark('sent')}>
             Mark it sent
           </button>
         )}
-        <button type="button" className="btn sm primary" disabled={busy} onClick={() => onMark('accepted')}>
-          Client accepted it
-        </button>
+        {q.total != null && (
+          <button type="button" className="btn sm primary" disabled={busy} onClick={() => onMark('accepted')}>
+            Client accepted it
+          </button>
+        )}
         <button type="button" className="btn sm ghost" disabled={busy} onClick={() => onMark('declined')}>
           Declined
         </button>

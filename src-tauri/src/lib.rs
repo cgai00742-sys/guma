@@ -266,6 +266,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0043_equipment_hardware.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 44,
+      description: "what a client has paid counts once, and overpaid is shown",
+      sql: include_str!("../migrations/0044_money_paid.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 
