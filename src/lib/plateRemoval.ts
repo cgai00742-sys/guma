@@ -24,7 +24,8 @@ export interface RemovalPart {
   label: string
   qty: number
   copyStates: PartStatus[]
-  variants: { importId: string }[]
+  /** sectionQty: copies of this part one print of that plate makes. */
+  variants: { importId: string; sectionQty?: number }[]
   history: {
     kind: 'status' | 'note'
     toStatus: PartStatus | null
@@ -84,6 +85,18 @@ export function plateRemoval(
       states.set(w, (states.get(w) ?? 0) + 1)
     })
     const left = byHand + byKeptPrint + byOtherPrint
+    // You need more than this plate makes (CG, 26 Oct: "the needed 5 parts"
+    // were cleared with the plate): the count is a requirement, not the
+    // plate's. The part stays, waiting for its next file.
+    const makes = Math.max(1, ...p.variants.filter((v) => going.has(v.importId)).map((v) => Number(v.sectionQty) || 1))
+    if (!left && p.qty > makes) {
+      out.keep.push({
+        id: p.id,
+        label: p.label,
+        why: `you need ${p.qty} and this plate makes ${makes} — the part stays with its ${p.qty} copies${removePrints ? ', its marks from this plate undone' : ''}; the next file for it fills them.`,
+      })
+      continue
+    }
     if (!left) {
       out.remove.push({ id: p.id, label: p.label })
       continue

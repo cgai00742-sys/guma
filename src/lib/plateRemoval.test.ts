@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { plateRemoval, strandedParts, type RemovalPart } from './plateRemoval'
 
 const part = (id: string, over: Partial<RemovalPart> = {}): RemovalPart => ({
-  id, label: id, qty: 2, copyStates: ['pending', 'pending'], variants: [{ importId: 'plate' }], history: [], ...over,
+  id, label: id, qty: 2, copyStates: ['pending', 'pending'], variants: [{ importId: 'plate', sectionQty: 2 }], history: [], ...over,
 })
 
 describe('removing a plate makes the build sheet match (CG, 23 Oct)', () => {
@@ -85,5 +85,23 @@ describe('parts with no plate, and what marked them (CG, 24 Oct)', () => {
     const { strandedReport } = await import('./plateRemoval')
     const p = part('Diagonal', { variants: [], copyStates: ['printed', 'pending'], history: [{ kind: 'status', toStatus: 'printed', copies: [1], runId: null }] })
     expect(strandedReport([p], runs)).toMatchObject({ marked: [{ why: '1 of 2 marked — 1 marked by hand.' }], prints: [] })
+  })
+})
+
+describe('the count you need is yours, not the plate\'s (CG, 26 Oct)', () => {
+  it('keeps a part you need 5 of when its 1-copy plate goes, and says why', () => {
+    const p = part('Gahet', {
+      qty: 5,
+      copyStates: ['printed', 'pending', 'pending', 'pending', 'pending'],
+      variants: [{ importId: 'plate', sectionQty: 1 }],
+      history: [{ kind: 'status', toStatus: 'printed', copies: [1], runId: 'run' }],
+    })
+    const r = plateRemoval([p], ['plate'], ['run'], true)
+    expect(r.remove).toEqual([])
+    expect(r.keep[0].why).toMatch(/you need 5 and this plate makes 1 — the part stays with its 5 copies, its marks from this plate undone/)
+  })
+  it('still takes off a part the plate made all of', () => {
+    const p = part('Cap', { qty: 2, variants: [{ importId: 'plate', sectionQty: 2 }] })
+    expect(plateRemoval([p], ['plate'], [], true).remove).toEqual([{ id: 'Cap', label: 'Cap' }])
   })
 })

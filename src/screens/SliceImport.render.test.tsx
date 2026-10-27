@@ -1714,7 +1714,7 @@ describe('a plate removed before 23 Oct left prints that still mark parts (CG, 2
 
     // Undone: no marks left, so the parts are offered for clearing.
     const after = await screen.findByRole('note', { name: /parts with no plate/i })
-    await waitFor(() => expect(after.textContent).toMatch(/Nothing printed: Buoy shell, Cap/))
+    await waitFor(() => expect(after.textContent).toMatch(/Nothing printed yet: Buoy shell, Cap/))
     await user.click(within(screen.getByRole('note', { name: /parts with no plate/i })).getByRole('button', { name: /remove these 2/i }))
     await waitFor(() =>
       expect((currentDb.sqlite.prepare('select label from job_parts where job_id = ?').all(jobId) as { label: string }[]).map((p) => p.label)).toEqual(['Hull']),
@@ -1865,5 +1865,57 @@ describe('a failed copy gets filled by the next good print of the same piece (CG
     await user.click(screen.getByRole('button', { name: /each copy of cap$/i }))
     await user.click(await screen.findByRole('button', { name: /fill it from cap fix\.gcode/i }))
     await waitFor(() => expect(capStates()).toBe('["printed"]'))
+  })
+})
+
+describe('the 5 you need survive the plate, and the next files fill them (CG, 26 Oct)', () => {
+  const CAP_ONLY = `
+; printing object Cap id:0 copy 0
+; filament used [g] = 29.0
+; total filament used [g] = 29.0
+; estimated printing time (normal mode) = 0h 41m
+; filament_type = PETG
+; printer_model = XL
+`
+  const cap = () => currentDb.sqlite.prepare("select qty, copy_states from job_parts where label = 'Cap'").get() as { qty: number; copy_states: string | null }
+  const record = () => [...document.querySelectorAll('button')].find((b) => /build sheet and record/i.test(b.textContent ?? ''))!
+
+  it('keeps Cap at 5 when its plate goes, then a failed file marks 1 of 5 and a good one fills it', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    currentDb.sqlite.exec('update materials set on_hand = 1000')
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await addAsEstimate(user)
+    await screen.findByRole('button', { name: /this print happened/i })
+    // The project needs five Caps.
+    currentDb.sqlite.exec("update job_parts set qty = 5, copy_states = null where label = 'Cap'")
+    cleanup()
+    await renderProject(jobId, ctx)
+    await user.click(screen.getByRole('button', { name: /remove the file/i }))
+    expect((await screen.findByRole('note', { name: /parts that stay/i })).textContent).toMatch(/Cap — you need 5 and this plate makes 1/)
+    await user.click(screen.getByRole('button', { name: /remove it/i }))
+    await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) n from slice_imports').get()).toEqual({ n: 0 }))
+    expect(cap().qty).toBe(5)
+
+    // The failed plate: it goes onto the Cap you need, not a new 1-copy part.
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([CAP_ONLY], 'Failed_Cap.gcode'))
+    const box = await screen.findByRole('checkbox', { name: /already printed/i })
+    if (!(box as HTMLInputElement).checked) await user.click(box)
+    await user.selectOptions(screen.getByLabelText(/how it went/i), 'failed')
+    await user.type(screen.getByLabelText(/what went wrong/i), 'Ghost printing')
+    const mins = [...document.querySelectorAll('input')].filter((i) => /minutes/i.test(i.getAttribute('aria-label') ?? ''))
+    await user.type(mins[0], '30')
+    await user.type(screen.getByLabelText(/the failed print weighs/i), '20')
+    await user.click(record())
+    await waitFor(() => expect(cap().copy_states).toBe('["reprint","pending","pending","pending","pending"]'))
+    expect(cap().qty).toBe(5)
+    expect(currentDb.sqlite.prepare("select count(*) n from job_parts where label like 'Cap%'").get()).toEqual({ n: 1 })
+
+    // The good plate fills the failed copy first.
+    await user.upload(screen.getByLabelText(/import sliced files/i), new File([CAP_ONLY.replace('0h 41m', '0h 42m')], 'Cap_good.gcode'))
+    expect(await screen.findByText(/Fills 1 failed copy of Cap/)).toBeDefined()
+    await user.click(record())
+    await waitFor(() => expect(cap().copy_states).toBe('["printed","pending","pending","pending","pending"]'))
   })
 })

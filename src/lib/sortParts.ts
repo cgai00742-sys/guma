@@ -105,6 +105,8 @@ export function guessSort(
 ): SortGuess[] {
   const taken = [...parts.map((p) => p.label), ...earlier.map((b) => b.label)]
   const out: SortGuess[] = []
+  /** Parts already given to an object of this file. */
+  const used = new Set<string>()
   for (const o of objects) {
     const size = perCopyOf(o)
     const key = o.label.trim().toLowerCase()
@@ -119,7 +121,32 @@ export function guessSort(
       (same && owed(same) > 0 ? same : null) ??
       parts.find((p) => owed(p) > 0 && baseName(p.label) === baseName(o.label)) ??
       null
+    // A part on the sheet with no file yet, still owed copies, is waiting
+    // for exactly this: the file that prints it (CG, 26 Oct). Same name, or
+    // the same piece numbered -- "Gahet" fills "Gahet (Instance 1)".
+    const waiting =
+      !failing && !(same && same.variants.length)
+        ? parts.find(
+            (p) =>
+              !used.has(p.id) &&
+              p.variants.length === 0 &&
+              (p.copyStates ?? []).includes('pending') &&
+              baseName(p.label) === baseName(o.label),
+          ) ?? null
+        : null
+    if (waiting) {
+      used.add(waiting.id)
+      out.push({
+        choice: { kind: 'part', partId: waiting.id },
+        why:
+          waiting.label.trim().toLowerCase() === key
+            ? null
+            : `${waiting.label} is on the sheet with no file yet — this is set to print it. Pick New part if it is a different piece.`,
+      })
+      continue
+    }
     if (failing) {
+      used.add(failing.id)
       const sizes = partSizes(failing)
       const n = owed(failing)
       const fits = !sizes.length || sizes.some((s) => sameSize(s, size))

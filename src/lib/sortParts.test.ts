@@ -113,3 +113,26 @@ describe('a part with a failed copy owed gets first call on a new file (CG, 26 O
     expect(g.choice.kind).toBe('new')
   })
 })
+
+describe('a part on the sheet with no file yet is waiting for one (CG, 26 Oct)', () => {
+  const waiting = (id: string, label: string) => ({ ...part(id, label, []), copyStates: ['pending', 'pending', 'pending', 'pending', 'pending'] }) as PartRow
+  it('fills it by name, or the same piece numbered, one object each', () => {
+    const gs = guessSort(
+      [
+        { label: 'Gahet', qty: 1, estGrams: 5, estMinutes: 14 },
+        { label: 'Gahet', qty: 1, estGrams: 5, estMinutes: 14 },
+      ],
+      'Gahet.bgcode',
+      [waiting('a', 'Gahet (Instance 1)'), waiting('b', 'Gahet (Instance 2)')],
+    )
+    expect(gs.map((g) => g.choice)).toEqual([
+      { kind: 'part', partId: 'a' },
+      { kind: 'part', partId: 'b' },
+    ])
+    expect(gs[0].why).toMatch(/on the sheet with no file yet/)
+  })
+  it('says nothing extra when the name is exactly the same', () => {
+    const [g] = guessSort([{ label: 'Lahi', qty: 1, estGrams: 5, estMinutes: 14 }], 'x.bgcode', [waiting('l', 'Lahi')])
+    expect(g).toEqual({ choice: { kind: 'part', partId: 'l' }, why: null })
+  })
+})

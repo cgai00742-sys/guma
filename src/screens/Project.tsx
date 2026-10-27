@@ -5566,10 +5566,9 @@ function BuildSheet({
             {stranded.clear.length > 0 && (
               <div className="btnrow" style={{ marginTop: 8, alignItems: 'center', fontSize: 12 }}>
                 <span style={{ flex: 1, minWidth: 220 }}>
-                  Nothing printed: {stranded.clear.map((p) => p.label).join(', ')}. Keep{' '}
-                  {stranded.clear.length === 1 ? 'it' : 'them'} only if you will still print{' '}
-                  {stranded.clear.length === 1 ? 'it' : 'them'} by hand — otherwise{' '}
-                  {stranded.clear.length === 1 ? 'it inflates' : 'they inflate'} the copy count.
+                  Nothing printed yet: {stranded.clear.map((p) => p.label).join(', ')}. If the project still needs{' '}
+                  {stranded.clear.length === 1 ? 'it, keep it' : 'them, keep them'} — the next file with that name fills{' '}
+                  {stranded.clear.length === 1 ? 'it' : 'them'}. Remove only what the project no longer needs.
                 </span>
                 <button
                   type="button"
