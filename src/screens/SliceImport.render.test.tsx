@@ -198,6 +198,14 @@ async function addAsEstimate(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: /add 2 sections/i }))
 }
 
+/** The print date is asked now, not assumed (CG, 26 Oct): answer "today"
+ *  on every card that asks, as these tests always meant. */
+async function answerToday(user: ReturnType<typeof userEvent.setup>) {
+  // Wait for the card: a file is read before its card (and its date) appears.
+  const found = await screen.findAllByRole('button', { name: /^today$/ }, { timeout: 2000 }).catch(() => [])
+  for (const b of found) await user.click(b)
+}
+
 function gcodeFile(name = 'Reef buoy_sliced.gcode') {
   return new File([GCODE], name, { type: 'text/plain' })
 }
@@ -453,6 +461,7 @@ describe('turning the file into what actually happened', () => {
     const when = screen.getByLabelText(/printed on/i) as HTMLInputElement
     await user.clear(when)
     await user.type(when, '2026-09-20')
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /record the print/i }))
 
     await waitFor(() => {
@@ -892,6 +901,7 @@ describe('a failed part, Voltage-style', () => {
     }
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await answerToday(user)
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByText(/Recorded as printed on/i)
 
@@ -974,6 +984,7 @@ describe("CG's Maui: one G-code uploaded several times, project at Made", () => 
 
     // Uploading it yet again, at Done, adds nothing and counts nothing twice.
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile('Maui bathy.gcode'))
+    await answerToday(user)
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByText(/not added again/i)
     expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 3 })
@@ -1110,6 +1121,7 @@ describe("CG's PrusaSlicer .bgcode, imported and recorded", () => {
     const mat = screen.getByLabelText(/^material — file says “PLA”/i) as HTMLSelectElement
     expect(mat.value).toBe('')
     await user.selectOptions(mat, ctx.materials[0].id)
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /record the print/i }))
     await waitFor(() => {
       const a = currentDb.sqlite
@@ -1170,6 +1182,7 @@ describe('failing one part of a plate, and swapping in its fixed file', () => {
     await renderProject(jobId, ctx)
     // The plate prints, In build.
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await answerToday(user)
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByText(/Recorded as printed on/i)
 
@@ -1333,9 +1346,11 @@ describe('a print recorded as clean that had stopped part way (CG, 14 Oct)', () 
     await user.selectOptions(document.getElementById('slice-material') as HTMLSelectElement, ctx.materials[0].id)
     const pickMachine = document.getElementById('slice-printer') as HTMLSelectElement
     if (!pickMachine.value) await user.selectOptions(pickMachine, ctx.printers[0].id)
+    await answerToday(user)
     expect((screen.getByRole('button', { name: /say how long it ran/i }) as HTMLButtonElement).disabled).toBe(true)
     await user.type(screen.getByLabelText(/what went wrong/i), 'Clog')
     await user.type(minutesBox(screen, 'Machine ran for'), '40')
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /record where it stopped/i }))
     await waitFor(() =>
       expect(currentDb.sqlite.prepare('select units_used, hours, outcome, failure_reason from print_runs').get()).toEqual({
@@ -1373,6 +1388,7 @@ describe('several files at once, and each print said once (CG, 15 Oct)', () => {
     const cap = screen.getByRole('group', { name: /review spare cap\.gcode/i })
     // Each file has its own answers: the cap is still to print.
     await user.click(within(cap).getByRole('checkbox', { name: /already printed/i }))
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /^add all 2$/i }))
 
     await waitFor(() =>
@@ -1396,6 +1412,7 @@ describe('several files at once, and each print said once (CG, 15 Oct)', () => {
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), [gcodeFile(), gcodeFile('Reef buoy_sliced (1).gcode')])
     expect(await screen.findByText(/already in this batch/i)).toBeDefined()
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /^add all 2$/i }))
     await waitFor(() =>
       expect(currentDb.sqlite.prepare('select count(*) as n from slice_imports').get()).toEqual({ n: 1 }),
@@ -1413,10 +1430,12 @@ describe('several files at once, and each print said once (CG, 15 Oct)', () => {
     await user.type(screen.getByLabelText(/what went wrong/i), 'Clog')
     await user.type(hoursBox(screen, /machine ran for/i), '1')
     await user.type(screen.getByLabelText(/the failed print weighs/i), '40')
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /record where it stopped/i }))
     await screen.findByText('failed')
     // ...and a re-sliced file printed its copies.
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile('Reef buoy v2.gcode'))
+    await answerToday(user)
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     const plates = await screen.findByRole('region', { name: /^plates$/i })
     expect(await within(plates).findByText(/reprint · Buoy shell, copy 1 & 2; Cap, copy 1/)).toBeDefined()
@@ -1443,6 +1462,7 @@ describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await answerToday(user)
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByRole('list', { name: /prints of reef buoy_sliced/i })
 
@@ -1451,6 +1471,7 @@ describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
     const name = (await screen.findByLabelText(/name the new part for cap/i)) as HTMLInputElement
     expect(name.value).toBe('Small cap')
     expect(screen.getByText(/Same name as Cap \(29 g, 41m a copy\), but this is 7 g, 10m/)).toBeDefined()
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /record the print/i }))
     await waitFor(() =>
       expect(currentDb.sqlite.prepare('select label from job_parts order by sort').all()).toEqual([
@@ -1469,6 +1490,7 @@ describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
     const user = userEvent.setup()
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    await answerToday(user)
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByRole('list', { name: /prints of reef buoy_sliced/i })
 
@@ -1495,10 +1517,12 @@ describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     // Put on the old part by hand, the way name-matching used to.
+    await answerToday(user)
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByRole('list', { name: /prints of reef buoy_sliced/i })
     await user.upload(screen.getByLabelText(/import sliced files/i), new File([SMALL_CAP], 'small.gcode'))
     await user.selectOptions(await screen.findByLabelText(/where cap goes/i), screen.getByRole('option', { name: /^Cap · / }))
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /record the print/i }))
     await screen.findByRole('list', { name: /prints of small\.gcode/i })
     const cap = () => currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Cap'").get() as { copy_states: string }
@@ -1580,6 +1604,7 @@ describe('plates, what came off, and where it went (CG, 21 Oct)', () => {
     await user.click(within(off).getByRole('checkbox', { name: /^cap came off$/i }))
     await user.type(within(off).getByLabelText(/what the failed cap weighs/i), '5')
     await user.type(screen.getByLabelText(/what went wrong/i), 'Knocked off')
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /record the print/i }))
 
     await waitFor(() =>
@@ -1642,6 +1667,7 @@ describe('plates you can tell apart (CG, 22 Oct)', () => {
     const src = `; generated by PrusaSlicer 2.9.6 on 2026-09-15 at 18:08:06 UTC\n; thumbnail begin 313x173 ${png.length}\n; ${png}\n; thumbnail end\n${GCODE}`
     await user.upload(screen.getByLabelText(/import sliced files/i), new File([src], 'Reef buoy_sliced.gcode'))
     expect(await screen.findByText(/sliced 2026-09-15/)).toBeDefined()
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /record the print/i }))
     const plates = await screen.findByRole('region', { name: /^plates$/i })
     const img = (await within(plates).findByRole('img', { name: /preview of reef buoy_sliced\.gcode/i })) as HTMLImageElement
@@ -1749,6 +1775,7 @@ describe('the same plate printed again and dropped again (CG, 24 Oct)', () => {
     const ask = await screen.findByRole('group', { name: /another print of this plate/i })
     expect(ask.textContent).toMatch(/1 print recorded: .*failed/)
     expect((within(ask).getByLabelText(/yes — i printed it again/i) as HTMLInputElement).checked).toBe(true)
+    await answerToday(user)
     await user.click(screen.getByRole('button', { name: /record the print/i }))
     await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) n from print_runs').get()).toEqual({ n: 2 }))
     // One plate, two prints; the copies the failure sent back are printed now.
@@ -1793,6 +1820,7 @@ describe('a plate stopped part way asks what came off OK (CG, 24 Oct)', () => {
     const mins = [...document.querySelectorAll('input')].filter((i) => /minutes/i.test(i.getAttribute('aria-label') ?? ''))
     await user.type(mins[0], '30')
     await user.type(screen.getByLabelText(/the failed print weighs/i), '20')
+    await answerToday(user)
     await user.click([...document.querySelectorAll('button')].find((b) => /build sheet and record/i.test(b.textContent ?? ''))!)
     await waitFor(() => expect(currentDb.sqlite.prepare('select count(*) n from print_runs').get()).toEqual({ n: 1 }))
     expect(byLabel()).toEqual({ 'Buoy shell': '["reprint","reprint"]', Cap: '["printed"]' })
@@ -1848,6 +1876,7 @@ describe('a failed copy gets filled by the next good print of the same piece (CG
     await user.upload(screen.getByLabelText(/import sliced files/i), new File([RESLICED_CAP], 'Cap fix.gcode'))
     expect(await screen.findByText(/Fills 1 failed copy of Cap when it comes off clean/)).toBeDefined()
     expect((screen.getByLabelText(/where cap goes/i) as HTMLSelectElement).value).toMatch(/^part:/)
+    await answerToday(user)
     await user.click([...document.querySelectorAll('button')].find((b) => /build sheet and record/i.test(b.textContent ?? ''))!)
     await waitFor(() => expect(capStates()).toBe('["printed"]'))
     expect(currentDb.sqlite.prepare("select count(*) n from job_parts where label like 'Cap%'").get()).toEqual({ n: 1 })
@@ -1858,6 +1887,7 @@ describe('a failed copy gets filled by the next good print of the same piece (CG
     await user.upload(screen.getByLabelText(/import sliced files/i), new File([RESLICED_CAP], 'Cap fix.gcode'))
     // Filed as a new part on purpose.
     await user.selectOptions(await screen.findByLabelText(/where cap goes/i), 'new')
+    await answerToday(user)
     await user.click([...document.querySelectorAll('button')].find((b) => /build sheet and record/i.test(b.textContent ?? ''))!)
     await waitFor(() => expect(currentDb.sqlite.prepare("select count(*) n from job_parts where label like 'Cap%'").get()).toEqual({ n: 2 }))
     expect(capStates()).toBe('["reprint"]')
@@ -1907,6 +1937,7 @@ describe('the 5 you need survive the plate, and the next files fill them (CG, 26
     const mins = [...document.querySelectorAll('input')].filter((i) => /minutes/i.test(i.getAttribute('aria-label') ?? ''))
     await user.type(mins[0], '30')
     await user.type(screen.getByLabelText(/the failed print weighs/i), '20')
+    await answerToday(user)
     await user.click(record())
     await waitFor(() => expect(cap().copy_states).toBe('["reprint","pending","pending","pending","pending"]'))
     expect(cap().qty).toBe(5)
@@ -1915,7 +1946,24 @@ describe('the 5 you need survive the plate, and the next files fill them (CG, 26
     // The good plate fills the failed copy first.
     await user.upload(screen.getByLabelText(/import sliced files/i), new File([CAP_ONLY.replace('0h 41m', '0h 42m')], 'Cap_good.gcode'))
     expect(await screen.findByText(/Fills 1 failed copy of Cap/)).toBeDefined()
+    await answerToday(user)
     await user.click(record())
     await waitFor(() => expect(cap().copy_states).toBe('["printed","pending","pending","pending","pending"]'))
+  })
+})
+
+describe('when it printed is asked, not assumed (CG, 26 Oct)', () => {
+  it('will not record a print until the date is given, and today is one click', async () => {
+    const { ctx, jobId } = await seedShop()
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
+    const date = (await screen.findByLabelText(/printed on/i)) as HTMLInputElement
+    expect(date.value).toBe('')
+    const blocked = screen.getByRole('button', { name: /say when it printed/i }) as HTMLButtonElement
+    expect(blocked.disabled).toBe(true)
+    await user.click(screen.getByRole('button', { name: /^yesterday$/ }))
+    expect(date.value).not.toBe('')
+    expect((screen.getByRole('button', { name: /record the print/i }) as HTMLButtonElement).disabled).toBe(false)
   })
 })

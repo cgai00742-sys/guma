@@ -140,7 +140,7 @@ import {
   timeSpreadPct,
 } from '../lib/parts'
 import { makeMoney } from '../lib/pricing'
-import { todayISO, formatDate } from '../lib/dates'
+import { addDaysISO, todayISO, formatDate } from '../lib/dates'
 import { groupSliceFiles, newestFirst, machineFor, type FileGroup } from '../lib/fromFiles'
 import { seriesAncestors, seriesPath } from '../lib/series'
 import {
@@ -2999,7 +2999,10 @@ function SliceImport({
           // Most files arrive AFTER the plate came off -- that is when people
           // remember to log them -- so the default is yes.
           printed: true,
-          printedOn: todayISO(),
+          // Asked, not assumed (CG, 26 Oct: "most of the time users will be
+          // playing catchup") -- the day a file is imported is rarely the day
+          // it printed, and a wrong date quietly misdates the whole record.
+          printedOn: '',
           howWent: 'success',
           stop: null,
           stopWhy: '',
@@ -3045,6 +3048,7 @@ function SliceImport({
   function blocker(p: PendingFile): string | null {
     if (p.sorts.some((g) => g.choice.kind === 'new' && !g.choice.label.trim())) return 'Name the new part above'
     const printedNow = printing && p.printed && !droppedAgain(p)
+    if (printedNow && !p.printedOn) return 'Say when it printed'
     if (printedNow && !p.printerId) return 'Pick the machine above to record the print'
     if (printedNow && p.howWent !== 'success' && !p.stop) return 'Say how long it ran and what it weighs, above'
     return null
@@ -3423,13 +3427,30 @@ function SliceImport({
                   Already printed — record it now
                 </label>
                 {printedNow && (
-                  <input
-                    type="date"
-                    aria-label="Printed on"
-                    value={p.printedOn}
-                    onChange={(e) => patchOne(p.key, { printedOn: e.target.value })}
-                    style={{ width: 150 }}
-                  />
+                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      type="date"
+                      aria-label="Printed on"
+                      value={p.printedOn}
+                      max={todayISO()}
+                      onChange={(e) => patchOne(p.key, { printedOn: e.target.value })}
+                      style={{
+                        width: 150,
+                        ...(p.printedOn ? {} : { borderColor: 'var(--warn)', boxShadow: '0 0 0 2px color-mix(in srgb, var(--warn) 25%, transparent)' }),
+                      }}
+                    />
+                    {!p.printedOn && (
+                      <>
+                        <span style={{ fontSize: 11, color: 'var(--warn)' }}>When did it print?</span>
+                        <button type="button" className="btn sm" onClick={() => patchOne(p.key, { printedOn: todayISO() })}>
+                          today
+                        </button>
+                        <button type="button" className="btn sm" onClick={() => patchOne(p.key, { printedOn: addDaysISO(-1) })}>
+                          yesterday
+                        </button>
+                      </>
+                    )}
+                  </span>
                 )}
                 {printedNow && (
                   <select
@@ -5679,9 +5700,21 @@ function BuildSheet({
                           return (
                             <PartVariants ctx={ctx} part={p} busy={busy || saving} onChanged={onChanged} setError={setError} />
                           )
+                        // The newest file only, cut to fit (CG, 26 Oct: four
+                        // long slicer names pushed the copies off the screen).
+                        // All of them are a hover away, and on the plates below.
                         return made.length ? (
-                          <div className="pmeta" data-testid={`made-by-${p.id}`}>
-                            from {made.map((g) => g.first.fileName).join(' · ')}
+                          <div
+                            className="pmeta platesrc"
+                            data-testid={`made-by-${p.id}`}
+                            title={made.map((g) => g.first.fileName).join('\n')}
+                          >
+                            <span className="srcname">from {made[0].first.fileName}</span>
+                            {made.length > 1 && (
+                              <span className="srcmore">
+                                +{made.length - 1} more file{made.length === 2 ? '' : 's'}
+                              </span>
+                            )}
                           </div>
                         ) : (
                           <div className="pmeta">no file — marked by hand</div>
