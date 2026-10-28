@@ -82,6 +82,7 @@ import {
   mergeParts,
   correctPrintRun,
   deletePrintRun,
+  takeBackPlaced,
   moveSliceSection,
   deleteWorkEntry,
   loadProjectDetail,
@@ -3763,6 +3764,27 @@ function SliceRuns({
   const [removing, setRemoving] = useState<string | null>(null)
   /** Removing a plate takes its prints with it unless this is unticked. */
   const [removePrints, setRemovePrints] = useState(true)
+  const [removeErr, setRemoveErr] = useState<string | null>(null)
+  /** What the prints of the plate being removed made and placed. */
+  const [placed, setPlaced] = useState<MadeItemRow[]>([])
+  useEffect(() => {
+    setRemoveErr(null)
+    setPlaced([])
+    if (!removing) return
+    const ids = new Set(
+      (groupSliceFiles(detail.slices, detail.runs).find((g) => g.first.id === removing)?.runs ?? []).map((r) => r.id),
+    )
+    if (!ids.size) return
+    let live = true
+    listMadeItems(ctx.shop.id, detail.jobId)
+      .then((items) => {
+        if (live) setPlaced(items.filter((m) => m.runId && ids.has(m.runId) && ['shelved', 'assembled', 'kept'].includes(m.status)))
+      })
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [removing]) // eslint-disable-line react-hooks/exhaustive-deps
   const [rereadMsg, setRereadMsg] = useState<{ id: string; text: string } | null>(null)
   /**
    * The recorded print being corrected, when the form is open for that
@@ -3912,15 +3934,20 @@ function SliceRuns({
     setError(null)
     try {
       const plan = plateRemoval(detail.parts, importIds, runIds, withPrints)
+      // What its prints made and placed comes back first (CG, 28 Oct).
+      if (withPrints) await takeBackPlaced(ctx.shop.id, runIds)
       if (withPrints) for (const r of runIds) await deletePrintRun(ctx.shop.id, r, true)
       for (const importId of importIds) await deleteSliceImport(ctx.shop.id, importId)
       for (const p of plan.remove)
         await deletePart(ctx.shop.id, p.id, ctx.profile.id, `Its plate ${fileName} was removed, and nothing else made or marked it.`)
       setRemoving(null)
       setRemovePrints(true)
+      setRemoveErr(null)
       await onChanged()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      // Said in the box the button is in -- at the top of the page it was
+      // out of sight, and the button looked like it did nothing.
+      setRemoveErr(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
@@ -4429,6 +4456,12 @@ function SliceRuns({
                         {plan.remove.length === 1 ? 'it' : 'them'}: {plan.remove.map((p) => p.label).join(', ')}
                       </div>
                     )}
+                    {withPrints && placed.length > 0 && (
+                      <div style={{ marginTop: 8, fontSize: 12 }} role="note" aria-label="Taken back">
+                        <b>Taken back too</b> — what {runs.length === 1 ? 'that print' : 'those prints'} made and placed:{' '}
+                        {placedSummary(placed)}.
+                      </div>
+                    )}
                     {plan.keep.length > 0 && (
                       <div style={{ marginTop: 8, fontSize: 12 }} role="note" aria-label="Parts that stay">
                         <b>Stays on the build sheet, and why</b>
@@ -4439,6 +4472,11 @@ function SliceRuns({
                             </li>
                           ))}
                         </ul>
+                      </div>
+                    )}
+                    {removeErr && (
+                      <div className="attn crit" role="alert" style={{ marginTop: 8 }}>
+                        <span>Not removed: {removeErr}</span>
                       </div>
                     )}
                     <div className="btnrow" style={{ marginTop: 10 }}>
@@ -4535,10 +4573,9 @@ function SliceRuns({
                       setSaving(true)
                       setError(null)
                       try {
+                        await takeBackPlaced(ctx.shop.id, [r.id])
                         await deletePrintRun(ctx.shop.id, r.id, undo)
                         await onChanged()
-                      } catch (e) {
-                        setError(e instanceof Error ? e.message : String(e))
                       } finally {
                         setSaving(false)
                       }
@@ -5701,6 +5738,7 @@ function BuildSheet({
                     void (async () => {
                       setSaving(true)
                       try {
+                        await takeBackPlaced(ctx.shop.id, [r.id])
                         await deletePrintRun(ctx.shop.id, r.id, true)
                         await onChanged()
                       } catch (e) {
@@ -6780,7 +6818,17 @@ function RunLog({
               run={r}
               parts={detail.parts}
               busy={saving}
-              onRemove={(undo) => guard(() => deletePrintRun(ctx.shop.id, r.id, undo))}
+              onRemove={async (undo) => {
+                setSaving(true)
+                setError(null)
+                try {
+                  await takeBackPlaced(ctx.shop.id, [r.id])
+                  await deletePrintRun(ctx.shop.id, r.id, undo)
+                  await onChanged()
+                } finally {
+                  setSaving(false)
+                }
+              }}
             />
           ))}
           {detail.work.map((w) => (
@@ -7319,6 +7367,17 @@ function SettleUp({
       </div>
     </div>
   )
+}
+
+/** "1 × Maui HANG-MAGNET off the Shelf, 2 × Cap out of an assembly" */
+function placedSummary(items: MadeItemRow[]): string {
+  const where = (st: string) => (st === 'shelved' ? 'off the Shelf' : st === 'kept' ? 'back from kept' : 'out of an assembly')
+  const count = new Map<string, number>()
+  for (const m of items) {
+    const k = `${m.label}\u0000${where(m.status)}`
+    count.set(k, (count.get(k) ?? 0) + 1)
+  }
+  return [...count].map(([k, n]) => { const [label, w] = k.split('\u0000'); return `${n} × ${label} ${w}` }).join(', ')
 }
 
 /** One line under the amount: what is owed now, and after this payment. */
@@ -8752,6 +8811,7 @@ function PrintLine({
 }) {
   const [removing, setRemoving] = useState(false)
   const [undoCopies, setUndoCopies] = useState(true)
+  const [removeErr, setRemoveErr] = useState<string | null>(null)
   const marked = hideMarks ? [] : runMarks(parts, r.id)
   const n = marked.reduce((a, m) => a + m.copies.length, 0)
   const how =
@@ -8822,7 +8882,13 @@ function PrintLine({
           <div>
             <b>Remove this print?</b> Its {r.unitsUsed ?? 0}
             {r.unit ?? 'g'} go back on the shelf and its {fmtHours(r.hours ?? 0)} come off the project.
+            Anything it made that you placed — on the Shelf, kept, in an open assembly — is taken back.
           </div>
+          {removeErr && (
+            <div className="attn crit" role="alert" style={{ marginTop: 6 }}>
+              <span>Not removed: {removeErr}</span>
+            </div>
+          )}
           {n > 0 && (
             <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginTop: 6, fontSize: 12 }}>
               <input type="checkbox" checked={undoCopies} onChange={(e) => setUndoCopies(e.target.checked)} />
@@ -8838,9 +8904,13 @@ function PrintLine({
               type="button"
               className="btn sm danger"
               disabled={busy}
-              onClick={() =>
-                void onRemove(n > 0 && undoCopies).then(() => setRemoving(false))
-              }
+              onClick={() => {
+                setRemoveErr(null)
+                void onRemove(n > 0 && undoCopies).then(
+                  () => setRemoving(false),
+                  (e) => setRemoveErr(e instanceof Error ? e.message : String(e)),
+                )
+              }}
             >
               Remove it
             </button>

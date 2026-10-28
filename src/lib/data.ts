@@ -456,6 +456,10 @@ export async function correctPrintRun(
 
 /** Remove a recorded print. With undoCopies, the copies it marked printed
  *  or failed go back to not printed first (CG, 13 Oct). Returns how many. */
+export async function takeBackPlaced(shopId: string, runIds: string[]): Promise<number> {
+  return (await backend()).takeBackPlaced(shopId, runIds)
+}
+
 export async function deletePrintRun(shopId: string, runId: string, undoCopies = false): Promise<number> {
   return (await backend()).deletePrintRun(shopId, runId, undoCopies)
 }

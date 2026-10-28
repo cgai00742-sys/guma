@@ -2027,6 +2027,68 @@ export async function correctPrintRun(
 }
 
 /** See data.local.ts's deletePrintRun. */
+/**
+ * Take back what these prints made and placed, so the prints can be
+ * removed (CG, 28 Oct: removing an accidental upload did nothing -- the
+ * piece it made was already on the Shelf, and the refusal was shown at the
+ * top of the page, out of sight).
+ *
+ * Kept and open-assembly pieces go back to made. A shelved piece comes off
+ * its batch: the batch shrinks, or goes when nothing else is in it. Refused
+ * only where that would rewrite something real: a finished assembly, or a
+ * batch that has sold more than would be left.
+ */
+export async function takeBackPlaced(shopId: string, runIds: string[]): Promise<number> {
+  if (!runIds.length) return 0
+  const { data: items, error } = await supabase
+    .from('made_items')
+    .select('id, label, status, assembly_id, batch_id')
+    .eq('shop_id', shopId)
+    .in('run_id', runIds)
+    .in('status', ['shelved', 'assembled', 'kept'])
+  if (error) throw error
+  if (!items?.length) return 0
+  const byBatch = new Map<string, string[]>()
+  for (const it of items as any[]) {
+    if (it.status === 'assembled' && it.assembly_id) {
+      const { data: a, error: aErr } = await supabase.from('assemblies').select('status, name').eq('id', it.assembly_id).maybeSingle()
+      if (aErr) throw aErr
+      if (a?.status === 'done') throw new Error(`${it.label} is in the finished assembly “${a.name}” — reopen it first.`)
+    }
+    if (it.status === 'shelved' && it.batch_id) byBatch.set(it.batch_id, [...(byBatch.get(it.batch_id) ?? []), it.id])
+  }
+  for (const [batchId, ids] of byBatch) {
+    const { data: b, error: bErr } = await supabase.from('batches').select('units_made, sales ( units )').eq('id', batchId).eq('shop_id', shopId).maybeSingle()
+    if (bErr) throw bErr
+    const sold = ((b as any)?.sales ?? []).reduce((a: number, s: any) => a + Number(s.units), 0)
+    if (b && Number((b as any).units_made) - ids.length < sold)
+      throw new Error('Some of what this print made is on the Shelf and has sold — remove those sales first.')
+  }
+  const { error: uErr } = await supabase
+    .from('made_items')
+    .update({ status: 'made', assembly_id: null, batch_id: null, placed_at: null })
+    .eq('shop_id', shopId)
+    .in('id', (items as any[]).map((i) => i.id))
+  if (uErr) throw uErr
+  for (const [batchId, ids] of byBatch) {
+    const { data: b } = await supabase.from('batches').select('units_made').eq('id', batchId).maybeSingle()
+    const left = Number((b as any)?.units_made ?? 0) - ids.length
+    if (left <= 0) {
+      await supabase.from('assemblies').update({ status: 'open', batch_id: null, done_at: null }).eq('batch_id', batchId).eq('shop_id', shopId)
+      const { error: dErr } = await supabase.from('batches').delete().eq('id', batchId).eq('shop_id', shopId)
+      if (dErr) throw dErr
+    } else {
+      const { data: rest } = await supabase.from('made_items').select('unit_cost').eq('batch_id', batchId)
+      const costs = ((rest ?? []) as any[]).map((r) => Number(r.unit_cost))
+      const patch: Record<string, unknown> = { units_made: left }
+      if (costs.length) patch.unit_cost = costs.reduce((a, c) => a + c, 0) / costs.length
+      const { error: bErr } = await supabase.from('batches').update(patch).eq('id', batchId).eq('shop_id', shopId)
+      if (bErr) throw bErr
+    }
+  }
+  return items.length
+}
+
 export async function deletePrintRun(shopId: string, runId: string, undoCopies = false): Promise<number> {
   // See data.local.ts: what it made and has placed comes back first.
   {

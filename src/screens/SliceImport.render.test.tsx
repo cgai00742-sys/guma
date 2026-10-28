@@ -1637,13 +1637,6 @@ describe('plates, what came off, and where it went (CG, 21 Oct)', () => {
     await user.click(within(made).getByRole('button', { name: /^send$/i }))
     expect(await within(asm).findByText(/has everything it needs/)).toBeDefined()
 
-    // The print cannot be removed now: what it made is in an assembly.
-    const plates = screen.getByRole('region', { name: /^plates$/i })
-    await user.click(within(plates).getByRole('button', { name: /^remove the print of/i }))
-    await user.click(screen.getByRole('button', { name: /^remove it$/i }))
-    expect(await screen.findAllByText(/take it back first/)).not.toHaveLength(0)
-    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 1 })
-
     // Finished onto the shelf: one unit, at the sum of the two shells.
     await user.click(within(asm).getByRole('button', { name: /finish buoy set/i }))
     await user.click(within(asm).getByRole('button', { name: /finish it/i }))
@@ -1655,6 +1648,15 @@ describe('plates, what came off, and where it went (CG, 21 Oct)', () => {
     const b = currentDb.sqlite.prepare('select unit_cost from batches').get() as { unit_cost: number }
     const pieces = currentDb.sqlite.prepare("select sum(unit_cost) as c from made_items where label = 'Buoy shell'").get() as { c: number }
     expect(b.unit_cost).toBeCloseTo(pieces.c, 5)
+
+    // The print cannot be removed now: what it made is in a finished
+    // assembly. Said in the box, next to the button (CG, 28 Oct).
+    const plates = screen.getByRole('region', { name: /^plates$/i })
+    await user.click(within(plates).getByRole('button', { name: /^remove the print of/i }))
+    await user.click(screen.getByRole('button', { name: /^remove it$/i }))
+    const box = await screen.findByRole('alertdialog', { name: /remove this print/i })
+    expect(await within(box).findByText(/reopen it first/)).toBeDefined()
+    expect(currentDb.sqlite.prepare('select count(*) as n from print_runs').get()).toEqual({ n: 1 })
   })
 })
 

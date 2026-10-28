@@ -2630,6 +2630,69 @@ export async function correctPrintRun(
 /** Delete a run. The trigger puts its material back on the shelf. Same
  *  reasoning as deleting a material purchase: this is the shop's own cost
  *  book, and a mistyped run skews every figure downstream of it. */
+/**
+ * Take back what these prints made and placed, so the prints can be
+ * removed (CG, 28 Oct: removing an accidental upload did nothing -- the
+ * piece it made was already on the Shelf, and the refusal was shown at the
+ * top of the page, out of sight).
+ *
+ * Kept and open-assembly pieces go back to made. A shelved piece comes off
+ * its batch: the batch shrinks, or goes when nothing else is in it. Refused
+ * only where that would rewrite something real: a finished assembly, or a
+ * batch that has sold more than would be left.
+ */
+export async function takeBackPlaced(shopId: string, runIds: string[]): Promise<number> {
+  if (!runIds.length) return 0
+  const d = await db()
+  const marks = runIds.map(() => '?').join(',')
+  const items = await d.select<{ id: string; label: string; status: string; assembly_id: string | null; batch_id: string | null }[]>(
+    `select id, label, status, assembly_id, batch_id from made_items
+      where shop_id = ? and run_id in (${marks}) and status in ('shelved', 'assembled', 'kept')`,
+    [shopId, ...runIds],
+  )
+  if (!items.length) return 0
+  // Check everything before changing anything.
+  const byBatch = new Map<string, string[]>()
+  for (const it of items) {
+    if (it.status === 'assembled' && it.assembly_id) {
+      const [a] = await d.select<{ status: string; name: string }[]>('select status, name from assemblies where id = ?', [it.assembly_id])
+      if (a?.status === 'done') throw new Error(`${it.label} is in the finished assembly “${a.name}” — reopen it first.`)
+    }
+    if (it.status === 'shelved' && it.batch_id) byBatch.set(it.batch_id, [...(byBatch.get(it.batch_id) ?? []), it.id])
+  }
+  for (const [batchId, ids] of byBatch) {
+    const [b] = await d.select<{ units_made: number; sold: number }[]>(
+      `select b.units_made, coalesce((select sum(units) from sales s where s.batch_id = b.id), 0) as sold
+         from batches b where b.id = ? and b.shop_id = ?`,
+      [batchId, shopId],
+    )
+    if (b && Number(b.units_made) - ids.length < Number(b.sold))
+      throw new Error('Some of what this print made is on the Shelf and has sold — remove those sales first.')
+  }
+  const idMarks = items.map(() => '?').join(',')
+  await d.execute(
+    `update made_items set status = 'made', assembly_id = null, batch_id = null, placed_at = null
+      where shop_id = ? and id in (${idMarks})`,
+    [shopId, ...items.map((i) => i.id)],
+  )
+  for (const [batchId, ids] of byBatch) {
+    const [b] = await d.select<{ units_made: number }[]>('select units_made from batches where id = ?', [batchId])
+    const left = Number(b?.units_made ?? 0) - ids.length
+    if (left <= 0) {
+      await d.execute("update assemblies set status = 'open', batch_id = null, done_at = null where batch_id = ? and shop_id = ?", [batchId, shopId])
+      await d.execute('delete from batches where id = ? and shop_id = ?', [batchId, shopId])
+    } else {
+      await d.execute(
+        `update batches set units_made = ?,
+                unit_cost = coalesce((select avg(unit_cost) from made_items where batch_id = ?), unit_cost)
+          where id = ? and shop_id = ?`,
+        [left, batchId, batchId, shopId],
+      )
+    }
+  }
+  return items.length
+}
+
 export async function deletePrintRun(shopId: string, runId: string, undoCopies = false): Promise<number> {
   const d = await db()
   // What it made and has been placed -- on the shelf, in an assembly, kept --
