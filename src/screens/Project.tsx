@@ -27,6 +27,7 @@
  * own about what "ready to advance" means.
  */
 import { ProjectExtras } from './EquipmentHardware'
+import { priceStoredQuote } from '../lib/draftQuote'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   matchMaterial,
@@ -90,6 +91,7 @@ import {
   logWork,
   recordPrintRun,
   setQuoteStatus,
+  freezeDraftQuote,
   takeProjectIn,
   deleteProject,
   recordPayment,
@@ -274,6 +276,18 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
     setSearch(next, { replace: true })
     navigate(`/quote/${detail.quote.id}/print`)
   }, [search, setSearch, detail, navigate])
+
+  /** The newest version, priced, when it is waiting on the client's yes --
+   *  a draft priced at today's rates, a sent one from its frozen rates. */
+  const pendingQuote = useMemo(() => {
+    const q = detail?.quote
+    if (!detail || !q || (q.status !== 'draft' && q.status !== 'sent') || !detail.quoteInputs) return null
+    const { priced, freeze: f } = priceStoredQuote(detail.quoteInputs, detail.assetOrigin, ctx, rates)
+    // Only a draft is frozen here; a sent version keeps the price it went out at.
+    const freeze = q.status === 'draft' ? f : null
+    return { id: q.id, status: q.status, priced, freeze, total: freeze ? freeze.total : (q.total ?? priced.total) }
+  }, [detail, ctx, rates])
+  const [payPrefill, setPayPrefill] = useState<{ kind: PaymentKind; amount: number; n: number } | null>(null)
 
   if (error && !detail) {
     return (
@@ -473,6 +487,35 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
     }
   }
 
+  async function agreeNewest() {
+    if (!detail?.quote || !pendingQuote) return
+    setBusy(true)
+    try {
+      if (pendingQuote.freeze) {
+        await freezeDraftQuote(ctx.shop.id, pendingQuote.id, ctx.profile.id, pendingQuote.freeze, 'accepted')
+      } else {
+        await setQuoteStatus(ctx.shop.id, pendingQuote.id, ctx.profile.id, 'accepted')
+      }
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function archiveNow() {
+    setBusy(true)
+    try {
+      await archiveProject(ctx.shop.id, jobId, ctx.profile.id, true)
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function markQuote(status: QuoteStatus) {
     if (!detail?.quote) return
     setBusy(true)
@@ -659,7 +702,12 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           ) : (
             <>
               {mm === 'payments' ? (
-                <MoneyTally facts={facts} delivered={detail.phase === 'delivered'} money={money} />
+                <MoneyTally
+                  facts={facts}
+                  delivered={detail.phase === 'delivered'}
+                  money={money}
+                  pending={pendingQuote}
+                />
               ) : (
                 <div className="grid3">
                   <Stat label="Quoted" value={facts.quoteTotal == null ? '—' : money(facts.quoteTotal)} />
@@ -673,19 +721,24 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                   )}
                 </div>
               )}
-              {/* Past approval with no accepted quote on record (CG's 16"
-                  Anson, 27 Oct): the status control lives in Approval, so
-                  without this there was no way to say the client agreed. */}
+              {/* What stands between this project and done, money-wise, with
+                  the one button that fixes it (CG, 27 Oct: "let this section
+                  fix it"). The status control lives in Approval; past it,
+                  this is the only place a price can be agreed. */}
               {mm === 'payments' && !inRecord && (
-                <NotAgreed detail={detail} money={money} busy={busy} onMark={(st) => void markQuote(st)} />
-              )}
-              {/* A revision made after the client accepted -- from In build,
-                  say, when copies changed (CG, 12 Oct). The price that
-                  counts stays the accepted one until they accept this; the
-                  status control lives in Approval, so without this the
-                  revision could never be agreed from here. */}
-              {mm === 'payments' && !inRecord && (
-                <PendingRevision detail={detail} money={money} busy={busy} onMark={(st) => void markQuote(st)} />
+                <SettleUp
+                  facts={facts}
+                  quote={detail.quote}
+                  pending={pendingQuote}
+                  delivered={detail.phase === 'delivered'}
+                  jobId={detail.jobId}
+                  money={money}
+                  busy={busy}
+                  onAgree={() => void agreeNewest()}
+                  onDecline={() => void markQuote('declined')}
+                  onPay={(kind, amount) => setPayPrefill((p) => ({ kind, amount, n: (p?.n ?? 0) + 1 }))}
+                  onArchive={() => void archiveNow()}
+                />
               )}
               <div className="btnrow" style={{ marginTop: 12, alignItems: 'center' }}>
                 {mm === 'approve' && (
@@ -755,6 +808,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                 }
                 quoteId={detail.quote?.id ?? null}
                 owed={facts.quoteTotal == null ? null : facts.balanceOwed - (facts.overpaid ?? 0)}
+                prefill={payPrefill}
                 busy={busy}
                 onRecord={pay}
               />
@@ -1693,6 +1747,7 @@ function PaymentLog({
   suggestion,
   quoteId,
   owed = null,
+  prefill = null,
   busy,
   onRecord,
 }: {
@@ -1702,6 +1757,8 @@ function PaymentLog({
   quoteId: string | null
   /** What is owed right now; negative when overpaid. Null with no price. */
   owed?: number | null
+  /** Opens the form filled in -- from Settle up's buttons. n changes per ask. */
+  prefill?: { kind: PaymentKind; amount: number; n: number } | null
   busy: boolean
   onRecord: (input: PaymentInput) => Promise<void>
 }) {
@@ -1714,6 +1771,14 @@ function PaymentLog({
 
   const n = Number(amount)
   const valid = Number.isFinite(n) && n > 0
+  const formRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!prefill) return
+    setKind(prefill.kind)
+    setAmount(prefill.amount.toFixed(2))
+    setOpen(true)
+    requestAnimationFrame(() => formRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' }))
+  }, [prefill?.n]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="updates" style={{ marginTop: 14 }}>
@@ -1754,7 +1819,7 @@ function PaymentLog({
           Record a payment
         </button>
       ) : (
-        <div className="gatebox" style={{ marginTop: 10 }}>
+        <div className="gatebox" style={{ marginTop: 10 }} ref={formRef}>
           <div className="grid3">
             <div className="fld">
               <label className="lbl" htmlFor="p-kind">
@@ -7066,11 +7131,24 @@ function MoneyTally({
   facts,
   delivered,
   money,
+  pending = null,
 }: {
   facts: ProjectFacts
   delivered: boolean
   money: (n: number) => string
+  /** A version waiting on the yes. Its price is shown; owed waits for it. */
+  pending?: { total: number } | null
 }) {
+  if (pending) {
+    const paid = facts.paid ?? 0
+    return (
+      <div className="grid3" data-testid="money-tally">
+        <Stat label="Price" value={money(pending.total)} tone="warn" sub="revised · not agreed yet" />
+        <Stat label="Paid" value={money(paid)} tone={paid > 0 ? 'ok' : ''} sub={paid > 0 ? 'received, less refunds' : 'nothing received yet'} />
+        <Stat label="Owed" value="—" sub="once the price is agreed" />
+      </div>
+    )
+  }
   const paid = facts.paid ?? 0
   const over = facts.overpaid ?? 0
   const discount =
@@ -7106,39 +7184,139 @@ function MoneyTally({
 }
 
 /**
- * Past approval and the client's yes was never recorded. One button says
- * they agreed to the newest priced version -- the original or a revision.
- * A draft has no price yet, so it points at Revise instead.
+ * Settle up: the one thing standing between this project and done,
+ * money-wise, and the button that does it. In order -- agree the price,
+ * take the money (or hand back the extra), then archive.
  */
-function NotAgreed({
-  detail,
+function SettleUp({
+  facts,
+  quote,
+  pending,
+  delivered,
+  jobId,
   money,
   busy,
-  onMark,
+  onAgree,
+  onDecline,
+  onPay,
+  onArchive,
 }: {
-  detail: ProjectDetail
+  facts: ProjectFacts
+  quote: ProjectDetail['quote']
+  pending: { status: 'draft' | 'sent'; id: string; priced: PricedQuote; total: number; freeze: unknown } | null
+  delivered: boolean
+  jobId: string
   money: (n: number) => string
   busy: boolean
-  onMark: (status: QuoteStatus) => void
+  onAgree: () => void
+  onDecline: () => void
+  onPay: (kind: PaymentKind, amount: number) => void
+  onArchive: () => void
 }) {
-  const q = detail.quote
-  if (!q || detail.facts.quoteStatus === 'accepted') return null
-  const priced = q.total != null
-  return (
-    <div className="attn warn" data-testid="not-agreed" style={{ marginTop: 12 }}>
-      <span>
-        <strong>The client&rsquo;s yes isn&rsquo;t on record.</strong>{' '}
-        {priced
-          ? `Owed counts from this price once you mark it agreed.`
-          : 'The newest version is a draft with no price yet. Open Revise the quote, send it, then mark it agreed here.'}
-      </span>
-      {priced && (
-        <span className="btnrow" style={{ margin: 0 }}>
-          <button type="button" className="btn sm primary" disabled={busy} onClick={() => onMark('accepted')}>
-            They agreed to {money(q.total ?? 0)}
+  if (!quote) return null
+  if (pending) {
+    const p = pending.priced
+    const before = p.subtotal + p.rushAmt
+    const wasAgreed = facts.quoteStatus === 'accepted'
+    const onRecord = facts.quoteTotal
+    return (
+      <div className="settle warn" data-testid="settle-up">
+        <div className="settle-head">
+          {wasAgreed ? 'A revised quote is waiting on the client' : 'The client’s yes isn’t on record'}
+          <span className="settle-tag">{pending.status === 'draft' ? 'revision · not sent' : 'sent'}</span>
+        </div>
+        <dl className="settle-lines">
+          {p.discountAmt > 0 && (
+            <>
+              <dt>Before discount</dt>
+              <dd>{money(before)}</dd>
+              <dt>Discount</dt>
+              <dd>−{money(p.discountAmt)}</dd>
+            </>
+          )}
+          {p.tax > 0 && (
+            <>
+              <dt>Tax</dt>
+              <dd>{money(p.tax)}</dd>
+            </>
+          )}
+          <dt className="settle-total">Total</dt>
+          <dd className="settle-total">{money(pending.total)}</dd>
+          {p.deposit > 0 && (
+            <>
+              <dt>Deposit in it</dt>
+              <dd>{money(p.deposit)}</dd>
+            </>
+          )}
+        </dl>
+        {onRecord != null && Math.abs(onRecord - pending.total) >= 0.005 && (
+          <div className="hint" style={{ marginTop: 0 }}>
+            {wasAgreed ? 'They agreed to' : 'The price on record was'} {money(onRecord)}
+            {wasAgreed ? ' — that stands until they accept this one.' : '.'}
+          </div>
+        )}
+        <div className="btnrow" style={{ margin: 0 }}>
+          <button type="button" className="btn sm primary" disabled={busy} onClick={onAgree}>
+            Client agreed to {money(pending.total)}
           </button>
-        </span>
-      )}
+          <Link to={`/intake?revise=${jobId}`} className="btn sm" style={{ textDecoration: 'none' }}>
+            Change it
+          </Link>
+          {pending.status === 'sent' && (
+            <Link to={`/quote/${pending.id}/print`} className="btn sm" style={{ textDecoration: 'none' }}>
+              See it
+            </Link>
+          )}
+          {wasAgreed && (
+            <button type="button" className="btn sm ghost" disabled={busy} onClick={onDecline}>
+              They declined it
+            </button>
+          )}
+        </div>
+        {pending.status === 'draft' && (
+          <div className="hint" style={{ marginTop: 0 }}>Priced at today’s rates and frozen on it, as sending would.</div>
+        )}
+      </div>
+    )
+  }
+  if (facts.quoteStatus !== 'accepted') return null
+  const over = facts.overpaid ?? 0
+  if (over >= 0.005) {
+    return (
+      <div className="settle warn" data-testid="settle-up">
+        <div className="settle-head">They paid {money(over)} more than the price</div>
+        <div className="hint" style={{ marginTop: 0 }}>
+          If the price changed, revise the quote. If not, hand the extra back.
+        </div>
+        <div className="btnrow" style={{ margin: 0 }}>
+          <button type="button" className="btn sm" disabled={busy} onClick={() => onPay('refund', over)}>
+            Record a {money(over)} refund
+          </button>
+        </div>
+      </div>
+    )
+  }
+  if (facts.balanceOwed >= 0.005) {
+    return (
+      <div className={`settle ${delivered ? 'crit' : ''}`} data-testid="settle-up">
+        <div className="settle-head">{money(facts.balanceOwed)} still to come in</div>
+        <div className="btnrow" style={{ margin: 0 }}>
+          <button type="button" className="btn sm primary" disabled={busy} onClick={() => onPay('balance', facts.balanceOwed)}>
+            Record {money(facts.balanceOwed)} received
+          </button>
+        </div>
+      </div>
+    )
+  }
+  if (!delivered || facts.archivedAt) return null
+  return (
+    <div className="settle ok" data-testid="settle-up">
+      <div className="settle-head">All square — price agreed and paid in full</div>
+      <div className="btnrow" style={{ margin: 0 }}>
+        <button type="button" className="btn sm" disabled={busy} onClick={onArchive}>
+          Archive it
+        </button>
+      </div>
     </div>
   )
 }

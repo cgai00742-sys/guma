@@ -23,6 +23,7 @@
  * shared interface) are re-exported directly from data.types.ts rather than
  * routed through either backend, since both backends already do the same.
  */
+import type { FrozenPrice } from './draftQuote'
 import { isTauri } from '@tauri-apps/api/core'
 import type * as Local from './data.local'
 import type * as Hosted from './data.supabase'
@@ -520,6 +521,16 @@ export async function deletePart(
   reason: string | null = null,
 ): Promise<void> {
   return (await backend()).deletePart(shopId, partId, actorId, reason)
+}
+
+export async function freezeDraftQuote(
+  shopId: string,
+  quoteId: string,
+  actorId: string,
+  price: FrozenPrice,
+  status: 'sent' | 'accepted',
+): Promise<void> {
+  return (await backend()).freezeDraftQuote(shopId, quoteId, actorId, price, status)
 }
 
 export async function setQuoteStatus(

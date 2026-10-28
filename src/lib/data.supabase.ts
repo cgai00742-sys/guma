@@ -9,6 +9,7 @@
  * see supabase.ts) never happens in the desktop build once that build stops
  * carrying Supabase secrets.
  */
+import type { FrozenPrice } from './draftQuote'
 import { describePartEdit, describeProjectEdits, type ProjectBefore } from './edits'
 import { supabase } from './supabase'
 import { round2, type MaterialRef, type PrinterRef } from './pricing'
@@ -2833,6 +2834,53 @@ export async function deletePart(
 }
 
 /** See data.local.ts's setQuoteStatus, and the rule its absence cost us. */
+/**
+ * Price a draft and put it in front of the client in one step: freeze the
+ * rates onto it, as sending from Intake does, and mark it sent or agreed.
+ * Only a draft -- a version with a price already is agreed by
+ * setQuoteStatus, and its frozen rates must never move.
+ */
+export async function freezeDraftQuote(
+  shopId: string,
+  quoteId: string,
+  actorId: string,
+  price: FrozenPrice,
+  status: 'sent' | 'accepted',
+): Promise<void> {
+  const { data: quote, error: readErr } = await supabase
+    .from('quotes')
+    .select('job_id, status, version')
+    .eq('id', quoteId)
+    .eq('shop_id', shopId)
+    .single()
+  if (readErr) throw readErr
+  if (!quote) throw new Error('That quote no longer exists.')
+  if (quote.status !== 'draft') throw new Error('That version has already been priced and sent.')
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('quotes')
+    .update({
+      rates_snapshot: price.rates_snapshot,
+      total: price.total,
+      deposit_due: price.deposit_due,
+      valid_until: price.valid_until,
+      status,
+      sent_at: now,
+      decided_at: status === 'accepted' ? now : null,
+    })
+    .eq('id', quoteId)
+    .eq('shop_id', shopId)
+    .eq('status', 'draft')
+  if (error) throw error
+  const { error: evErr } = await supabase.from('job_events').insert({
+    job_id: quote.job_id,
+    actor_id: actorId,
+    kind: 'quote',
+    body: `Quote v${quote.version} priced at ${price.total.toFixed(2)} and marked ${status === 'accepted' ? 'agreed' : 'sent'}.`,
+  })
+  if (evErr) throw evErr
+}
+
 export async function setQuoteStatus(
   shopId: string,
   quoteId: string,

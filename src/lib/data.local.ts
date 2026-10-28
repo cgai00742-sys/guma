@@ -22,6 +22,7 @@
  * Treat it as a strong draft, not a proven one, until Phase 4's parity task
  * is checked off.
  */
+import type { FrozenPrice } from './draftQuote'
 import { matchShelfPhotos as pickShelfPhotos, type PhotoProduct, type PhotoHave, type PhotoBatch, type PhotoItem, type PhotoAssembly, type PhotoImport, type PhotoSection } from './shelfPhotos'
 import { describePartEdit, describeProjectEdits, type ProjectBefore } from './edits'
 import Database from '@tauri-apps/plugin-sql'
@@ -3463,6 +3464,41 @@ export async function deletePart(
  * because "when did we send this" is exactly the sort of thing nobody
  * remembers and the expiry check needs.
  */
+/**
+ * Price a draft and put it in front of the client in one step: freeze the
+ * rates onto it, as sending from Intake does, and mark it sent or agreed.
+ * Only a draft -- a version with a price already is agreed by
+ * setQuoteStatus, and its frozen rates must never move.
+ */
+export async function freezeDraftQuote(
+  shopId: string,
+  quoteId: string,
+  actorId: string,
+  price: FrozenPrice,
+  status: 'sent' | 'accepted',
+): Promise<void> {
+  const d = await db()
+  const rows = await d.select<{ job_id: string; status: QuoteStatus; version: number }[]>(
+    'select job_id, status, version from quotes where id = ? and shop_id = ?',
+    [quoteId, shopId],
+  )
+  const quote = rows[0]
+  if (!quote) throw new Error('That quote no longer exists.')
+  if (quote.status !== 'draft') throw new Error('That version has already been priced and sent.')
+  await d.execute(
+    `update quotes set rates_snapshot = ?, total = ?, deposit_due = ?, valid_until = ?, status = ?,
+            sent_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+            decided_at = case when ? = 'accepted' then strftime('%Y-%m-%dT%H:%M:%fZ','now') end
+      where id = ? and shop_id = ? and status = 'draft'`,
+    [JSON.stringify(price.rates_snapshot), price.total, price.deposit_due, price.valid_until, status, status, quoteId, shopId],
+  )
+  await d.execute(`insert into job_events (job_id, actor_id, kind, body) values (?, ?, 'quote', ?)`, [
+    quote.job_id,
+    actorId,
+    `Quote v${quote.version} priced at ${price.total.toFixed(2)} and marked ${status === 'accepted' ? 'agreed' : 'sent'}.`,
+  ])
+}
+
 export async function setQuoteStatus(
   shopId: string,
   quoteId: string,

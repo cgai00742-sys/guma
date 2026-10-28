@@ -1847,3 +1847,21 @@ tr.shelfrow.done > td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
 .extras-block{margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px}
 .extras-block .histitem{display:flex;gap:10px;align-items:baseline;padding:3px 0;font-size:13px}
 .extras{margin-top:6px}
+
+/* Settle up (Money, past Approval): the one thing between this project and
+   done, money-wise, with the button that does it. */
+.settle{
+  display:flex;flex-direction:column;gap:10px;margin-top:12px;padding:14px 16px;
+  border:1px solid var(--line-strong);border-radius:10px;
+}
+.settle.warn{border-color:color-mix(in srgb, var(--warn) 45%, transparent);background:color-mix(in srgb, var(--warn) 6%, transparent)}
+.settle.crit{border-color:color-mix(in srgb, var(--red) 45%, transparent);background:color-mix(in srgb, var(--red) 6%, transparent)}
+.settle.ok{border-color:color-mix(in srgb, var(--ok) 45%, transparent);background:color-mix(in srgb, var(--ok) 6%, transparent)}
+.settle-head{font-weight:600;font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.settle.warn .settle-head{color:var(--warn)}
+.settle.ok .settle-head{color:var(--ok)}
+.settle-tag{font-weight:400;font-size:11px;color:var(--txt-2);border:1px solid var(--line-strong);border-radius:999px;padding:1px 8px}
+.settle-lines{display:grid;grid-template-columns:max-content max-content;column-gap:24px;row-gap:3px;margin:0;font-size:12px}
+.settle-lines dt{color:var(--txt-2)}
+.settle-lines dd{margin:0;font-family:var(--mono);text-align:right}
+.settle-lines .settle-total{font-weight:600;color:var(--txt);padding-top:4px;border-top:1px solid var(--line)}

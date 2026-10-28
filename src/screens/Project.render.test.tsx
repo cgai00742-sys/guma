@@ -901,23 +901,62 @@ describe('a project can always be got rid of', () => {
     currentDb.sqlite
       .prepare("update quotes set status = 'sent', total = 480, deposit_due = 240, sent_at = '2026-10-10T00:00:00Z' where job_id = ?")
       .run(jobId)
-    const total = (currentDb.sqlite.prepare('select total from quotes where job_id = ?').get(jobId) as { total: number }).total
     await renderProject(jobId, ctx)
     const user = userEvent.setup()
     const tally = await screen.findByTestId('money-tally')
     expect(tally.textContent).toMatch(/not agreed yet/)
     expect(screen.queryByText(/deposit owed/i)).toBeNull()
-    const banner = screen.getByTestId('not-agreed')
-    await user.click(within(banner).getByRole('button', { name: /they agreed to/i }))
-    await waitFor(() => expect(screen.queryByTestId('not-agreed')).toBeNull())
+    await user.click(within(screen.getByTestId('settle-up')).getByRole('button', { name: /client agreed to/i }))
+    await waitFor(() => expect(screen.getByTestId('settle-up').textContent).toMatch(/still to come in/))
     expect(screen.getByTestId('money-tally').textContent).toMatch(/agreed/)
 
-    await user.click(screen.getByRole('button', { name: /record a payment/i }))
-    const amount = screen.getByLabelText('Amount') as HTMLInputElement
-    expect(Number(amount.value)).toBeCloseTo(total)
+    await user.click(within(screen.getByTestId('settle-up')).getByRole('button', { name: /received/i }))
+    const amount = (await screen.findByLabelText('Amount')) as HTMLInputElement
+    expect(Number(amount.value)).toBeCloseTo(480)
     expect(screen.getByTestId('payment-preview').textContent).toMatch(/→ 0,00\s€ after this/)
     await user.clear(amount)
-    await user.type(amount, String(Math.round(total) + 100))
+    await user.type(amount, '580')
     expect(screen.getByTestId('payment-preview').textContent).toMatch(/more than is owed/)
+  })
+
+  it("Anson: a revision saved as a draft is summarised, agreed in one click, and priced (CG, 27 Oct)", async () => {
+    const { ctx, jobId } = await seed({ takeIn: true })
+    currentDb.sqlite.prepare("update jobs set phase = 'delivered' where id = ?").run(jobId)
+    currentDb.sqlite
+      .prepare("update quotes set status = 'sent', total = 160.68, deposit_due = 80.34, sent_at = '2026-10-10T00:00:00Z' where job_id = ?")
+      .run(jobId)
+    currentDb.sqlite
+      .prepare(
+        `insert into quotes (id, shop_id, job_id, version, status, design_billing, design_qty, revisions_incl,
+           quantity, material_id, printer_id, units_per_part, print_hrs_part, finishing_hrs, rush, flat_each, discount_pct)
+         select 'rev2', shop_id, job_id, 2, 'draft', design_billing, design_qty, revisions_incl,
+           quantity, material_id, printer_id, units_per_part, print_hrs_part, finishing_hrs, rush, flat_each, 10
+           from quotes where job_id = ? and version = 1`,
+      )
+      .run(jobId)
+    await renderProject(jobId, ctx)
+    const user = userEvent.setup()
+    const box = await screen.findByTestId('settle-up')
+    expect(box.textContent).toMatch(/yes isn.t on record/)
+    expect(box.textContent).toMatch(/revision · not sent/)
+    expect(box.textContent).toMatch(/Discount/)
+    expect(box.textContent).toMatch(/price on record was 160,68/)
+    expect(screen.getByTestId('money-tally').textContent).toMatch(/once the price is agreed/)
+    const agree = within(box).getByRole('button', { name: /client agreed to/i })
+    const offered = agree.textContent ?? ''
+    await user.click(agree)
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare("select status from quotes where id = 'rev2'").get()).toEqual({ status: 'accepted' }),
+    )
+    const row = currentDb.sqlite.prepare("select total, deposit_due, rates_snapshot from quotes where id = 'rev2'").get() as {
+      total: number
+      deposit_due: number
+      rates_snapshot: string | null
+    }
+    expect(row.total).toBeGreaterThan(0)
+    expect(row.rates_snapshot).not.toBeNull()
+    // What the button offered is exactly what was frozen.
+    expect(offered.replace(/\./g, '')).toContain(row.total.toFixed(2).replace('.', ','))
+    await waitFor(() => expect(screen.getByTestId('settle-up').textContent).toMatch(/still to come in/))
   })
 })
