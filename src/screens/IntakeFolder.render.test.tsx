@@ -23,7 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -151,10 +151,18 @@ describe('a folder of sliced files (CG, 5 Nov)', () => {
     expect((screen.getByLabelText(/include reef-buoy_prusa copy\.gcode/i) as HTMLInputElement).checked).toBe(false)
     // Nothing is priced until the checklist says so.
     expect(screen.queryByLabelText(/copies of maui/i)).toBeNull()
-    await user.click(screen.getByRole('button', { name: /add 2 files to the quote/i }))
+    // The quote says so, and can add them itself (CG, 5 Nov: the folder was
+    // read but the quote still showed 0 g -- the Add button was off-screen).
+    const note = await screen.findByTestId('folder-pending')
+    expect(note.textContent).toMatch(/Not priced yet\. 2 sliced files are ticked/)
+    await user.click(within(note).getByRole('button', { name: /add 2 to the quote/i }))
     expect(await screen.findByLabelText(/copies of maui/i)).toBeDefined()
     expect(screen.queryByRole('group', { name: /files found/i })).toBeNull()
     expect(screen.getByText(/2 files added/)).toBeDefined()
+    expect(screen.queryByTestId('folder-pending')).toBeNull()
+    // The filament is on the quote now, not 0 g.
+    const basis = screen.getAllByText(/ g at /).map((e) => e.textContent ?? '')
+    expect(basis.some((t) => /^[1-9][\d.,]* g at/.test(t))).toBe(true)
   })
 })
 

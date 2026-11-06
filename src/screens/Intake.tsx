@@ -370,6 +370,8 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
     setError(null)
   }
   const [saving, setSaving] = useState<'idle' | 'draft' | 'intake' | 'send' | 'inhouse'>('idle')
+  /** A folder read in but not added yet -- the quote must not look finished. */
+  const [folderPending, setFolderPending] = useState<{ count: number; add: () => void } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const material = ctx.materials.find((m) => m.id === materialId) ?? null
@@ -1121,6 +1123,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
               ctx={filesCtx}
               lines={input.builds ?? []}
               files={files}
+              onPending={setFolderPending}
               fallbackPrinterId={printerId}
               fallbackMaterialId={materialId}
               onAdd={(lines, file) => {
@@ -1446,6 +1449,17 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
               </div>
             </div>
 
+            {folderPending && (
+              <div className="attn warn" role="status" data-testid="folder-pending" style={{ margin: '12px 16px 0' }}>
+                <span>
+                  <strong>Not priced yet.</strong> {folderPending.count} sliced file{folderPending.count === 1 ? ' is' : 's are'} ticked
+                  in the checklist but not on the quote.
+                </span>
+                <button type="button" className="btn sm primary" disabled={!folderPending.count} onClick={folderPending.add}>
+                  Add {folderPending.count} to the quote
+                </button>
+              </div>
+            )}
             <div style={{ padding: '12px 16px 14px' }}>
               {q.lines.map((l) => (
                 <div

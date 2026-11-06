@@ -47,6 +47,7 @@ export default function QuoteFiles({
   fallbackPrinterId,
   fallbackMaterialId,
   files = [],
+  onPending,
   onAdd,
   onChange,
   onClear,
@@ -55,6 +56,9 @@ export default function QuoteFiles({
   lines: QuoteBuild[]
   /** The files already read onto this quote, so a folder does not add them twice. */
   files?: QuoteFile[]
+  /** A folder checklist is open and nothing in it is priced yet: how many
+   *  are ticked, and the button's action, so the quote can say so too. */
+  onPending?: (p: { count: number; add: () => void } | null) => void
   fallbackPrinterId: string
   fallbackMaterialId: string
   onAdd: (lines: QuoteBuild[], file: QuoteFile) => void
@@ -148,6 +152,13 @@ export default function QuoteFiles({
     }
   }
   const [progress, setProgress] = useState<string | null>(null)
+  const addRef = useRef<() => void>(() => undefined)
+  addRef.current = addReviewed
+  const ticked = review ? review.rows.filter((r) => r.include).length : null
+  useEffect(() => {
+    onPending?.(ticked == null ? null : { count: ticked, add: () => addRef.current() })
+  }, [ticked]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onPending?.(null), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function addReviewed() {
     if (!review) return
@@ -374,10 +385,28 @@ function FolderChecklist({
   const chosen = review.rows.filter((r) => r.include)
   const grams = chosen.reduce((a, r) => a + (r.parsed?.totals.estGrams ?? 0), 0)
   const mins = chosen.reduce((a, r) => a + (r.parsed?.totals.estMinutes ?? 0), 0)
+  // The folder once, at the top; each row is just its file (CG, 5 Nov: the
+  // full path wrapped every row five lines deep).
+  const folder = commonFolder(review.rows.map((r) => r.path))
+  const short = (path: string) => (folder ? path.slice(folder.length + 1) : path)
   return (
     <div className="gatebox" role="group" aria-label="Files found" style={{ marginTop: 10 }}>
-      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
-        {review.rows.length} sliced file{review.rows.length === 1 ? '' : 's'} found — tick the plates this job prints
+      <div className="folderbar">
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontWeight: 600, fontSize: 13 }}>
+            {review.rows.length} sliced file{review.rows.length === 1 ? '' : 's'} found — not on the quote yet
+          </div>
+          <div className="hint" style={{ marginTop: 2 }}>
+            {folder ? `In ${folder}. ` : ''}Untick any plate this job does not print, then add them.
+          </div>
+        </div>
+        <button type="button" className="btn sm primary" disabled={!chosen.length} onClick={onAdd}>
+          Add {chosen.length} file{chosen.length === 1 ? '' : 's'} to the quote
+          {chosen.length ? ` · ~${Math.round(grams)} g · ~${hrs(Math.round(mins))}` : ''}
+        </button>
+        <button type="button" className="btn sm ghost" onClick={onCancel}>
+          Cancel
+        </button>
       </div>
       <div className="sheetwrap" style={{ maxHeight: 'none' }}>
         <table>
@@ -407,12 +436,12 @@ function FolderChecklist({
                     />
                   </td>
                   <td>
-                    <span className="pn">{r.path}</span>
+                    <span className="pn" style={{ whiteSpace: 'nowrap' }}>{short(r.path)}</span>
                     {r.note && <div className="hint" style={{ marginTop: 2 }}>{r.note}</div>}
                   </td>
                   <td className="r">{p?.totals.sections ?? '—'}</td>
-                  <td className="r">{p?.totals.estGrams != null ? `${Math.round(p.totals.estGrams)} g` : '—'}</td>
-                  <td className="r">{hrs(p?.totals.estMinutes ?? null) ?? '—'}</td>
+                  <td className="r" style={{ whiteSpace: 'nowrap' }}>{p?.totals.estGrams != null ? `${Math.round(p.totals.estGrams)} g` : '—'}</td>
+                  <td className="r" style={{ whiteSpace: 'nowrap' }}>{hrs(p?.totals.estMinutes ?? null) ?? '—'}</td>
                   <td>{machine?.name ?? p?.printerModel ?? '—'}</td>
                 </tr>
               )
@@ -427,15 +456,16 @@ function FolderChecklist({
           ].join(', ')}).`}
         </div>
       )}
-      <div className="btnrow" style={{ marginTop: 8 }}>
-        <button type="button" className="btn sm primary" disabled={!chosen.length} onClick={onAdd}>
-          Add {chosen.length} file{chosen.length === 1 ? '' : 's'} to the quote
-          {chosen.length ? ` · ~${Math.round(grams)} g · ~${hrs(Math.round(mins))}` : ''}
-        </button>
-        <button type="button" className="btn sm ghost" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
     </div>
   )
+}
+
+/** The folder every path sits in, or '' when they do not share one. */
+function commonFolder(paths: string[]): string {
+  if (!paths.length) return ''
+  const dirs = paths.map((p) => p.split('/').slice(0, -1))
+  const first = dirs[0]
+  let n = 0
+  while (n < first.length && dirs.every((d) => d[n] === first[n])) n++
+  return first.slice(0, n).join('/')
 }

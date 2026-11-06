@@ -1868,3 +1868,9 @@ tr.shelfrow.done > td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
 
 /* A file in a folder checklist that starts unticked. */
 tr.dim td{opacity:.55}
+/* The folder checklist's heading and its Add button stay in view while a
+   long list scrolls. */
+.folderbar{
+  position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  background:var(--panel-3);padding:6px 0 8px;margin-bottom:6px;border-bottom:1px solid var(--line);
+}
