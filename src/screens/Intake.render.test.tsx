@@ -67,8 +67,10 @@ async function fillTheMinimum(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText(/project title|title/i), 'Mast brackets')
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   cleanup()
+  // A form kept by the last test (kept as it unmounted) would come back in this one.
+  await (await import('../lib/intakeDraft')).forgetAllDrafts()
   vi.clearAllMocks()
 })
 

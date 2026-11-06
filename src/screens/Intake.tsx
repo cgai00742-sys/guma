@@ -26,7 +26,8 @@
  */
 import { sheetVsQuote } from '../lib/sheetVsQuote'
 import HoursInput from '../components/HoursInput'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { clearDraft, loadDraft, saveDraft } from '../lib/intakeDraft'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   buildRatesSnapshot,
@@ -88,6 +89,42 @@ const toPrinterRef = (p: PrinterRow): PrinterRef => ({
   wearPerHour: Number(p.wear_hourly),
   watts: p.watts == null ? null : Number(p.watts),
 })
+
+/** "3:42 pm" today, else "Nov 4, 3:42 pm". */
+function fmtSaved(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return 'earlier'
+  const today = new Date().toDateString() === d.toDateString()
+  return today
+    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+/** The New project form as it stood -- everything typed and every file read. */
+interface IntakeDraft {
+  whoFor: 'client' | 'inhouse' | null
+  client: string
+  contact: string
+  email: string
+  phone: string
+  source: string
+  neededBy: string
+  brief: string
+  title: string
+  input: QuoteInputs
+  materialId: string
+  printerId: string
+  files: QuoteFile[]
+  keptPrinterIds: string[]
+  within: string
+  cause: ChangeCause
+  why: string
+  savedAt: string
+}
+
+/** Worth keeping: something was typed or read in, beyond the picker. */
+const draftWorthKeeping = (d: IntakeDraft) =>
+  !!(d.title.trim() || d.brief.trim() || (d.client && d.client !== '\u0000in-house') || d.files.length || d.input.builds?.length)
 
 const SOURCES = ['Word of mouth', 'Repeat client', 'Referral', 'Walk-in', 'Website enquiry']
 
@@ -378,6 +415,85 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
    *   send    Take it in and open the printable, because handing a client
    *           a quote is itself the act of committing to it.
    */
+  /* ---- the form, kept while you step away (CG, 5 Nov) ------------------ */
+  const draftKey = `${ctx.shop.id}:${reviseJobId ? `revise:${reviseJobId}` : within ? `within:${params.get('within') ?? ''}` : 'new'}`
+  const snapshot: IntakeDraft = {
+    whoFor, client, contact, email, phone, source, neededBy, brief, title, input,
+    materialId, printerId, files, keptPrinterIds, within, cause, why, savedAt: new Date().toISOString(),
+  }
+  const latest = useRef(snapshot)
+  latest.current = snapshot
+  /** Set once the stored draft has been looked at, so an empty form never overwrites it. */
+  const [draftReady, setDraftReady] = useState(false)
+  /** The draft brought back (new) or on offer (revision), for the banner. */
+  const [draftNote, setDraftNote] = useState<{ savedAt: string; offer: IntakeDraft | null } | null>(null)
+  /** Saved or started fresh: stop keeping it. */
+  const done = useRef(false)
+  const blank = useRef(snapshot)
+
+  function applyDraft(d: IntakeDraft) {
+    setWhoFor(d.whoFor)
+    setClient(d.client)
+    setContact(d.contact)
+    setEmail(d.email)
+    setPhone(d.phone)
+    setSource(d.source)
+    setNeededBy(d.neededBy)
+    setBrief(d.brief)
+    setTitle(d.title)
+    setInput(d.input)
+    setMaterialId(d.materialId)
+    setPrinterId(d.printerId)
+    setFiles(d.files)
+    setKeptPrinterIds(d.keptPrinterIds)
+    setWithin(d.within)
+    setCause(d.cause)
+    setWhy(d.why)
+  }
+
+  useEffect(() => {
+    let live = true
+    loadDraft<IntakeDraft>(draftKey).then((d) => {
+      if (!live) return
+      if (d && draftWorthKeeping(d)) {
+        // A revision loads its own quote from the project; the draft is
+        // offered rather than laid over it.
+        if (reviseJobId) setDraftNote({ savedAt: d.savedAt, offer: d })
+        else {
+          applyDraft(d)
+          setDraftNote({ savedAt: d.savedAt, offer: null })
+        }
+      }
+      setDraftReady(true)
+    })
+    return () => {
+      live = false
+    }
+  }, [draftKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Kept a moment after each change, and at once on the way out.
+  useEffect(() => {
+    if (!draftReady || done.current) return
+    const t = setTimeout(() => {
+      if (done.current) return
+      if (draftWorthKeeping(latest.current)) void saveDraft(draftKey, latest.current)
+    }, 400)
+    return () => clearTimeout(t)
+  })
+  useEffect(
+    () => () => {
+      if (!done.current && draftWorthKeeping(latest.current)) void saveDraft(draftKey, latest.current)
+    },
+    [draftKey],
+  )
+
+  function startFresh() {
+    done.current = false
+    void clearDraft(draftKey)
+    applyDraft(blank.current)
+    setDraftNote(null)
+  }
+
   async function persist(mode: 'draft' | 'intake' | 'send' | 'inhouse') {
     if (!canSave) {
       setError(
@@ -401,6 +517,8 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           seriesId: within || null,
           neededBy: neededBy || null,
         })
+        done.current = true
+        await clearDraft(draftKey)
         navigate(`/project/${jobId}`)
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -514,6 +632,9 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
       // Straight to the printable of THE VERSION JUST SAVED. Going via the
       // project page and asking it for "the quote" opened an older version
       // after a revision -- a draft with no frozen rates, which printed blank.
+      // Saved for real: nothing left to keep.
+      done.current = true
+      await clearDraft(draftKey)
       navigate(mode === 'send' ? `/quote/${saved.quoteId}/print` : `/project/${saved.jobId}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -692,6 +813,36 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
         </div>
       </div>
 
+      {draftNote && (
+        <div className="attn" role="status" data-testid="draft-note" style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ flex: 1, minWidth: 200 }}>
+            {draftNote.offer
+              ? `You have unsaved changes to this revision from ${fmtSaved(draftNote.savedAt)}.`
+              : `Picked up where you left off — kept ${fmtSaved(draftNote.savedAt)}.`}
+          </span>
+          {draftNote.offer ? (
+            <>
+              <button
+                type="button"
+                className="btn sm primary"
+                onClick={() => {
+                  applyDraft(draftNote.offer!)
+                  setDraftNote(null)
+                }}
+              >
+                Bring them back
+              </button>
+              <button type="button" className="btn sm ghost" onClick={() => { void clearDraft(draftKey); setDraftNote(null) }}>
+                Discard
+              </button>
+            </>
+          ) : (
+            <button type="button" className="btn sm" onClick={startFresh}>
+              Start fresh
+            </button>
+          )}
+        </div>
+      )}
       {/* The ceiling. Shown while the numbers are being changed, not after
           the save is refused: a price that is already too high is the one
           thing the person needs to know BEFORE they finish typing. Warn,
@@ -969,6 +1120,7 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
             <QuoteFiles
               ctx={filesCtx}
               lines={input.builds ?? []}
+              files={files}
               fallbackPrinterId={printerId}
               fallbackMaterialId={materialId}
               onAdd={(lines, file) => {

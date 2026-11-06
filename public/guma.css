@@ -1865,3 +1865,6 @@ tr.shelfrow.done > td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
 .settle-lines dt{color:var(--txt-2)}
 .settle-lines dd{margin:0;font-family:var(--mono);text-align:right}
 .settle-lines .settle-total{font-weight:600;color:var(--txt);padding-top:4px;border-top:1px solid var(--line)}
+
+/* A file in a folder checklist that starts unticked. */
+tr.dim td{opacity:.55}
