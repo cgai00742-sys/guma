@@ -272,6 +272,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0044_money_paid.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 45,
+      description: "a price you set on purpose is not a guess",
+      sql: include_str!("../migrations/0045_material_cost_confirmed.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

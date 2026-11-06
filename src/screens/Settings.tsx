@@ -1678,17 +1678,19 @@ function MaterialsPane({ ctx, onSaved }: { ctx: ShopContext; onSaved: () => void
                     <span
                       className="chip"
                       style={
-                        m.costBasis === 'purchases'
+                        m.costBasis !== 'estimate'
                           ? { color: 'var(--ok)', borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }
                           : { color: 'var(--warn)', borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }
                       }
                       title={
                         m.costBasis === 'purchases'
                           ? `Weighted across ${m.purchases} purchase${m.purchases === 1 ? '' : 's'} of ${m.purchasedQty.toLocaleString()}${m.unit} for ${money(m.purchasedSpend)}.`
-                          : 'Nothing has been logged for this material, so quotes are priced off the figure typed at setup.'
+                          : m.costBasis === 'confirmed'
+                            ? 'You set this price yourself. Log purchases and Guma will measure it from what you actually paid.'
+                            : 'Still the figure from setup. Change it here and Save, or log a purchase, and quotes stop calling it a guess.'
                       }
                     >
-                      {m.costBasis === 'purchases' ? 'measured' : 'estimate'}
+                      {m.costBasis === 'purchases' ? 'measured' : m.costBasis === 'confirmed' ? 'your price' : 'estimate'}
                     </span>
                   </td>
                   <td className="r">

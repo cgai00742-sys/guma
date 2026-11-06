@@ -421,7 +421,7 @@ export async function loadShopContext(): Promise<ShopContext> {
         name: m.name as string,
         unit: m.unit as 'g' | 'ml',
         costPerUnit: Number(m.avg_cost_per_unit ?? m.cost_per_unit),
-        costBasis: (m.basis as 'purchases' | 'estimate') ?? 'estimate',
+        costBasis: (m.basis as 'purchases' | 'confirmed' | 'estimate') ?? 'estimate',
         sellOverride: m.sell_override == null ? null : Number(m.sell_override),
         swatch: m.swatch as string,
       }),
@@ -2162,7 +2162,7 @@ interface MaterialSqlRow {
   reorder_at: number
   archived: number
   avg_cost_per_unit: number
-  basis: 'purchases' | 'estimate'
+  basis: 'purchases' | 'confirmed' | 'estimate'
   purchases: number
   purchased_qty: number
   purchased_spend: number
@@ -2212,6 +2212,15 @@ export async function listMaterials(shopId: string): Promise<MaterialRow[]> {
  * A running total that only ever rises is a lie, so the shop has to be able
  * to correct it after weighing a spool. The screen says as much.
  */
+/** "The price I typed is right": a set price, no longer called a guess. */
+export async function confirmMaterialCost(shopId: string, materialId: string): Promise<void> {
+  const d = await db()
+  await d.execute(
+    "update materials set cost_confirmed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ? and shop_id = ?",
+    [materialId, shopId],
+  )
+}
+
 export async function saveMaterial(shopId: string, next: MaterialInput): Promise<MaterialRow> {
   const d = await db()
   const id = next.id ?? crypto.randomUUID()
@@ -2219,7 +2228,10 @@ export async function saveMaterial(shopId: string, next: MaterialInput): Promise
   if (!name) throw new Error('A material needs a name.')
   if (next.id) {
     await d.execute(
-      `update materials set name = ?, kind = ?, swatch = ?, unit = ?, cost_per_unit = ?,
+      `update materials set name = ?, kind = ?, swatch = ?, unit = ?,
+              -- A price changed by hand in Settings is a price set on purpose.
+              cost_confirmed_at = case when cost_per_unit <> ? then strftime('%Y-%m-%dT%H:%M:%fZ','now') else cost_confirmed_at end,
+              cost_per_unit = ?,
               sell_override = ?, on_hand = coalesce(?, on_hand),
               reorder_at = coalesce(?, reorder_at), archived = ?
        where id = ? and shop_id = ?`,
@@ -2228,6 +2240,7 @@ export async function saveMaterial(shopId: string, next: MaterialInput): Promise
         next.kind,
         next.swatch,
         next.unit,
+        next.costPerUnit,
         next.costPerUnit,
         next.sellOverride,
         next.onHand,

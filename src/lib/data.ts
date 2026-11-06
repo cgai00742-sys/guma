@@ -410,6 +410,10 @@ export async function listMaterialLedger(shopId: string, materialId: string): Pr
   return (await backend()).listMaterialLedger(shopId, materialId)
 }
 
+export async function confirmMaterialCost(shopId: string, materialId: string): Promise<void> {
+  return (await backend()).confirmMaterialCost(shopId, materialId)
+}
+
 export async function saveMaterial(shopId: string, next: MaterialInput): Promise<MaterialRow> {
   return (await backend()).saveMaterial(shopId, next)
 }

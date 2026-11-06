@@ -374,7 +374,7 @@ export default function App() {
                 moved -- this is the glance, not the workspace. */}
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard ctx={ctx} />} />
-            <Route path="/intake" element={<Intake ctx={ctx} />} />
+            <Route path="/intake" element={<Intake ctx={ctx} onCtxChanged={refresh} />} />
             <Route path="/projects" element={<Projects ctx={ctx} />} />
             {/* The two screens Projects absorbed. Kept as redirects so any
                 link saved before the merge still lands somewhere real. */}

@@ -608,4 +608,14 @@ describe('the filament warning names the spool the quote prints on (CG, 5 Nov)',
     expect(w?.fix).toContain(PACF.name)
     expect(w?.fix).not.toContain(PETG.name)
   })
+
+  it('a price you set yourself is not warned about', () => {
+    const fleet = { materials: [{ ...PACF, costBasis: 'confirmed' as const }, PETG], printers: [XL, H2D] }
+    expect(warning(priceQuote(only('pacf'), RATES, null, XL, fleet))).toBeUndefined()
+  })
+
+  it('offers each guessed spool by id, for the "this price is right" button', () => {
+    const fleet = { materials: [guessed(PACF), PETG], printers: [XL, H2D] }
+    expect(warning(priceQuote(only('pacf'), RATES, null, XL, fleet))?.materials?.map((m) => m.id)).toEqual(['pacf'])
+  })
 })

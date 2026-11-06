@@ -815,7 +815,7 @@ export interface MaterialRow {
   /** Weighted average of everything actually paid, or costPerUnit if nothing
    *  has been logged yet. This is what quotes are priced against. */
   avgCostPerUnit: number
-  costBasis: 'purchases' | 'estimate'
+  costBasis: 'purchases' | 'confirmed' | 'estimate'
   purchases: number
   purchasedQty: number
   purchasedSpend: number

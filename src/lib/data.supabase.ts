@@ -223,7 +223,7 @@ export async function loadShopContext(): Promise<ShopContext> {
         name: m.name,
         unit: m.unit,
         costPerUnit: Number(m.material_costs?.[0]?.avg_cost_per_unit ?? m.cost_per_unit),
-        costBasis: (m.material_costs?.[0]?.basis as 'purchases' | 'estimate') ?? 'estimate',
+        costBasis: (m.material_costs?.[0]?.basis as 'purchases' | 'confirmed' | 'estimate') ?? 'estimate',
         sellOverride: m.sell_override == null ? null : Number(m.sell_override),
         swatch: m.swatch,
       }),
@@ -1661,7 +1661,7 @@ function toMaterialRow(m: any): MaterialRow {
     reorderAt: Number(m.reorder_at ?? 0),
     archived: m.archived === true,
     avgCostPerUnit: Number(c.avg_cost_per_unit ?? m.cost_per_unit),
-    costBasis: (c.basis as 'purchases' | 'estimate') ?? 'estimate',
+    costBasis: (c.basis as 'purchases' | 'confirmed' | 'estimate') ?? 'estimate',
     purchases: Number(c.purchases ?? 0),
     purchasedQty: Number(c.purchased_qty ?? 0),
     purchasedSpend: Number(c.purchased_spend ?? 0),
@@ -1689,6 +1689,16 @@ export async function saveSellBranch(shopId: string, branch: SellBranch | null):
 }
 
 /** See data.local.ts's saveMaterial, including why on_hand is writable. */
+/** See data.local.ts. */
+export async function confirmMaterialCost(shopId: string, materialId: string): Promise<void> {
+  const { error } = await supabase
+    .from('materials')
+    .update({ cost_confirmed_at: new Date().toISOString() })
+    .eq('id', materialId)
+    .eq('shop_id', shopId)
+  if (error) throw error
+}
+
 export async function saveMaterial(shopId: string, next: MaterialInput): Promise<MaterialRow> {
   const name = next.name.trim()
   if (!name) throw new Error('A material needs a name.')
@@ -1705,6 +1715,11 @@ export async function saveMaterial(shopId: string, next: MaterialInput): Promise
   // Null on an update leaves the stock alone -- see MaterialInput.onHand.
   if (next.onHand != null || !next.id) row.on_hand = next.onHand ?? 0
   if (next.reorderAt != null || !next.id) row.reorder_at = next.reorderAt ?? 0
+  if (next.id) {
+    // A price changed by hand in Settings is a price set on purpose.
+    const { data: was } = await supabase.from('materials').select('cost_per_unit').eq('id', next.id).eq('shop_id', shopId).maybeSingle()
+    if (was && Number(was.cost_per_unit) !== Number(next.costPerUnit)) row.cost_confirmed_at = new Date().toISOString()
+  }
   const query = next.id
     ? supabase.from('materials').update(row).eq('id', next.id).eq('shop_id', shopId)
     : supabase.from('materials').insert(row)

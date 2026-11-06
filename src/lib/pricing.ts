@@ -85,7 +85,7 @@ export interface MaterialRef {
   /** 'purchases' = measured from the purchase log, 'estimate' = typed by
    *  hand and never checked against a receipt. Screens that show a margin
    *  should say which one they are standing on. */
-  costBasis?: 'purchases' | 'estimate'
+  costBasis?: 'purchases' | 'confirmed' | 'estimate'
   /** pins this material away from the shop-wide multiplier when set */
   sellOverride: number | null
   swatch: string
@@ -249,6 +249,9 @@ export interface PricedQuote {
 export interface MissingCost {
   key: 'electricity' | 'overhead' | 'failure' | 'material'
   label: string
+  /** For 'material': the spools still on a typed-at-setup price, so the
+   *  screen can offer "this price is right" for each. */
+  materials?: { id: string; name: string; costPerUnit: number; unit: 'g' | 'ml' }[]
   /** Names the screen and field, in the shop's own words. */
   fix: string
 }
@@ -637,14 +640,16 @@ export function priceQuote(
     ...new Map(
       resolved
         .filter((b) => b.material && b.material.costBasis === 'estimate' && b.cost > 0)
-        .map((b) => [b.material!.id, b.material!.name]),
+        .map((b) => [b.material!.id, b.material!]),
     ).values(),
   ]
   if (guessed.length) {
+    const names = guessed.map((m) => m.name).join(' and ')
     missingCosts.push({
       key: 'material',
       label: 'What the filament really cost',
-      fix: `Log a spool purchase for ${guessed.join(' and ')} under Shop settings → Materials — ${guessed.length === 1 ? 'this is' : 'these are'} still the figure typed at setup.`,
+      fix: `${names} ${guessed.length === 1 ? 'is' : 'are'} still on the price from setup. Confirm it if it is right, or log a spool purchase under Shop settings → Materials.`,
+      materials: guessed.map((m) => ({ id: m.id, name: m.name, costPerUnit: m.costPerUnit, unit: m.unit })),
     })
   }
 

@@ -59,6 +59,7 @@ import {
   type ClientRow,
   type PrinterRow,
   type ShopContext,
+  confirmMaterialCost,
 } from '../lib/data'
 import { addDaysISO } from '../lib/dates'
 import { seriesPath } from '../lib/series'
@@ -143,7 +144,7 @@ const PICK: React.CSSProperties = {
   font: 'inherit',
 }
 
-export default function Intake({ ctx }: { ctx: ShopContext }) {
+export default function Intake({ ctx, onCtxChanged }: { ctx: ShopContext; onCtxChanged?: () => void | Promise<void> }) {
   const navigate = useNavigate()
   const rates = useMemo(() => toRateSet(ctx.rateCard, ctx.shop), [ctx.rateCard, ctx.shop])
   const { money, money0 } = useMemo(
@@ -1612,7 +1613,15 @@ export default function Intake({ ctx }: { ctx: ShopContext }) {
           )}
 
           {/* Owner-only. Never shown to a client, never printed. */}
-          <CostPanel q={q} money={money} qty={totalCopies} />
+          <CostPanel
+            q={q}
+            money={money}
+            qty={totalCopies}
+            onConfirmCost={async (materialId) => {
+              await confirmMaterialCost(ctx.shop.id, materialId)
+              await onCtxChanged?.()
+            }}
+          />
 
           <div className="pane" style={{ margin: 0 }}>
             <h3>Rates used</h3>
@@ -1698,11 +1707,16 @@ function CostPanel({
   q,
   money,
   qty,
+  onConfirmCost,
 }: {
   q: PricedQuote
   money: (n: number) => string
   qty: number
+  /** "This price is right" for a spool still on its setup price. */
+  onConfirmCost?: (materialId: string) => Promise<void>
 }) {
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const [confirmErr, setConfirmErr] = useState<string | null>(null)
   const rows: [string, string, string?][] = [
     ['Material, at what you paid', money(q.materialCost)],
     ...(q.electricityCost > 0
@@ -1824,6 +1838,30 @@ function CostPanel({
               {q.missingCosts.map((m) => (
                 <li key={m.key}>
                   <b>{m.label}</b> — {m.fix}
+                  {m.materials && onConfirmCost && (
+                    <span className="btnrow" style={{ margin: '6px 0 0', flexWrap: 'wrap' }}>
+                      {m.materials.map((mat) => (
+                        <button
+                          key={mat.id}
+                          type="button"
+                          className="btn sm"
+                          disabled={confirming !== null}
+                          onClick={() => {
+                            setConfirming(mat.id)
+                            setConfirmErr(null)
+                            onConfirmCost(mat.id)
+                              .catch((e) => setConfirmErr(e instanceof Error ? e.message : String(e)))
+                              .finally(() => setConfirming(null))
+                          }}
+                        >
+                          {confirming === mat.id
+                            ? 'Saving…'
+                            : `${money(mat.costPerUnit * 1000)}/${mat.unit === 'ml' ? 'L' : 'kg'} is right for ${mat.name}`}
+                        </button>
+                      ))}
+                    </span>
+                  )}
+                  {m.key === 'material' && confirmErr && <div className="err">{confirmErr}</div>}
                 </li>
               ))}
             </ul>
