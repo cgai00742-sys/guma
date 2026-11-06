@@ -630,11 +630,21 @@ export function priceQuote(
       fix: 'Set a failure allowance under Shop settings → Cost of doing business.',
     })
   }
-  if (material && material.costBasis === 'estimate' && materialCost > 0) {
+  // The spools this quote actually prints on -- each build line's own, not
+  // the single-machine picker's leftover default (CG, 5 Nov: a Wood PLA
+  // quote kept warning about PETG, the first material on the list).
+  const guessed = [
+    ...new Map(
+      resolved
+        .filter((b) => b.material && b.material.costBasis === 'estimate' && b.cost > 0)
+        .map((b) => [b.material!.id, b.material!.name]),
+    ).values(),
+  ]
+  if (guessed.length) {
     missingCosts.push({
       key: 'material',
       label: 'What the filament really cost',
-      fix: `Log a spool purchase for ${material.name} under Shop settings → Materials — this is still the figure typed at setup.`,
+      fix: `Log a spool purchase for ${guessed.join(' and ')} under Shop settings → Materials — ${guessed.length === 1 ? 'this is' : 'these are'} still the figure typed at setup.`,
     })
   }
 

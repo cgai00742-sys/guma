@@ -586,3 +586,26 @@ describe('a quote priced from build lines reprints at its own machines', () => {
     expect(live.total).toBeGreaterThan(0)
   })
 })
+
+describe('the filament warning names the spool the quote prints on (CG, 5 Nov)', () => {
+  const measured = (m: MaterialRef): MaterialRef => ({ ...m, costBasis: 'purchases' })
+  const guessed = (m: MaterialRef): MaterialRef => ({ ...m, costBasis: 'estimate' })
+  const only = (materialId: string): QuoteInputs => ({
+    ...TWO_MACHINES,
+    builds: [{ key: 'b', label: 'Bracket', printerId: 'xl', materialId, qty: 1, unitsPerPart: 100, printHrsPerPart: 1 }],
+  })
+  const warning = (q: ReturnType<typeof priceQuote>) => q.missingCosts.find((m) => m.key === 'material')
+
+  it('does not warn about the picker default when the lines print on a measured spool', () => {
+    const fleet = { materials: [measured(PACF), guessed(PETG)], printers: [XL, H2D] }
+    // PETG passed as the leftover single-machine material, as Intake does.
+    expect(warning(priceQuote(only('pacf'), RATES, guessed(PETG), XL, fleet))).toBeUndefined()
+  })
+
+  it('names the line material that is still a guess', () => {
+    const fleet = { materials: [guessed(PACF), measured(PETG)], printers: [XL, H2D] }
+    const w = warning(priceQuote(only('pacf'), RATES, measured(PETG), XL, fleet))
+    expect(w?.fix).toContain(PACF.name)
+    expect(w?.fix).not.toContain(PETG.name)
+  })
+})
