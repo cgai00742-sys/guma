@@ -836,7 +836,7 @@ function ClientShelf({
         <div className="hint">Loading…</div>
       ) : rows.length === 0 ? (
         <div className="hint" style={{ marginTop: 0 }}>
-          Nothing from the Shelf yet. Name them when you record a sale, a donation or a reservation and it shows here.
+          Nothing from the Shelf yet. Name them under Donate, Reserve, or Sold on the Shelf and it shows here.
         </div>
       ) : (
         <div className="guide">

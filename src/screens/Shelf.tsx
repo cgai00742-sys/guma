@@ -673,7 +673,7 @@ function Batches({
                 style={{ marginLeft: 'auto' }}
                 onClick={() => onSell(b.id, Number(b.units_left))}
               >
-                {Number(b.units_left) < 1 ? '✓ All sold' : 'Record a sale'}
+                {Number(b.units_left) < 1 ? (Number(b.units_reserved ?? 0) > 0 ? 'All spoken for' : '✓ All sold') : 'Donate, Reserve, or Sold'}
               </button>
               {mine.length === 0 &&
                 (removing === b.id ? (
