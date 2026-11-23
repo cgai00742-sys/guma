@@ -463,3 +463,21 @@ describe('Scheduled reads the page, not the existence of a date (CG, 8 Oct)', ()
     expect(slot({ neededBy: null }).checked).toBe(false)
   })
 })
+
+describe('found walking a project through (23 Nov)', () => {
+  const item = (phase: string, key: string, f: ProjectFacts) =>
+    gateStatus(phase as never, {}, f).items.find((i) => i.key === key)!
+
+  it('a draft with no price does not clear the deposit by itself', () => {
+    const f = facts({ quoteTotal: null, depositDue: 0, depositOwed: 0 })
+    expect(item('approval', 'deposit', f).checked).toBe(false)
+    expect(item('approval', 'deposit', facts({ quoteTotal: 80, depositDue: 0, depositOwed: 0 })).checked).toBe(true)
+  })
+
+  it('a build where nothing failed asks for no note about failures', () => {
+    const clean = facts({ phase: 'building', parts: 2, actualRuns: 1, reprintsEver: 0, partsReprint: 0 })
+    expect(item('building', 'failures', clean)).toMatchObject({ checked: true, automatic: true })
+    const failed = facts({ phase: 'building', parts: 2, actualRuns: 2, reprintsEver: 1, partsReprint: 0 })
+    expect(item('building', 'failures', failed)).toMatchObject({ checked: false, automatic: false })
+  })
+})

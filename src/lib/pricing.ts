@@ -349,6 +349,9 @@ export function priceQuote(
   fleet?: Fleet,
 ): PricedQuote {
   const { money, money0 } = makeMoney(rates.currency, rates.locale)
+  // A rate shown as typed: $45/h, but $0.50/h and $22.50/kg -- money0 alone
+  // printed a $0.50 wear rate as $1/h on the quote the client reads.
+  const rateStr = (n: number) => (Math.abs(n - Math.round(n)) < 0.005 ? money0(n) : money(n))
   const { trimNum, trimPct } = makeTrim(rates.locale)
   const qty = Math.max(1, input.quantity || 1)
   const needsDesign = input.assetOrigin !== 'ready'
@@ -426,7 +429,7 @@ export function priceQuote(
       basis:
         input.designBilling === 'flat'
           ? `agreed up front · ${input.revisions} revision rounds`
-          : `${fmtHours(input.designQty || 0)} × ${money0(rates.designHourly)}/h · ${input.revisions} revisions`,
+          : `${fmtHours(input.designQty || 0)} × ${rateStr(rates.designHourly)}/h · ${input.revisions} revisions`,
       amount: designAmt,
     })
   }
@@ -462,7 +465,7 @@ export function priceQuote(
       const m = group[0].material
       const unitSell = group[0].unitSell
       const units = group.reduce((t, b) => t + b.units, 0)
-      const perUnitLabel = m?.unit === 'g' ? `${money0(unitSell * 1000)}/kg` : `${money(unitSell)}/mL`
+      const perUnitLabel = m?.unit === 'g' ? `${rateStr(unitSell * 1000)}/kg` : `${money(unitSell)}/mL`
       lines.push({
         key: one ? 'material' : `material:${m?.id ?? 'none'}`,
         label: `Material — ${m ? m.name : 'not set'}`,
@@ -479,7 +482,7 @@ export function priceQuote(
       lines.push({
         key: onePrinter ? 'machine' : `machine:${pr?.id ?? 'none'}`,
         label: onePrinter ? 'Machine time' : `Machine time — ${pr ? pr.name : 'not set'}`,
-        basis: `${fmtHours(hours)} on ${pr ? pr.name : 'machine'} at ${money0(pr?.ratePerHour ?? 0)}/h`,
+        basis: `${fmtHours(hours)} on ${pr ? pr.name : 'machine'} at ${rateStr(pr?.ratePerHour ?? 0)}/h`,
         amount: group.reduce((t, b) => t + b.machine, 0),
       })
     }
@@ -488,14 +491,14 @@ export function priceQuote(
       lines.push({
         key: onePrinter ? 'wear' : `wear:${pr?.id ?? 'none'}`,
         label: onePrinter ? 'Machine wear' : `Machine wear — ${pr ? pr.name : 'not set'}`,
-        basis: `${money0(pr?.wearPerHour ?? 0)}/h toward nozzles, belts, plates`,
+        basis: `${rateStr(pr?.wearPerHour ?? 0)}/h toward nozzles, belts, plates`,
         amount: group.reduce((t, b) => t + b.wear, 0),
       })
     }
     lines.push({
       key: 'finishing',
       label: 'Finishing',
-      basis: `${fmtHours(input.finishingHrs || 0)} × ${money0(rates.finishingHourly)}/h`,
+      basis: `${fmtHours(input.finishingHrs || 0)} × ${rateStr(rates.finishingHourly)}/h`,
       amount: finishingAmt,
     })
   }

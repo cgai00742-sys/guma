@@ -400,6 +400,19 @@ export default function Intake({ ctx, onCtxChanged }: { ctx: ShopContext; onCtxC
     [input, builds.length, totalCopies, rates, material, printer, fleet],
   )
 
+  /** A rate as typed: $5 / h, but $0.50 / h -- not rounded to $1. */
+  const rate = (n: number) => (Math.abs(n - Math.round(n)) < 0.005 ? money0(n) : money(n))
+  const usedPrinters = builds.length
+    ? pricingPrinters.filter((pr) => builds.some((b) => b.printerId === pr.id))
+    : printer
+      ? [printer]
+      : []
+  const usedMaterials = builds.length
+    ? ctx.materials.filter((m) => builds.some((b) => b.materialId === m.id))
+    : material
+      ? [material]
+      : []
+
   const unitWord = material?.unit === 'ml' ? 'Millilitres' : 'Grams'
   // In-house work needs a title and nothing else. There is no client to
   // name and no quote to price, and every extra requirement here is a
@@ -1627,24 +1640,27 @@ export default function Intake({ ctx, onCtxChanged }: { ctx: ShopContext; onCtxC
             <h3>Rates used</h3>
             <div className="kv" style={{ gridTemplateColumns: '1fr auto', gap: '5px 12px' }}>
               {[
-                ['Design and modeling', `${money0(rates.designHourly)} / h`],
-                ['Finishing labor', `${money0(rates.finishingHourly)} / h`],
-                ...(printer
-                  ? ([
-                      [`Machine time · ${printer.name}`, `${money0(printer.ratePerHour)} / h`],
-                      ['Machine wear', `${money0(printer.wearPerHour)} / h`],
-                    ] as [string, string][])
-                  : []),
-                ...(material
-                  ? ([
-                      [
-                        material.name,
-                        material.unit === 'g'
-                          ? `${money0((material.sellOverride ?? material.costPerUnit * rates.materialMarkup) * 1000)} / kg sell · ${money0(material.costPerUnit * 1000)} cost`
-                          : `${money(material.sellOverride ?? material.costPerUnit * rates.materialMarkup)} / mL sell`,
-                      ],
-                    ] as [string, string][])
-                  : []),
+                ['Design and modeling', `${rate(rates.designHourly)} / h`],
+                ['Finishing labor', `${rate(rates.finishingHourly)} / h`],
+                // The machines and spools the quote actually prints on: each
+                // build line's own, not the single-machine picker's default
+                // (CG, 5 Nov: a Wood PLA quote listed only PETG here).
+                ...usedPrinters.flatMap(
+                  (pr) =>
+                    [
+                      [`Machine time · ${pr.name}`, `${rate(pr.ratePerHour)} / h`],
+                      [usedPrinters.length > 1 ? `Machine wear · ${pr.name}` : 'Machine wear', `${rate(pr.wearPerHour)} / h`],
+                    ] as [string, string][],
+                ),
+                ...usedMaterials.map(
+                  (m) =>
+                    [
+                      m.name,
+                      m.unit === 'g'
+                        ? `${rate((m.sellOverride ?? m.costPerUnit * rates.materialMarkup) * 1000)} / kg sell · ${rate(m.costPerUnit * 1000)} cost`
+                        : `${money(m.sellOverride ?? m.costPerUnit * rates.materialMarkup)} / mL sell`,
+                    ] as [string, string],
+                ),
                 ['Material markup', `cost × ${rates.materialMarkup}`],
                 [
                   'Deposit',

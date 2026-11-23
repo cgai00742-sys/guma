@@ -519,7 +519,7 @@ function ClientProjects({
   return (
     <div className="stack" style={{ gap: 6 }}>
       {ordered.map((j) => {
-        const flags = flagsFor(j.facts)
+        const flags = flagsFor(j.facts, new Date(), money)
         return (
           <button
             key={j.jobId}

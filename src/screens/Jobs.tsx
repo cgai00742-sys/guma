@@ -150,7 +150,7 @@ export default function Jobs({ ctx, viewSwitch }: { ctx: ShopContext; viewSwitch
     () =>
       (jobs ?? []).map((j) => {
         const gate = gateStatus(j.phase, j.gateAnswers, j.facts)
-        return { ...j, flags: flagsFor(j.facts), gateDone: gate.done, gateTotal: gate.total }
+        return { ...j, flags: flagsFor(j.facts, new Date(), money), gateDone: gate.done, gateTotal: gate.total }
       }),
     [jobs],
   )

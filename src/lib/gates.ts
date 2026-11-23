@@ -117,7 +117,10 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       key: 'deposit',
       label: 'Deposit collected, or waived on purpose',
       why: 'The deposit is what makes a cancellation survivable. Waiving it is a decision, not an oversight.',
-      auto: (f) => f.depositDue <= 0 || f.depositOwed <= 0,
+      // Only against a priced quote. A draft has no frozen total, so its
+      // deposit read as zero and this ticked itself before anyone had
+      // asked for a deposit at all.
+      auto: (f) => f.quoteTotal != null && (f.depositDue <= 0 || f.depositOwed <= 0),
       autoFrom: 'from payments received',
       fix: 'Record the deposit above, or set the deposit to zero in Shop settings if you are waiving it.',
     },
@@ -187,6 +190,13 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       label: 'Failures reprinted or written off',
       why: 'Write-offs are real cost. Recording them is how next quarter is priced better than this one.',
       needsNote: true,
+      // Nothing failed: nothing to reprint or write off, so nothing to say
+      // (found walking a clean build through, 23 Nov -- it asked for a note
+      // about failures that never happened). Any failure, ever, and it is a
+      // person's call again, with the note.
+      auto: (f) => (f.parts > 0 && f.actualRuns > 0 && f.reprintsEver === 0 && f.partsReprint === 0 ? true : null),
+      autoFrom: 'nothing failed',
+      fix: 'Reprint the failed copies from the build sheet, or tick this with a note on why they were written off.',
     },
     {
       key: 'spend',
@@ -521,16 +531,17 @@ export const STALLED_DAYS = 14
 
 
 
-function money(n: number): string {
-  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
+/** Without the shop's formatter a flag still reads as money, not a bare
+ *  "149.68" (found walking a project through, 23 Nov). */
+const plainMoney = (n: number): string =>
+  n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 /**
  * Everything wrong with one project, worst first. Recomputed on every
  * render — nothing here is stored, so a flag disappears the moment the
  * thing that caused it is fixed.
  */
-export function flagsFor(f: ProjectFacts, now: Date = new Date()): Flag[] {
+export function flagsFor(f: ProjectFacts, now: Date = new Date(), money: (n: number) => string = plainMoney): Flag[] {
   const out: Flag[] = []
   const delivered = f.phase === 'delivered'
   /**

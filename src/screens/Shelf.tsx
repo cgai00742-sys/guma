@@ -208,6 +208,10 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
   }, [products])
 
   const total = useMemo(() => summarize(results), [results])
+  /** Donated and held, said apart from sold (walking it through, 23 Nov:
+   *  "3 sold" counted a donation). */
+  const given = results.reduce((t, r) => t + r.unitsDonated, 0)
+  const held = results.reduce((t, r) => t + r.unitsReserved, 0)
 
   async function addProduct(name: string, units: number, unitCost: number, note: string) {
     setBusy(true)
@@ -346,7 +350,10 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
           <h2>Shelf</h2>
           <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--txt-3)', marginTop: 3 }}>
             {products
-              ? `${total.unitsMade} made · ${total.unitsSold} sold · ${money(total.grossProfit)} kept · ${money(total.stockAtCost)} still on the shelf`
+              ? `${total.unitsMade} made · ${total.unitsSold - given} sold` +
+                (given ? ` · ${given} given` : '') +
+                (held ? ` · ${held} held` : '') +
+                ` · ${money(total.grossProfit)} kept · ${money(total.stockAtCost)} still on the shelf`
               : 'Loading…'}
           </div>
         </div>
@@ -710,6 +717,7 @@ function Batches({
                       <SaleLine
                         key={s.id}
                         sale={s}
+                        unitCost={Number(b.unit_cost)}
                         money={money}
                         busy={busy}
                         people={people}
@@ -1325,6 +1333,7 @@ function Channels({
  */
 function SaleLine({
   sale: s,
+  unitCost = 0,
   money,
   busy,
   people,
@@ -1334,6 +1343,8 @@ function SaleLine({
   onPerson,
 }: {
   sale: SaleRow
+  /** What one cost to make -- what a donation gave away. */
+  unitCost?: number
   money: (n: number) => string
   busy: boolean
   people: KnownPerson[]
@@ -1394,6 +1405,10 @@ function SaleLine({
               Given
             </button>
           </>
+        ) : kind === 'donation' ? (
+          <span title="Nothing came in; this is what it cost you to make">
+            gave {money(Number(s.units) * unitCost + Number(s.shipping_cost ?? 0))} at cost
+          </span>
         ) : (
           money(net)
         )}

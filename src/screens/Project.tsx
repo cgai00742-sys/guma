@@ -340,7 +340,7 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
   // is fixed at the source -- this is the backstop, so that no other path
   // that creates in-house work can bring the bug back on screen.
   const isDraft = !facts.takenInAt && facts.kind !== 'inhouse'
-  const flags = flagsFor(facts)
+  const flags = flagsFor(facts, new Date(), money)
   const gate = gateStatus(shown, detail.gates[shown] ?? {}, facts)
   const liveGate =
     shown === detail.phase ? gate : gateStatus(detail.phase, detail.gates[detail.phase] ?? {}, facts)
@@ -521,7 +521,13 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
     if (!detail?.quote) return
     setBusy(true)
     try {
-      await setQuoteStatus(ctx.shop.id, detail.quote.id, ctx.profile.id, status)
+      // A draft marked sent or accepted from here never had its price frozen
+      // on: total and deposit stayed empty, so the deposit read "none
+      // required" and nothing was ever owed. Price it as sending would.
+      const freeze = pendingQuote?.id === detail.quote.id ? pendingQuote.freeze : null
+      if (detail.quote.status === 'draft' && freeze && (status === 'sent' || status === 'accepted'))
+        await freezeDraftQuote(ctx.shop.id, detail.quote.id, ctx.profile.id, freeze, status)
+      else await setQuoteStatus(ctx.shop.id, detail.quote.id, ctx.profile.id, status)
       await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -711,7 +717,20 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
                 />
               ) : (
                 <div className="grid3">
-                  <Stat label="Quoted" value={facts.quoteTotal == null ? '—' : money(facts.quoteTotal)} />
+                  {/* A quote saved on Intake rather than sent is a draft with
+                      no frozen total -- it read "—" here although the form had
+                      just priced it. Show that price, said to be a draft. */}
+                  <Stat
+                    label="Quoted"
+                    value={
+                      facts.quoteTotal != null
+                        ? money(facts.quoteTotal)
+                        : pendingQuote
+                          ? money(pendingQuote.total)
+                          : '—'
+                    }
+                    sub={facts.quoteTotal == null && pendingQuote ? 'draft — not sent to the client yet' : undefined}
+                  />
                   {mm !== 'price' && (
                     <Stat
                       label="Deposit owed"
@@ -784,11 +803,17 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
               <div className="hint" style={{ marginTop: 10 }}>
                 {mm === 'payments'
                   ? 'Owed is the price less everything paid. Record a payment below and it moves at once.'
-                  : 'Every figure here is derived from the payments below, not stored — record one and all three move at once.'}
+                  : mm === 'price'
+                    ? 'Revise the quote to change it, and Save as PDF when it is ready to go to the client.'
+                    : 'Every figure here is derived from the payments below, not stored — record one and all three move at once.'}
                 {detail.quote?.status === 'sent' || detail.quote?.status === 'accepted' ? (
                   <>
                     {' '}
-                    <Link to={`/quote/${detail.quote.id}/print`} className="linkbtn">
+                    <Link
+                      to={`/quote/${detail.quote.id}/print`}
+                      className="linkbtn"
+                      style={{ display: 'inline', width: 'auto', margin: 0 }}
+                    >
                       Open the quote document
                     </Link>
                     .
@@ -1955,13 +1980,14 @@ function Variance({ comparison, money }: { comparison: Comparison; money: (n: nu
                   className="r mono"
                   style={{
                     color:
-                      l.delta === null
+                      // Red only when it matters: a cent over on $2.60 is
+                      // rounding, not a cost overrun (seen walking a build
+                      // through, 23 Nov: "+$0.01 (+0%)" in red).
+                      l.delta === null || Math.abs(l.delta) < Math.max(0.05, Math.abs(l.quoted) * 0.02)
                         ? 'var(--txt-3)'
-                        : l.delta > 0.005
+                        : l.delta > 0
                           ? 'var(--red)'
-                          : l.delta < -0.005
-                            ? 'var(--ok)'
-                            : 'var(--txt-3)',
+                          : 'var(--ok)',
                   }}
                 >
                   {l.delta === null
@@ -8255,6 +8281,19 @@ function MachineAndMaterial({
           ))}
         </select>
       </div>
+      {/* The files already say which machine: one click instead of a hunt
+          through the list (found walking a project through, 23 Nov). */}
+      {!picked && plan.slicedFor && name(plan.slicedFor) && (
+        <button
+          type="button"
+          className="btn sm primary"
+          style={{ marginTop: 6 }}
+          disabled={busy}
+          onClick={() => onPick(plan.slicedFor!)}
+        >
+          Use {name(plan.slicedFor)} — the files were sliced for it
+        </button>
+      )}
       {picked && (
         <div className="hint" style={{ marginTop: 4 }} data-testid="machine-load">
           {alsoOn.length === 0

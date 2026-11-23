@@ -1978,7 +1978,9 @@ describe('data.local.ts against a real SQLite database', () => {
     expect(sent.checked).toBe(false)
     expect(sent.fix).toBeTruthy()
 
-    await local.setQuoteStatus(shopId, saved.quoteId, ctx.profile.id, 'sent')
+    // Marked sent the way the project page does it: a draft is priced and
+    // frozen as it goes out, so the deposit is judged against a real total.
+    await local.freezeDraftQuote(shopId, saved.quoteId, ctx.profile.id, { rates_snapshot: {} as never, total: 500, deposit_due: 0, valid_until: '2026-12-31' }, 'sent')
     ;({ g } = await gateNow())
     expect(g.items.find((i) => i.key === 'sent')!.checked).toBe(true)
     expect(g.items.find((i) => i.key === 'accepted')!.checked).toBe(false)
