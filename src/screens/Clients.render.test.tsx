@@ -46,6 +46,10 @@ vi.mock('../lib/data', async () => {
     createClient,
     deleteClient,
     updateClientRecord,
+    // From the Shelf (0046): nothing in these tests, so nothing to show.
+    listClientShelf: vi.fn(async () => []),
+    markCheckedIn: vi.fn(async () => undefined),
+    setMarketingOk: vi.fn(async () => undefined),
   }
 })
 

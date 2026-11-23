@@ -493,8 +493,10 @@ function summarize(
   // might sell for. Valuing unsold stock at its hoped-for price is how a
   // shop talks itself into thinking it has money it has not earned.
   const batches = shelf.flatMap((p) => p.batches)
-  const shelfUnits = batches.reduce((t, b) => t + b.units_left, 0)
-  const shelfValue = batches.reduce((t, b) => t + b.units_left * b.unit_cost, 0)
+  // Reserved pieces are still on the shelf, just spoken for (0046).
+  const held = (b: { units_left: number; units_reserved?: number }) => Number(b.units_left) + Number(b.units_reserved ?? 0)
+  const shelfUnits = batches.reduce((t, b) => t + held(b), 0)
+  const shelfValue = batches.reduce((t, b) => t + held(b) * b.unit_cost, 0)
 
   return {
     open: live.length,

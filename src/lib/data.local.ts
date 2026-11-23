@@ -58,6 +58,8 @@ import {
   type StockHoldInput,
 } from './data.types'
 import type { SeriesRow, SeriesInput } from './data.types'
+import type { ClientShelfRow, SettleInput } from './data.types'
+import { cleanPerson, findPerson, type PersonInput } from './people'
 import type { EquipmentInput, EquipmentRow, EquipmentUseInput, HardwareInput, HardwareRow, HardwareUseInput, HardwareUseRow, JobExtras } from './data.types'
 import { validateEquipment, validateHardware } from './data.types'
 import { osCurrency, osLocale } from './locale'
@@ -1950,6 +1952,10 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
       value: number | null
       owed: number | null
       last_activity: string | null
+      shelf_pieces: number
+      check_ins: number
+      marketing_ok: number
+      marketing_ok_on: string | null
     }[]
   >(
     `select c.id, c.name, c.kind, c.contact, c.email, c.phone,
@@ -1959,7 +1965,12 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
             coalesce(sum(m.balance_owed), 0) as owed,
             (select max(e.at) from job_events e
              join jobs j2 on j2.id = e.job_id
-             where j2.client_id = c.id) as last_activity
+             where j2.client_id = c.id) as last_activity,
+            (select coalesce(sum(s.units), 0) from sales s where s.client_id = c.id) as shelf_pieces,
+            (select count(*) from sales s where s.client_id = c.id and s.kind <> 'reserved'
+               and s.followed_up_on is null
+               and julianday(date('now')) - julianday(s.sold_on) between 7 and 90) as check_ins,
+            c.marketing_ok, c.marketing_ok_on
      from clients c
      left join jobs j on j.client_id = c.id
      -- The version that counts, as job_money and the project facts pick it:
@@ -1969,7 +1980,7 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
      -- The in-house row is a storage detail, not a client. It never appears
      -- in the list, the counts or the money. See 0012_in_house.sql.
      where c.shop_id = ? and c.system = 0
-     group by c.id, c.name, c.kind, c.contact, c.email, c.phone
+     group by c.id, c.name, c.kind, c.contact, c.email, c.phone, c.marketing_ok, c.marketing_ok_on
      order by c.name collate nocase`,
     [shopId],
   )
@@ -1985,6 +1996,10 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
     value: Number(r.value ?? 0),
     owed: Number(r.owed ?? 0),
     lastActivity: r.last_activity,
+    shelfPieces: Number(r.shelf_pieces ?? 0),
+    checkIns: Number(r.check_ins ?? 0),
+    marketingOk: Number(r.marketing_ok) === 1,
+    marketingOkOn: r.marketing_ok_on,
   }))
 }
 
@@ -3738,7 +3753,7 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
     >(
       `select s.batch_id as id, s.product_id, b.job_id, s.units_made, s.unit_cost,
               s.made_on, b.note, s.units_sold, s.units_left, s.revenue, s.fees,
-              s.cost_of_sold, s.shipping_charged, s.shipping_cost
+              s.cost_of_sold, s.shipping_charged, s.shipping_cost, s.units_reserved, s.units_donated
        from batch_stock s
        join batches b on b.id = s.batch_id
        where s.shop_id = ?
@@ -3827,8 +3842,9 @@ export async function saveBatch(shopId: string, next: BatchInput): Promise<strin
   if (next.id) {
     // Units made and the note can be corrected; the frozen cost and the job
     // behind it cannot, because those are what the figure means.
+    // Sold, donated and held all count: none of them can be un-made.
     const sold = await d.select<{ units_sold: number }[]>(
-      'select units_sold from batch_stock where batch_id = ?',
+      'select units_made - units_left as units_sold from batch_stock where batch_id = ?',
       [id],
     )
     if (sold[0] && next.unitsMade < Number(sold[0].units_sold)) {
@@ -3867,9 +3883,11 @@ export async function listSales(shopId: string, batchId?: string): Promise<SaleR
   const params: unknown[] = batchId ? [shopId, batchId] : [shopId]
   return d.select<SaleRow[]>(
     `select s.id, s.batch_id, s.channel_id, c.name as channel_name, s.units,
-            s.unit_price, s.fee_total, s.sold_on, s.note, s.shipping_charged, s.shipping_cost
+            s.unit_price, s.fee_total, s.sold_on, s.note, s.shipping_charged, s.shipping_cost,
+            s.kind, s.client_id, p.name as client_name, s.followed_up_on
      from sales s
      left join channels c on c.id = s.channel_id
+     left join clients p on p.id = s.client_id
      where s.shop_id = ? ${where}
      order by s.sold_on desc, s.created_at desc`,
     params,
@@ -3885,6 +3903,12 @@ export async function listSales(shopId: string, batchId?: string): Promise<SaleR
  */
 export async function recordSale(shopId: string, next: SaleInput): Promise<string> {
   if (!Number.isFinite(next.units) || next.units < 1) throw new Error('A sale is at least one unit.')
+  const kind = next.kind ?? 'sale'
+  if (kind === 'reserved' && !next.person?.name?.trim())
+    throw new Error('Who is it reserved for? A name is enough.')
+  // A donation brings nothing in and nobody takes a cut; what it cost to
+  // make still counts, as what was given.
+  if (kind === 'donation') next = { ...next, unitPrice: 0, channelId: null, shippingCharged: 0 }
   shipping(next.shippingCharged)
   shipping(next.shippingCost)
   if (!Number.isFinite(next.unitPrice) || next.unitPrice < 0) {
@@ -3910,7 +3934,7 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
       )
     : []
   const channel = channels[0]
-  const fee = channel
+  const fee = channel && kind === 'sale'
     ? feeFor(
         {
           id: channel.id,
@@ -3923,10 +3947,11 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
       )
     : 0
 
+  const clientId = next.person ? await resolvePerson(shopId, next.person) : null
   const id = next.id ?? uuid()
   await d.execute(
-    `insert into sales (id, shop_id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note, shipping_charged, shipping_cost)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `insert into sales (id, shop_id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note, shipping_charged, shipping_cost, kind, client_id)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       shopId,
@@ -3939,9 +3964,112 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
       next.note ?? null,
       round2(shipping(next.shippingCharged)),
       round2(shipping(next.shippingCost)),
+      kind,
+      clientId,
     ],
   )
   return id
+}
+
+/**
+ * The person on file for what was typed, made if there is none (CG, 22
+ * Nov: "easy to use, intuitive, and automatic"). Found by email, phone or
+ * name; a found person gains the email or phone they did not have yet.
+ */
+export async function resolvePerson(shopId: string, input: PersonInput): Promise<string> {
+  const p = cleanPerson(input)
+  const d = await db()
+  const people = await d.select<{ id: string; name: string; email: string | null; phone: string | null }[]>(
+    'select id, name, email, phone from clients where shop_id = ? and system = 0',
+    [shopId],
+  )
+  const hit = findPerson(people, p)
+  const today = new Date().toISOString().slice(0, 10)
+  if (hit) {
+    await d.execute(
+      `update clients set email = coalesce(nullif(email, ''), ?), phone = coalesce(nullif(phone, ''), ?),
+              marketing_ok = case when ? then 1 else marketing_ok end,
+              marketing_ok_on = case when ? and marketing_ok = 0 then ? else marketing_ok_on end
+        where id = ? and shop_id = ?`,
+      [p.email || null, p.phone || null, p.marketingOk ? 1 : 0, p.marketingOk ? 1 : 0, today, hit.id, shopId],
+    )
+    return hit.id
+  }
+  const id = uuid()
+  await d.execute(
+    `insert into clients (id, shop_id, name, kind, email, phone, source, marketing_ok, marketing_ok_on)
+     values (?, ?, ?, ?, ?, ?, 'Shelf', ?, ?)`,
+    [id, shopId, p.name, p.kind, p.email || null, p.phone || null, p.marketingOk ? 1 : 0, p.marketingOk ? today : null],
+  )
+  return id
+}
+
+/** A reservation, paid for or given: it leaves the shelf now. */
+export async function settleReservation(shopId: string, saleId: string, how: SettleInput): Promise<void> {
+  if (!Number.isFinite(how.unitPrice) || how.unitPrice < 0) throw new Error('A price cannot be negative.')
+  const d = await db()
+  const [s] = await d.select<{ kind: string; units: number }[]>('select kind, units from sales where id = ? and shop_id = ?', [saleId, shopId])
+  if (!s) throw new Error('That reservation no longer exists.')
+  if (s.kind !== 'reserved') throw new Error('That one has already left the shelf.')
+  const price = how.as === 'donation' ? 0 : how.unitPrice
+  const channelId = how.as === 'donation' ? null : how.channelId
+  const [ch] = channelId
+    ? await d.select<ChannelRow[]>('select id, name, fee_pct, fee_flat, archived from channels where id = ? and shop_id = ?', [channelId, shopId])
+    : []
+  const fee = ch ? feeFor({ id: ch.id, name: ch.name, feePct: Number(ch.fee_pct), feeFlat: Number(ch.fee_flat) }, Number(s.units), price) : 0
+  await d.execute(
+    `update sales set kind = ?, unit_price = ?, channel_id = ?, fee_total = ?, sold_on = ?
+      where id = ? and shop_id = ?`,
+    [how.as, price, channelId, round2(fee), how.soldOn, saleId, shopId],
+  )
+}
+
+/** Name who it went to after the fact, or take the name off. */
+export async function setSalePerson(shopId: string, saleId: string, person: PersonInput | null): Promise<void> {
+  const d = await db()
+  const [s] = await d.select<{ kind: string }[]>('select kind from sales where id = ? and shop_id = ?', [saleId, shopId])
+  if (!s) throw new Error('That sale no longer exists.')
+  if (!person && s.kind === 'reserved') throw new Error('A reservation is for someone — release it instead.')
+  const clientId = person ? await resolvePerson(shopId, person) : null
+  await d.execute('update sales set client_id = ? where id = ? and shop_id = ?', [clientId, saleId, shopId])
+}
+
+/** "How are you enjoying it" was asked -- or, with null, not yet. */
+export async function markCheckedIn(shopId: string, saleId: string, on: string | null): Promise<void> {
+  const d = await db()
+  await d.execute('update sales set followed_up_on = ? where id = ? and shop_id = ?', [on, saleId, shopId])
+}
+
+/** Everything off the Shelf that went to one person, newest first. */
+export async function listClientShelf(shopId: string, clientId: string): Promise<ClientShelfRow[]> {
+  const d = await db()
+  const rows = await d.select<{ id: string; product: string; kind: string; units: number; unit_price: number; sold_on: string; followed_up_on: string | null }[]>(
+    `select s.id, p.name as product, s.kind, s.units, s.unit_price, s.sold_on, s.followed_up_on
+       from sales s join batches b on b.id = s.batch_id join products p on p.id = b.product_id
+      where s.shop_id = ? and s.client_id = ?
+      order by s.sold_on desc, s.created_at desc`,
+    [shopId, clientId],
+  )
+  return rows.map((r) => ({
+    saleId: r.id,
+    product: r.product,
+    kind: (r.kind as ClientShelfRow['kind']) ?? 'sale',
+    units: Number(r.units),
+    unitPrice: Number(r.unit_price),
+    soldOn: r.sold_on,
+    followedUpOn: r.followed_up_on,
+  }))
+}
+
+/** Their yes, or their no, to hearing from the shop -- dated either way. */
+export async function setMarketingOk(shopId: string, clientId: string, ok: boolean): Promise<void> {
+  const d = await db()
+  await d.execute('update clients set marketing_ok = ?, marketing_ok_on = ? where id = ? and shop_id = ?', [
+    ok ? 1 : 0,
+    new Date().toISOString().slice(0, 10),
+    clientId,
+    shopId,
+  ])
 }
 
 /** A sale recorded wrongly is a typo, not history -- nothing was sent to

@@ -9,6 +9,8 @@
  * see supabase.ts) never happens in the desktop build once that build stops
  * carrying Supabase secrets.
  */
+import type { ClientShelfRow, SettleInput } from './data.types'
+import { checkInDue, cleanPerson, findPerson, type PersonInput } from './people'
 import type { FrozenPrice } from './draftQuote'
 import { describePartEdit, describeProjectEdits, type ProjectBefore } from './edits'
 import { supabase } from './supabase'
@@ -1545,8 +1547,9 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
   const { data, error } = await supabase
     .from('clients')
     .select(
-      `id, name, kind, contact, email, phone,
-       jobs ( id, phase, quotes ( version, status, total ), job_money ( balance_owed ), job_events ( at ) )`,
+      `id, name, kind, contact, email, phone, marketing_ok, marketing_ok_on,
+       jobs ( id, phase, quotes ( version, status, total ), job_money ( balance_owed ), job_events ( at ) ),
+       sales ( units, kind, sold_on, followed_up_on )`,
     )
     .eq('shop_id', shopId)
     // The in-house row is a storage detail, not a client. See 0017_in_house.sql.
@@ -1576,6 +1579,12 @@ export async function listClients(shopId: string): Promise<ClientRow[]> {
       value,
       owed,
       lastActivity: last,
+      shelfPieces: ((c.sales ?? []) as any[]).reduce((t, s) => t + Number(s.units), 0),
+      checkIns: ((c.sales ?? []) as any[]).filter((s) =>
+        checkInDue({ kind: s.kind ?? 'sale', client_id: c.id, sold_on: String(s.sold_on), followed_up_on: s.followed_up_on ?? null }, new Date().toISOString().slice(0, 10)),
+      ).length,
+      marketingOk: c.marketing_ok === true,
+      marketingOkOn: c.marketing_ok_on ?? null,
     }
   })
 }
@@ -3122,6 +3131,8 @@ export async function listShelf(shopId: string): Promise<ProductRow[]> {
       cost_of_sold: Number(b.cost_of_sold),
       shipping_charged: Number((b as { shipping_charged?: number }).shipping_charged ?? 0),
       shipping_cost: Number((b as { shipping_cost?: number }).shipping_cost ?? 0),
+      units_reserved: Number((b as { units_reserved?: number }).units_reserved ?? 0),
+      units_donated: Number((b as { units_donated?: number }).units_donated ?? 0),
       estimated: (parent?.job_id ?? null) === null,
     }
   })
@@ -3172,14 +3183,14 @@ export async function saveBatch(shopId: string, next: BatchInput): Promise<strin
   if (next.id) {
     const { data: stock, error: stockErr } = await supabase
       .from('batch_stock')
-      .select('units_sold')
+      .select('units_made, units_left')
       .eq('batch_id', next.id)
       .single()
     if (stockErr) throw stockErr
-    if (next.unitsMade < Number(stock.units_sold)) {
-      throw new Error(
-        `${stock.units_sold} of these have already sold, so the batch cannot be fewer than that.`,
-      )
+    // Sold, donated and held all count, as in data.local.ts.
+    const out = Number(stock.units_made) - Number(stock.units_left)
+    if (next.unitsMade < out) {
+      throw new Error(`${out} of these have already sold, so the batch cannot be fewer than that.`)
     }
     const { error } = await supabase
       .from('batches')
@@ -3210,7 +3221,7 @@ export async function saveBatch(shopId: string, next: BatchInput): Promise<strin
 export async function listSales(shopId: string, batchId?: string): Promise<SaleRow[]> {
   let query = supabase
     .from('sales')
-    .select('id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note, shipping_charged, shipping_cost, channels ( name )')
+    .select('id, batch_id, channel_id, units, unit_price, fee_total, sold_on, note, shipping_charged, shipping_cost, kind, client_id, followed_up_on, channels ( name ), clients ( name )')
     .eq('shop_id', shopId)
   if (batchId) query = query.eq('batch_id', batchId)
   const { data, error } = await query
@@ -3236,11 +3247,24 @@ export async function listSales(shopId: string, batchId?: string): Promise<SaleR
     note: s.note ?? null,
     shipping_charged: Number((s as { shipping_charged?: number }).shipping_charged ?? 0),
     shipping_cost: Number((s as { shipping_cost?: number }).shipping_cost ?? 0),
+    kind: ((s as { kind?: string }).kind ?? 'sale') as SaleRow['kind'],
+    client_id: (s as { client_id?: string | null }).client_id ?? null,
+    client_name: (() => {
+      const c = (s as unknown as { clients?: { name: string } | { name: string }[] | null }).clients
+      if (!c) return null
+      return Array.isArray(c) ? (c[0]?.name ?? null) : c.name
+    })(),
+    followed_up_on: (s as { followed_up_on?: string | null }).followed_up_on ?? null,
   }))
 }
 
 export async function recordSale(shopId: string, next: SaleInput): Promise<string> {
   if (!Number.isFinite(next.units) || next.units < 1) throw new Error('A sale is at least one unit.')
+  // See data.local.ts.
+  const kind = next.kind ?? 'sale'
+  if (kind === 'reserved' && !next.person?.name?.trim())
+    throw new Error('Who is it reserved for? A name is enough.')
+  if (kind === 'donation') next = { ...next, unitPrice: 0, channelId: null, shippingCharged: 0 }
   for (const v of [next.shippingCharged, next.shippingCost])
     if (v != null && (!Number.isFinite(Number(v)) || Number(v) < 0)) throw new Error('Shipping cannot be negative.')
   if (!Number.isFinite(next.unitPrice) || next.unitPrice < 0) {
@@ -3262,7 +3286,7 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
   }
 
   let fee = 0
-  if (next.channelId) {
+  if (next.channelId && kind === 'sale') {
     const { data: channel, error: chErr } = await supabase
       .from('channels')
       .select('id, name, fee_pct, fee_flat')
@@ -3297,11 +3321,127 @@ export async function recordSale(shopId: string, next: SaleInput): Promise<strin
       note: next.note ?? null,
       shipping_charged: round2(Math.max(0, Number(next.shippingCharged ?? 0))),
       shipping_cost: round2(Math.max(0, Number(next.shippingCost ?? 0))),
+      kind,
+      client_id: next.person ? await resolvePerson(shopId, next.person) : null,
     })
     .select('id')
     .single()
   if (error) throw error
   return String(data.id)
+}
+
+/** See data.local.ts. */
+export async function resolvePerson(shopId: string, input: PersonInput): Promise<string> {
+  const p = cleanPerson(input)
+  const { data: people, error } = await supabase
+    .from('clients')
+    .select('id, name, email, phone, marketing_ok')
+    .eq('shop_id', shopId)
+    .eq('system', false)
+  if (error) throw error
+  const hit = findPerson((people ?? []) as { id: string; name: string; email: string | null; phone: string | null; marketing_ok: boolean }[], p)
+  const today = new Date().toISOString().slice(0, 10)
+  if (hit) {
+    const patch: Record<string, unknown> = {}
+    if (!hit.email && p.email) patch.email = p.email
+    if (!hit.phone && p.phone) patch.phone = p.phone
+    if (p.marketingOk && !hit.marketing_ok) Object.assign(patch, { marketing_ok: true, marketing_ok_on: today })
+    if (Object.keys(patch).length) {
+      const { error: uErr } = await supabase.from('clients').update(patch).eq('id', hit.id).eq('shop_id', shopId)
+      if (uErr) throw uErr
+    }
+    return hit.id
+  }
+  const { data, error: iErr } = await supabase
+    .from('clients')
+    .insert({
+      shop_id: shopId,
+      name: p.name,
+      kind: p.kind,
+      email: p.email || null,
+      phone: p.phone || null,
+      source: 'Shelf',
+      marketing_ok: p.marketingOk,
+      marketing_ok_on: p.marketingOk ? today : null,
+    })
+    .select('id')
+    .single()
+  if (iErr) throw iErr
+  return String(data.id)
+}
+
+/** See data.local.ts. */
+export async function settleReservation(shopId: string, saleId: string, how: SettleInput): Promise<void> {
+  if (!Number.isFinite(how.unitPrice) || how.unitPrice < 0) throw new Error('A price cannot be negative.')
+  const { data: s, error } = await supabase.from('sales').select('kind, units').eq('id', saleId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  if (!s) throw new Error('That reservation no longer exists.')
+  if (s.kind !== 'reserved') throw new Error('That one has already left the shelf.')
+  const price = how.as === 'donation' ? 0 : how.unitPrice
+  const channelId = how.as === 'donation' ? null : how.channelId
+  let fee = 0
+  if (channelId) {
+    const { data: ch } = await supabase.from('channels').select('id, name, fee_pct, fee_flat').eq('id', channelId).eq('shop_id', shopId).maybeSingle()
+    if (ch) fee = feeFor({ id: String(ch.id), name: String(ch.name), feePct: Number(ch.fee_pct), feeFlat: Number(ch.fee_flat) }, Number(s.units), price)
+  }
+  const { error: uErr } = await supabase
+    .from('sales')
+    .update({ kind: how.as, unit_price: price, channel_id: channelId, fee_total: round2(fee), sold_on: how.soldOn })
+    .eq('id', saleId)
+    .eq('shop_id', shopId)
+  if (uErr) throw uErr
+}
+
+/** See data.local.ts. */
+export async function setSalePerson(shopId: string, saleId: string, person: PersonInput | null): Promise<void> {
+  const { data: s, error } = await supabase.from('sales').select('kind').eq('id', saleId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  if (!s) throw new Error('That sale no longer exists.')
+  if (!person && s.kind === 'reserved') throw new Error('A reservation is for someone — release it instead.')
+  const clientId = person ? await resolvePerson(shopId, person) : null
+  const { error: uErr } = await supabase.from('sales').update({ client_id: clientId }).eq('id', saleId).eq('shop_id', shopId)
+  if (uErr) throw uErr
+}
+
+/** See data.local.ts. */
+export async function markCheckedIn(shopId: string, saleId: string, on: string | null): Promise<void> {
+  const { error } = await supabase.from('sales').update({ followed_up_on: on }).eq('id', saleId).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+/** See data.local.ts. */
+export async function listClientShelf(shopId: string, clientId: string): Promise<ClientShelfRow[]> {
+  const { data, error } = await supabase
+    .from('sales')
+    .select('id, kind, units, unit_price, sold_on, followed_up_on, created_at, batches ( products ( name ) )')
+    .eq('shop_id', shopId)
+    .eq('client_id', clientId)
+    .order('sold_on', { ascending: false })
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return ((data ?? []) as any[]).map((r) => {
+    const b = Array.isArray(r.batches) ? r.batches[0] : r.batches
+    const p = Array.isArray(b?.products) ? b.products[0] : b?.products
+    return {
+      saleId: String(r.id),
+      product: String(p?.name ?? 'Shelf piece'),
+      kind: (r.kind ?? 'sale') as ClientShelfRow['kind'],
+      units: Number(r.units),
+      unitPrice: Number(r.unit_price),
+      soldOn: String(r.sold_on),
+      followedUpOn: r.followed_up_on ?? null,
+    }
+  })
+}
+
+/** See data.local.ts. */
+export async function setMarketingOk(shopId: string, clientId: string, ok: boolean): Promise<void> {
+  const { error } = await supabase
+    .from('clients')
+    .update({ marketing_ok: ok, marketing_ok_on: new Date().toISOString().slice(0, 10) })
+    .eq('id', clientId)
+    .eq('shop_id', shopId)
+  if (error) throw error
 }
 
 export async function deleteSale(shopId: string, saleId: string): Promise<void> {

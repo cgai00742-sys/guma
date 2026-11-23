@@ -50,6 +50,10 @@ export interface BatchStock {
   shippingCharged?: number
   /** What the shop paid to post them (labels, packaging). Money out. */
   shippingCost?: number
+  /** Held for someone: on the shelf, not free to sell (0046). */
+  unitsReserved?: number
+  /** Given away. Counted in unitsSold -- they are gone -- at no revenue. */
+  unitsDonated?: number
 }
 
 export interface ProductResult {
@@ -57,7 +61,12 @@ export interface ProductResult {
   name: string
   unitsMade: number
   unitsSold: number
+  /** Free to sell: not sold, given or held. */
   unitsLeft: number
+  /** Held for someone (0046). */
+  unitsReserved: number
+  /** Given away, inside unitsSold. */
+  unitsDonated: number
   revenue: number
   fees: number
   costOfSold: number
@@ -137,7 +146,10 @@ export function productResult(
   const shippingCharged = round2(sum(mine.map((b) => b.shippingCharged ?? 0)))
   const shippingCost = round2(sum(mine.map((b) => b.shippingCost ?? 0)))
   const grossProfit = round2(revenue + shippingCharged - fees - shippingCost - costOfSold)
-  const stockAtCost = round2(sum(mine.map((b) => b.unitsLeft * b.unitCost)))
+  const unitsReserved = sum(mine.map((b) => b.unitsReserved ?? 0))
+  const unitsDonated = sum(mine.map((b) => b.unitsDonated ?? 0))
+  // Held pieces are still on the shelf at cost until they leave.
+  const stockAtCost = round2(sum(mine.map((b) => (b.unitsLeft + (b.unitsReserved ?? 0)) * b.unitCost)))
 
   const designCost = product.designCost
   const designRecovered =
@@ -148,7 +160,9 @@ export function productResult(
     name: product.name,
     unitsMade,
     unitsSold,
-    unitsLeft: unitsMade - unitsSold,
+    unitsLeft: unitsMade - unitsSold - unitsReserved,
+    unitsReserved,
+    unitsDonated,
     revenue,
     fees,
     costOfSold,

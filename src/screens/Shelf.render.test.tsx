@@ -34,6 +34,11 @@ const addProductPhotos = vi.fn(async () => {})
 const removeProductPhoto = vi.fn(async () => {})
 const coverProductPhoto = vi.fn(async () => {})
 const matchShelfPhotos = vi.fn(async () => ({ matched: 0, need: [] as string[] }))
+const listClients = vi.fn(async () => [
+  { id: 'cl-kai', name: 'Kai Akana', email: 'kai@example.com', phone: null, kind: 'individual', projects: 0, active: 0, value: 0, owed: 0, lastActivity: null },
+])
+const settleReservation = vi.fn(async () => {})
+const setSalePerson = vi.fn(async () => {})
 
 vi.mock('../lib/data', async () => {
   const types = await import('../lib/data.types')
@@ -41,6 +46,7 @@ vi.mock('../lib/data', async () => {
     ...types,
     listShelf, listChannels, listSales, recordSale, deleteSale,
     saveProduct, saveBatch, saveChannel, updateProduct, matchShelfPhotos, addProductPhotos, removeProductPhoto, coverProductPhoto,
+    listClients, settleReservation, setSalePerson,
   }
 })
 
@@ -364,3 +370,74 @@ describe('several pictures (CG, 22 Oct)', () => {
     expect(within(dialog).getByText(/2 of 3/)).toBeDefined()
   })
 })
+
+describe('who a piece went to (CG, 22 Nov)', () => {
+  beforeEach(() => {
+    products = keychains()
+  })
+
+  it('a sale can name the buyer, and a known name says it is on file', async () => {
+    const user = userEvent.setup()
+    await renderShelf()
+    await user.click(await screen.findByText('Hex keychain'))
+    await user.click(await screen.findByRole('button', { name: /record a sale/i }))
+    await user.type(screen.getByLabelText(/price each/i), '9')
+    await user.click(screen.getByRole('button', { name: /who bought it/i }))
+    await user.type(screen.getByLabelText(/^name$/i), 'Kai Akana')
+    expect(await screen.findByTestId('person-known')).toBeDefined()
+    await user.click(screen.getByRole('button', { name: /record it/i }))
+    await waitFor(() => expect(recordSale).toHaveBeenCalled())
+    const [, input] = recordSale.mock.calls[0] as unknown as [string, Record<string, any>]
+    expect(input.kind).toBe('sale')
+    expect(input.person.name).toBe('Kai Akana')
+  })
+
+  it('a reservation needs a name before it can be held', async () => {
+    const user = userEvent.setup()
+    await renderShelf()
+    await user.click(await screen.findByText('Hex keychain'))
+    await user.click(await screen.findByRole('button', { name: /record a sale/i }))
+    await user.click(screen.getByRole('button', { name: /reserve for someone/i }))
+    const hold = screen.getByRole('button', { name: /hold it/i }) as HTMLButtonElement
+    expect(hold.disabled).toBe(true)
+    await user.type(screen.getByLabelText(/reserved for/i), 'Leilani')
+    expect(hold.disabled).toBe(false)
+    await user.click(hold)
+    await waitFor(() => expect(recordSale).toHaveBeenCalled())
+    const [, input] = recordSale.mock.calls[0] as unknown as [string, Record<string, any>]
+    expect(input).toMatchObject({ kind: 'reserved', person: { name: 'Leilani' } })
+  })
+
+  it('a donation sends no price and no channel', async () => {
+    const user = userEvent.setup()
+    await renderShelf()
+    await user.click(await screen.findByText('Hex keychain'))
+    await user.click(await screen.findByRole('button', { name: /record a sale/i }))
+    await user.click(screen.getByRole('button', { name: /^donated$/i }))
+    expect(screen.queryByLabelText(/price each/i)).toBeNull()
+    await user.type(screen.getByLabelText(/^name$/i), 'Maui Ocean Center')
+    await user.click(screen.getByRole('button', { name: /record it/i }))
+    await waitFor(() => expect(recordSale).toHaveBeenCalled())
+    const [, input] = recordSale.mock.calls[0] as unknown as [string, Record<string, any>]
+    expect(input).toMatchObject({ kind: 'donation', unitPrice: 0, channelId: null, person: { name: 'Maui Ocean Center', kind: 'nonprofit' } })
+  })
+
+  it('a held piece is settled from its line: they paid', async () => {
+    sales = [
+      { id: 'hold-1', batch_id: 'batch-1', channel_id: null, channel_name: null, units: 1, unit_price: 20, fee_total: 0, sold_on: '2026-11-20', note: null, kind: 'reserved', client_id: 'cl-kai', client_name: 'Kai Akana', followed_up_on: null },
+    ]
+    const user = userEvent.setup()
+    await renderShelf()
+    await user.click(await screen.findByText('Hex keychain'))
+    const line = await screen.findByTestId('sale-line')
+    expect(line.textContent).toMatch(/Reserved/)
+    expect(line.textContent).toMatch(/Kai Akana/)
+    await user.click(within(line).getByRole('button', { name: /they paid/i }))
+    await user.click(within(line).getByRole('button', { name: /record the sale/i }))
+    await waitFor(() => expect(settleReservation).toHaveBeenCalled())
+    const [, id, how] = settleReservation.mock.calls[0] as unknown as [string, string, Record<string, unknown>]
+    expect(id).toBe('hold-1')
+    expect(how).toMatchObject({ as: 'sale', unitPrice: 20 })
+  })
+})
+

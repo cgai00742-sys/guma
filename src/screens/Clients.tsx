@@ -43,6 +43,9 @@ import {
   deleteClient,
   listClients,
   listJobs,
+  listClientShelf,
+  markCheckedIn,
+  setMarketingOk,
   updateClientRecord,
   type ClientEditInput,
   type ClientKind,
@@ -58,8 +61,11 @@ import SearchField from '../components/SearchField'
 import { filterBy } from '../lib/search'
 import { asSearchItem } from '../lib/searchItems'
 import { useRowAnchor } from '../lib/rowAnchor'
+import { checkInDue, SALE_KIND_LABEL } from '../lib/people'
+import type { ClientShelfRow } from '../lib/data.types'
+import { todayISO } from '../lib/dates'
 
-type SortKey = 'name' | 'value' | 'owed' | 'active' | 'last'
+type SortKey = 'name' | 'value' | 'owed' | 'active' | 'last' | 'checkin' | 'shelf'
 
 export default function Clients({ ctx }: { ctx: ShopContext }) {
   const navigate = useNavigate()
@@ -68,6 +74,8 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
   const [error, setError] = useState<string | null>(null)
   const [sort, setSort] = useState<SortKey>('value')
   const [kindFilter, setKindFilter] = useState<ClientKind | 'all'>('all')
+  /** Only people who said yes to hearing from the shop. */
+  const [okOnly, setOkOnly] = useState(false)
   const [query, setQuery] = useState('')
   const [flash, setFlash] = useFlash()
   /** Which client's projects are open. One at a time: this is a table, and
@@ -115,7 +123,7 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
 
   const shown = useMemo(() => {
     const list = filterBy(
-      (rows ?? []).filter((r) => kindFilter === 'all' || r.kind === kindFilter),
+      (rows ?? []).filter((r) => (kindFilter === 'all' || r.kind === kindFilter) && (!okOnly || r.marketingOk)),
       query,
       asSearchItem.client,
     )
@@ -125,9 +133,11 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
       owed: (a, b) => b.owed - a.owed || a.name.localeCompare(b.name),
       active: (a, b) => b.active - a.active || a.name.localeCompare(b.name),
       last: (a, b) => (b.lastActivity ?? '').localeCompare(a.lastActivity ?? ''),
+      checkin: (a, b) => (b.checkIns ?? 0) - (a.checkIns ?? 0) || a.name.localeCompare(b.name),
+      shelf: (a, b) => (b.shelfPieces ?? 0) - (a.shelfPieces ?? 0) || a.name.localeCompare(b.name),
     }
     return [...list].sort(by[sort])
-  }, [rows, sort, kindFilter, query])
+  }, [rows, sort, kindFilter, query, okOnly])
 
   const totals = useMemo(() => {
     const list = rows ?? []
@@ -136,8 +146,22 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
       active: list.reduce((n, r) => n + r.active, 0),
       value: list.reduce((n, r) => n + r.value, 0),
       owed: list.reduce((n, r) => n + r.owed, 0),
+      checkIns: list.reduce((n, r) => n + (r.checkIns ?? 0), 0),
     }
   }, [rows])
+
+  /** Everyone shown who said yes and has an email, ready to paste into Bcc
+   *  or a mailing tool. Only those who said yes: that is the law, and the
+   *  kind of shop people want to hear from. */
+  const okEmails = shown.filter((r) => r.marketingOk && r.email).map((r) => r.email as string)
+  async function copyEmails() {
+    try {
+      await navigator.clipboard.writeText(okEmails.join(', '))
+      setFlash(`${okEmails.length} email${okEmails.length === 1 ? '' : 's'} copied — paste them into Bcc.`)
+    } catch {
+      setError('Could not reach the clipboard. ' + okEmails.join(', '))
+    }
+  }
 
   async function reload() {
     const [c, j] = await Promise.all([listClients(ctx.shop.id), listJobs(ctx.shop.id)])
@@ -221,7 +245,8 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
           <h2>Clients</h2>
           <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--txt-3)', marginTop: 3 }}>
             {rows
-              ? `${totals.clients} client${totals.clients === 1 ? '' : 's'} · ${totals.active} active project${totals.active === 1 ? '' : 's'} · ${money(totals.value)} quoted · ${money(totals.owed)} owed`
+              ? `${totals.clients} client${totals.clients === 1 ? '' : 's'} · ${totals.active} active project${totals.active === 1 ? '' : 's'} · ${money(totals.value)} quoted · ${money(totals.owed)} owed` +
+                (totals.checkIns ? ` · ${totals.checkIns} to check in with` : '')
               : 'Loading…'}
           </div>
         </div>
@@ -283,9 +308,20 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
             <option value="owed">Owed</option>
             <option value="active">Active projects</option>
             <option value="last">Recent activity</option>
+            <option value="checkin">Time to check in</option>
+            <option value="shelf">Shelf pieces</option>
             <option value="name">Name</option>
           </select>
         </label>
+        <label className="personconsent" style={{ fontSize: 11 }}>
+          <input type="checkbox" checked={okOnly} onChange={(e) => setOkOnly(e.target.checked)} />
+          <span>Said yes to news</span>
+        </label>
+        {okOnly && okEmails.length > 0 && (
+          <button type="button" className="btn sm" onClick={() => void copyEmails()}>
+            Copy {okEmails.length} email{okEmails.length === 1 ? '' : 's'}
+          </button>
+        )}
       </div>
 
       {rows && rows.length > 0 && shown.length === 0 ? (
@@ -327,6 +363,7 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
                 <th className="r">Active</th>
                 <th className="r">Quoted</th>
                 <th className="r">Owed</th>
+                <th className="r" title="Pieces off the Shelf: bought, given or held">Shelf</th>
                 <th>Last activity</th>
               </tr>
             </thead>
@@ -368,6 +405,16 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
                         ▸
                       </span>{' '}
                       {r.name}
+                      {(r.checkIns ?? 0) > 0 && (
+                        <span className="saletag reserved" style={{ marginLeft: 8 }} title="Bought or given a Shelf piece a week to three months ago, and not asked how it is going yet">
+                          check in
+                        </span>
+                      )}
+                      {r.marketingOk && (
+                        <span className="saletag" style={{ marginLeft: 6 }} title={`Said yes to hearing from you${r.marketingOkOn ? ` on ${r.marketingOkOn}` : ''}`}>
+                          news ok
+                        </span>
+                      )}
                     </div>
                     <div className="pmeta" style={{ paddingLeft: 16 }}>
                       {[r.contact, r.email, r.phone].filter(Boolean).join(' · ') || 'no contact on file'}
@@ -394,19 +441,27 @@ export default function Clients({ ctx }: { ctx: ShopContext }) {
                   <td className="r mono" style={{ color: r.owed > 0 ? 'var(--red)' : undefined }}>
                     {r.owed > 0 ? money(r.owed) : '—'}
                   </td>
+                  <td className="r mono">{r.shelfPieces ? r.shelfPieces : '—'}</td>
                   <td className="mono" style={{ fontSize: 11, color: 'var(--txt-3)' }}>
                     {r.lastActivity ? r.lastActivity.slice(0, 10) : 'never'}
                   </td>
                 </tr>
                 {openId === r.id && (
                   <tr>
-                    <td colSpan={7} style={{ background: 'var(--panel-2)', padding: '12px 14px' }}>
+                    <td colSpan={8} style={{ background: 'var(--panel-2)', padding: '12px 14px' }}>
                       <ClientDetails
                         key={r.id}
                         client={r}
                         busy={busy}
                         onSave={(input) => saveDetails(r.id, input)}
                         onDelete={() => void removeClient(r.id)}
+                      />
+                      <ClientShelf
+                        ctx={ctx}
+                        client={r}
+                        money={money}
+                        onChanged={() => void reload()}
+                        onError={setError}
                       />
                       <ClientProjects
                         projects={jobs.filter((j) => j.clientId === r.id)}
@@ -726,6 +781,123 @@ function ClientDetails({
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * What they have had off the Shelf, and the two ways to stay in touch
+ * (CG, 22 Nov): asking how a piece is going, and -- only once they have
+ * said yes -- telling them about new ones.
+ */
+function ClientShelf({
+  ctx,
+  client,
+  money,
+  onChanged,
+  onError,
+}: {
+  ctx: ShopContext
+  client: ClientRow
+  money: (n: number) => string
+  onChanged: () => void
+  onError: (m: string) => void
+}) {
+  const [rows, setRows] = useState<ClientShelfRow[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const load = () =>
+    listClientShelf(ctx.shop.id, client.id)
+      .then(setRows)
+      .catch((e) => onError(e instanceof Error ? e.message : String(e)))
+  useEffect(() => {
+    void load()
+  }, [client.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function act(fn: () => Promise<void>) {
+    setBusy(true)
+    try {
+      await fn()
+      await load()
+      onChanged()
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const today = todayISO()
+  const first = client.name.split(' ')[0]
+  const reach = client.email || client.phone
+  return (
+    <div style={{ marginBottom: 12 }} role="region" aria-label="From the Shelf">
+      <h3 style={{ marginBottom: 6 }}>From the Shelf</h3>
+      {rows === null ? (
+        <div className="hint">Loading…</div>
+      ) : rows.length === 0 ? (
+        <div className="hint" style={{ marginTop: 0 }}>
+          Nothing from the Shelf yet. Name them when you record a sale, a donation or a reservation and it shows here.
+        </div>
+      ) : (
+        <div className="guide">
+          <div className="guide-g">
+            <div className="guide-kv">
+              {rows.map((r) => {
+                const due = checkInDue({ kind: r.kind, client_id: client.id, sold_on: r.soldOn, followed_up_on: r.followedUpOn }, today)
+                const subject = encodeURIComponent(`How is your ${r.product}?`)
+                const body = encodeURIComponent(`Hi ${first},\n\nJust checking in — how are you enjoying the ${r.product}?\n\n`)
+                return (
+                  <div className="guide-r" key={r.saleId} style={{ flexWrap: 'wrap' }}>
+                    <span className="k">
+                      {r.kind !== 'sale' && <span className={`saletag ${r.kind}`}>{SALE_KIND_LABEL[r.kind]}</span>}
+                      {r.units} × {r.product}
+                      {r.kind === 'sale' ? ` at ${money(r.unitPrice)}` : ''} · {r.soldOn}
+                      {r.followedUpOn ? ` · checked in ${r.followedUpOn}` : ''}
+                    </span>
+                    <span className="v" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      {due && client.email && (
+                        <a className="btn sm" href={`mailto:${client.email}?subject=${subject}&body=${body}`}>
+                          Email them
+                        </a>
+                      )}
+                      {due && client.phone && (
+                        <a className="btn sm" href={`sms:${client.phone.replace(/[^\d+]/g, '')}`}>
+                          Text them
+                        </a>
+                      )}
+                      {due && (
+                        <button type="button" className="btn sm primary" disabled={busy} onClick={() => void act(() => markCheckedIn(ctx.shop.id, r.saleId, today))}>
+                          Checked in
+                        </button>
+                      )}
+                      {r.followedUpOn && (
+                        <button type="button" className="addnote" disabled={busy} onClick={() => void act(() => markCheckedIn(ctx.shop.id, r.saleId, null))}>
+                          undo
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+      <label className="personconsent" style={{ marginTop: 8 }}>
+        <input
+          type="checkbox"
+          checked={client.marketingOk === true}
+          disabled={busy || !reach}
+          onChange={(e) => void act(() => setMarketingOk(ctx.shop.id, client.id, e.target.checked))}
+        />
+        <span>
+          {reach
+            ? client.marketingOk
+              ? `Said yes to hearing about new pieces and offers${client.marketingOkOn ? ` (${client.marketingOkOn})` : ''}. Untick if they ask you to stop.`
+              : 'They said yes to hearing about new pieces and offers'
+            : 'Add an email or phone below to keep in touch'}
+        </span>
+      </label>
     </div>
   )
 }

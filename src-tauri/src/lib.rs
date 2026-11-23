@@ -278,6 +278,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0045_material_cost_confirmed.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 46,
+      description: "who a Shelf piece went to: sold, donated or reserved",
+      sql: include_str!("../migrations/0046_shelf_people.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

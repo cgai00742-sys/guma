@@ -23,6 +23,8 @@
  * shared interface) are re-exported directly from data.types.ts rather than
  * routed through either backend, since both backends already do the same.
  */
+import type { ClientShelfRow, SettleInput } from './data.types'
+import type { PersonInput } from './people'
 import type { FrozenPrice } from './draftQuote'
 import { isTauri } from '@tauri-apps/api/core'
 import type * as Local from './data.local'
@@ -578,6 +580,30 @@ export async function saveProduct(shopId: string, next: ProductInput): Promise<s
 
 export async function saveBatch(shopId: string, next: BatchInput): Promise<string> {
   return (await backend()).saveBatch(shopId, next)
+}
+
+export async function settleReservation(shopId: string, saleId: string, how: SettleInput): Promise<void> {
+  return (await backend()).settleReservation(shopId, saleId, how)
+}
+
+export async function setSalePerson(shopId: string, saleId: string, person: PersonInput | null): Promise<void> {
+  return (await backend()).setSalePerson(shopId, saleId, person)
+}
+
+export async function markCheckedIn(shopId: string, saleId: string, on: string | null): Promise<void> {
+  return (await backend()).markCheckedIn(shopId, saleId, on)
+}
+
+export async function listClientShelf(shopId: string, clientId: string): Promise<ClientShelfRow[]> {
+  return (await backend()).listClientShelf(shopId, clientId)
+}
+
+export async function setMarketingOk(shopId: string, clientId: string, ok: boolean): Promise<void> {
+  return (await backend()).setMarketingOk(shopId, clientId, ok)
+}
+
+export async function resolvePerson(shopId: string, person: PersonInput): Promise<string> {
+  return (await backend()).resolvePerson(shopId, person)
 }
 
 export async function listSales(shopId: string, batchId?: string): Promise<SaleRow[]> {

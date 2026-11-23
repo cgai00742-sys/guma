@@ -51,14 +51,30 @@ import {
   type ProductRow,
   type SaleRow,
   type ShopContext,
+  listClients,
+  settleReservation,
+  setSalePerson,
 } from '../lib/data'
 import { makeMoney } from '../lib/pricing'
 import { productResult, summarize, type BatchStock, type ProductResult } from '../lib/selling'
 import { todayISO } from '../lib/dates'
 import { Flash, useFlash } from '../components/Saving'
-import type { ProductPhoto } from '../lib/data.types'
+import type { ProductPhoto, SettleInput } from '../lib/data.types'
 import { unpackFile } from '../lib/sliceFile'
 import { fileExtras } from '../lib/fileExtras'
+import PersonFields, { emptyPerson, hasPerson, type KnownPerson } from '../components/PersonFields'
+import { SALE_KINDS, SALE_KIND_LABEL, type PersonInput, type SaleKind } from '../lib/people'
+
+/** What the sell dialog hands back. */
+interface SellOut {
+  kind: SaleKind
+  channelId: string | null
+  units: number
+  unitPrice: number
+  shippingCharged: number
+  shippingCost: number
+  person: PersonInput | null
+}
 
 /** The rows the pure module wants, out of the rows the database gives. */
 function stockOf(products: ProductRow[]): BatchStock[] {
@@ -76,6 +92,8 @@ function stockOf(products: ProductRow[]): BatchStock[] {
       madeOn: b.made_on,
       shippingCharged: Number(b.shipping_charged ?? 0),
       shippingCost: Number(b.shipping_cost ?? 0),
+      unitsReserved: Number(b.units_reserved ?? 0),
+      unitsDonated: Number(b.units_donated ?? 0),
     })),
   )
 }
@@ -84,6 +102,8 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
   const [products, setProducts] = useState<ProductRow[] | null>(null)
   const [channels, setChannels] = useState<ChannelRow[]>([])
   const [sales, setSales] = useState<SaleRow[]>([])
+  /** Everyone on file, so a name typed on a sale finds them. */
+  const [people, setPeople] = useState<KnownPerson[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
@@ -110,6 +130,9 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
       setProducts(p)
       setChannels(c)
       setSales(s)
+      listClients(ctx.shop.id)
+        .then((rows) => setPeople(rows.map((r) => ({ id: r.id, name: r.name, email: r.email, phone: r.phone, marketingOk: r.marketingOk }))))
+        .catch(() => undefined)
       setError(null)
       listJobs(ctx.shop.id)
         .then((js) => setJobTitles(Object.fromEntries(js.map((j) => [j.jobId, j.title]))))
@@ -211,29 +234,31 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
     }
   }
 
-  async function sell(
-    batchId: string,
-    channelId: string | null,
-    units: number,
-    unitPrice: number,
-    shippingCharged = 0,
-    shippingCost = 0,
-  ) {
+  async function sell(batchId: string, out: SellOut) {
     setBusy(true)
     setError(null)
     try {
       await recordSale(ctx.shop.id, {
         batchId,
-        channelId,
-        units,
-        unitPrice,
+        channelId: out.channelId,
+        units: out.units,
+        unitPrice: out.unitPrice,
         soldOn: todayISO(),
-        shippingCharged,
-        shippingCost,
+        shippingCharged: out.shippingCharged,
+        shippingCost: out.shippingCost,
+        kind: out.kind,
+        person: out.person,
       })
       await reload()
       setSelling(null)
-      setFlash(`${units} sold.`)
+      const who = out.person ? ` ${out.kind === 'reserved' ? 'for' : 'to'} ${out.person.name.trim()}` : ''
+      setFlash(
+        out.kind === 'reserved'
+          ? `${out.units} held${who}.`
+          : out.kind === 'donation'
+            ? `${out.units} donated${who}.`
+            : `${out.units} sold${who}.`,
+      )
     } catch (e) {
       // recordSale's refusals carry the number that matters -- how many are
       // actually left -- so they are shown as written.
@@ -392,7 +417,7 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                   <Fragment key={r.productId}>
                     <tr
                       // Done is green (CG, 27 Oct): every unit made has sold.
-                      className={`row click shelfrow ${r.unitsMade > 0 && r.unitsLeft === 0 ? 'done' : ''}`.trim()}
+                      className={`row click shelfrow ${r.unitsMade > 0 && r.unitsLeft === 0 && r.unitsReserved === 0 ? 'done' : ''}`.trim()}
                       onClick={() => setOpenId(open ? null : r.productId)}
                     >
                       <td>
@@ -415,7 +440,16 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                       <td className="r">{r.unitsMade}</td>
                       <td className="r">{r.unitsSold}</td>
                       <td className="r">
-                        {r.unitsMade > 0 && r.unitsLeft === 0 ? <span className="done-tag">✓ sold out</span> : r.unitsLeft}
+                        {r.unitsMade > 0 && r.unitsLeft === 0 && r.unitsReserved === 0 ? (
+                          <span className="done-tag">✓ sold out</span>
+                        ) : (
+                          <>
+                            {r.unitsLeft}
+                            {r.unitsReserved > 0 && (
+                              <span className="saletag reserved" style={{ marginLeft: 6, marginRight: 0 }}>{r.unitsReserved} held</span>
+                            )}
+                          </>
+                        )}
                       </td>
                       <td className="r">{money(r.revenue)}</td>
                       <td className="r">{r.fees > 0 ? `−${money(r.fees)}` : '—'}</td>
@@ -466,6 +500,20 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
                               setSelling({ batchId, left, name: product.name })
                             }
                             onUndo={undoSale}
+                            people={people}
+                            channels={channels.filter((c) => !c.archived)}
+                            onSettle={(saleId, how) =>
+                              void editProduct(
+                                () => settleReservation(ctx.shop.id, saleId, how),
+                                how.as === 'donation' ? 'Handed over as a donation.' : 'Reservation paid — sold.',
+                              )
+                            }
+                            onPerson={(saleId, person) =>
+                              void editProduct(
+                                () => setSalePerson(ctx.shop.id, saleId, person),
+                                person ? `Saved: ${person.name.trim()}.` : 'Name taken off.',
+                              )
+                            }
                             jobTitles={jobTitles}
                             removing={removing}
                             onAskRemove={setRemoving}
@@ -500,9 +548,8 @@ export default function Shelf({ ctx }: { ctx: ShopContext }) {
           money={money}
           busy={busy}
           onCancel={() => setSelling(null)}
-          onSell={(channelId, units, price, shipIn, shipOut) =>
-            sell(selling.batchId, channelId, units, price, shipIn, shipOut)
-          }
+          people={people}
+          onSell={(out) => void sell(selling.batchId, out)}
         />
       )}
     </div>
@@ -542,6 +589,10 @@ function Batches({
   busy,
   onSell,
   onUndo,
+  people = [],
+  channels = [],
+  onSettle = () => undefined,
+  onPerson = () => undefined,
   jobTitles = {},
   removing = null,
   onAskRemove = () => undefined,
@@ -554,6 +605,10 @@ function Batches({
   busy: boolean
   onSell: (batchId: string, left: number) => void
   onUndo: (saleId: string) => void
+  people?: KnownPerson[]
+  channels?: ChannelRow[]
+  onSettle?: (saleId: string, how: SettleInput) => void
+  onPerson?: (saleId: string, person: PersonInput | null) => void
   jobTitles?: Record<string, string>
   removing?: string | null
   onAskRemove?: (id: string | null) => void
@@ -597,6 +652,7 @@ function Batches({
               </b>
               <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--txt-3)' }}>
                 {money(Number(b.unit_cost))} each · {b.units_left} left
+                {Number(b.units_reserved ?? 0) > 0 ? ` · ${b.units_reserved} held` : ''}
               </span>
               {b.estimated && (
                 <span className="tag warn" style={{ fontSize: 10 }} title="No project behind this batch, so the cost is what somebody typed rather than what the runs and hours came to.">
@@ -651,32 +707,17 @@ function Batches({
                 <div className="guide-g">
                   <div className="guide-kv">
                     {mine.map((s) => (
-                      <div className="guide-r" key={s.id}>
-                        <span className="k">
-                          {s.units} at {money(Number(s.unit_price))}
-                          {s.channel_name ? ` · ${s.channel_name}` : ''} · {s.sold_on}
-                          {Number(s.shipping_charged ?? 0) > 0 || Number(s.shipping_cost ?? 0) > 0
-                            ? ` · shipping ${money(Number(s.shipping_charged ?? 0))} in, ${money(Number(s.shipping_cost ?? 0))} out`
-                            : ''}
-                        </span>
-                        <span className="v">
-                          {money(
-                            Number(s.units) * Number(s.unit_price) -
-                              Number(s.fee_total) +
-                              Number(s.shipping_charged ?? 0) -
-                              Number(s.shipping_cost ?? 0),
-                          )}
-                          <button
-                            type="button"
-                            className="addnote"
-                            style={{ marginLeft: 8 }}
-                            disabled={busy}
-                            onClick={() => onUndo(s.id)}
-                          >
-                            remove
-                          </button>
-                        </span>
-                      </div>
+                      <SaleLine
+                        key={s.id}
+                        sale={s}
+                        money={money}
+                        busy={busy}
+                        people={people}
+                        channels={channels}
+                        onUndo={() => onUndo(s.id)}
+                        onSettle={(how) => onSettle(s.id, how)}
+                        onPerson={(person) => onPerson(s.id, person)}
+                      />
                     ))}
                   </div>
                 </div>
@@ -952,6 +993,7 @@ function SellDialog({
   name,
   left,
   channels,
+  people,
   money,
   busy,
   onCancel,
@@ -960,70 +1002,127 @@ function SellDialog({
   name: string
   left: number
   channels: ChannelRow[]
+  people: KnownPerson[]
   money: (n: number) => string
   busy: boolean
   onCancel: () => void
-  onSell: (
-    channelId: string | null,
-    units: number,
-    unitPrice: number,
-    shippingCharged: number,
-    shippingCost: number,
-  ) => void
+  onSell: (out: SellOut) => void
 }) {
+  const [kind, setKind] = useState<SaleKind>('sale')
   const [units, setUnits] = useState('1')
   const [shipIn, setShipIn] = useState('')
   const [shipOut, setShipOut] = useState('')
   const [price, setPrice] = useState('')
   const [channelId, setChannelId] = useState<string>('')
+  const [person, setPerson] = useState<PersonInput>(emptyPerson())
+  // Opened by default for a donation or a reservation, where who is the point.
+  const [showWho, setShowWho] = useState(false)
 
   const n = Number(units) || 0
   const p = Number(price) || 0
-  const channel = channels.find((c) => c.id === channelId)
+  const channel = kind === 'sale' ? channels.find((c) => c.id === channelId) : undefined
   const fee = channel ? (n * p * Number(channel.fee_pct)) / 100 + Number(channel.fee_flat) : 0
-  const si = Math.max(0, Number(shipIn) || 0)
-  const so = Math.max(0, Number(shipOut) || 0)
+  const si = kind === 'sale' ? Math.max(0, Number(shipIn) || 0) : 0
+  const so = kind === 'reserved' ? 0 : Math.max(0, Number(shipOut) || 0)
+  const who = showWho || kind !== 'sale'
+  const named = hasPerson(person)
+  const priceOk = kind === 'donation' || kind === 'reserved' ? true : price.trim() !== '' && p >= 0
+  const ok = n >= 1 && n <= left && priceOk && (kind !== 'reserved' || named)
+
+  const title = kind === 'sale' ? `Sold some ${name}` : kind === 'donation' ? `Gave some ${name}` : `Holding some ${name}`
 
   return (
     <div className="pane" style={{ position: 'sticky', bottom: 12, marginTop: 12 }}>
       <h3>
-        Sold some {name}
+        {title}
         <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--txt-3)', textTransform: 'none', letterSpacing: 0 }}>
           {left} on the shelf
         </span>
       </h3>
+      <div className="kindpick" role="group" aria-label="What happened">
+        {SALE_KINDS.map((k) => (
+          <button
+            key={k}
+            type="button"
+            aria-pressed={kind === k}
+            onClick={() => {
+              setKind(k)
+              if (k === 'donation' && !person.name.trim()) setPerson((x) => ({ ...x, kind: 'nonprofit' }))
+            }}
+          >
+            {k === 'sale' ? 'Sold' : k === 'donation' ? 'Donated' : 'Reserve for someone'}
+          </button>
+        ))}
+      </div>
       <div className="grid3">
         <div className="fld">
           <label className="lbl" htmlFor="sd-units">How many</label>
           <input id="sd-units" type="number" min="1" max={left} step="1" value={units} onChange={(e) => setUnits(e.target.value)} />
         </div>
-        <div className="fld">
-          <label className="lbl" htmlFor="sd-price">Price each</label>
-          <input id="sd-price" type="number" min="0" step="any" value={price} onChange={(e) => setPrice(e.target.value)} />
-        </div>
-        <div className="fld">
-          <label className="lbl" htmlFor="sd-channel">Where</label>
-          <select id="sd-channel" value={channelId} onChange={(e) => setChannelId(e.target.value)}>
-            <option value="">Direct — nobody takes a cut</option>
-            {channels.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        </div>
+        {kind !== 'donation' && (
+          <div className="fld">
+            <label className="lbl" htmlFor="sd-price">{kind === 'reserved' ? 'Agreed price each' : 'Price each'}</label>
+            <input
+              id="sd-price"
+              type="number"
+              min="0"
+              step="any"
+              value={price}
+              placeholder={kind === 'reserved' ? 'Optional' : undefined}
+              onChange={(e) => setPrice(e.target.value)}
+            />
+          </div>
+        )}
+        {kind === 'sale' && (
+          <div className="fld">
+            <label className="lbl" htmlFor="sd-channel">Where</label>
+            <select id="sd-channel" value={channelId} onChange={(e) => setChannelId(e.target.value)}>
+              <option value="">Direct — nobody takes a cut</option>
+              {channels.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
-      <div className="grid3" style={{ marginTop: 8 }}>
-        <div className="fld">
-          <label className="lbl" htmlFor="sd-shipin">Shipping the buyer paid</label>
-          <input id="sd-shipin" type="number" min="0" step="any" value={shipIn} placeholder="0" onChange={(e) => setShipIn(e.target.value)} />
+      {kind !== 'reserved' && (
+        <div className="grid3" style={{ marginTop: 8 }}>
+          {kind === 'sale' && (
+            <div className="fld">
+              <label className="lbl" htmlFor="sd-shipin">Shipping the buyer paid</label>
+              <input id="sd-shipin" type="number" min="0" step="any" value={shipIn} placeholder="0" onChange={(e) => setShipIn(e.target.value)} />
+            </div>
+          )}
+          <div className="fld">
+            <label className="lbl" htmlFor="sd-shipout">Shipping you paid</label>
+            <input id="sd-shipout" type="number" min="0" step="any" value={shipOut} placeholder="0" onChange={(e) => setShipOut(e.target.value)} />
+            <div className="hint">Label and packaging. Leave empty for a hand-off.</div>
+          </div>
         </div>
-        <div className="fld">
-          <label className="lbl" htmlFor="sd-shipout">Shipping you paid</label>
-          <input id="sd-shipout" type="number" min="0" step="any" value={shipOut} placeholder="0" onChange={(e) => setShipOut(e.target.value)} />
-          <div className="hint">Label and packaging. Leave both empty for a hand-off.</div>
+      )}
+      {kind === 'donation' && (
+        <div className="hint" style={{ marginTop: 4 }}>
+          Nothing comes in. What it cost to make still counts — as what you gave.
         </div>
-      </div>
+      )}
+      {kind === 'reserved' && (
+        <div className="hint" style={{ marginTop: 4 }}>
+          Held off the shelf so it can&rsquo;t be sold twice. When they pay or you hand it over, settle it from
+          the batch below — or release it.
+        </div>
+      )}
 
-      {n > 0 && p > 0 && (
+      {who ? (
+        <div style={{ marginTop: 10 }}>
+          <PersonFields id="sd-who" value={person} onChange={setPerson} people={people} required={kind === 'reserved'} />
+        </div>
+      ) : (
+        <button type="button" className="linkbtn" style={{ width: 'auto', marginTop: 8, fontSize: 12 }} onClick={() => setShowWho(true)}>
+          + Who bought it (optional)
+        </button>
+      )}
+
+      {kind === 'sale' && n > 0 && p > 0 && (
         <div className="guide" style={{ marginTop: 10 }}>
           <div className="guide-g">
             <div className="guide-h"><span className="guide-tag">Yours</span></div>
@@ -1070,11 +1169,21 @@ function SellDialog({
         <button
           type="button"
           className="btn primary"
-          disabled={busy || n < 1 || n > left || !(p >= 0) || price.trim() === ''}
+          disabled={busy || !ok}
           style={{ marginLeft: 'auto' }}
-          onClick={() => onSell(channelId || null, n, p, si, so)}
+          onClick={() =>
+            onSell({
+              kind,
+              channelId: kind === 'sale' ? channelId || null : null,
+              units: n,
+              unitPrice: kind === 'donation' ? 0 : p,
+              shippingCharged: si,
+              shippingCost: so,
+              person: named ? person : null,
+            })
+          }
         >
-          {busy ? 'Saving…' : 'Record it'}
+          {busy ? 'Saving…' : kind === 'reserved' ? 'Hold it' : 'Record it'}
         </button>
       </div>
     </div>
@@ -1202,6 +1311,148 @@ function Channels({
               }}
             >
               {busy ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One sale, donation or reservation under its batch: what, who, and the
+ * one thing you might do next -- settle a hold, or say who bought it.
+ */
+function SaleLine({
+  sale: s,
+  money,
+  busy,
+  people,
+  channels,
+  onUndo,
+  onSettle,
+  onPerson,
+}: {
+  sale: SaleRow
+  money: (n: number) => string
+  busy: boolean
+  people: KnownPerson[]
+  channels: ChannelRow[]
+  onUndo: () => void
+  onSettle: (how: SettleInput) => void
+  onPerson: (person: PersonInput | null) => void
+}) {
+  const kind: SaleKind = s.kind ?? 'sale'
+  const [mode, setMode] = useState<'none' | 'who' | 'paid'>('none')
+  const [person, setPerson] = useState<PersonInput>(emptyPerson(kind === 'donation' ? 'nonprofit' : 'individual'))
+  const [price, setPrice] = useState(String(Number(s.unit_price) || ''))
+  const [channelId, setChannelId] = useState('')
+  const net =
+    Number(s.units) * Number(s.unit_price) - Number(s.fee_total) + Number(s.shipping_charged ?? 0) - Number(s.shipping_cost ?? 0)
+  return (
+    <div className="guide-r" style={{ flexWrap: 'wrap' }} data-testid="sale-line">
+      <span className="k">
+        {kind !== 'sale' && <span className={`saletag ${kind}`}>{SALE_KIND_LABEL[kind]}</span>}
+        {s.units}
+        {kind === 'donation' ? '' : ` at ${money(Number(s.unit_price))}`}
+        {s.channel_name ? ` · ${s.channel_name}` : ''} · {s.sold_on}
+        {Number(s.shipping_charged ?? 0) > 0 || Number(s.shipping_cost ?? 0) > 0
+          ? ` · shipping ${money(Number(s.shipping_charged ?? 0))} in, ${money(Number(s.shipping_cost ?? 0))} out`
+          : ''}
+        {s.client_id && s.client_name ? (
+          <>
+            {' · '}
+            <Link to={`/clients?open=${s.client_id}`}>{s.client_name}</Link>
+          </>
+        ) : (
+          kind !== 'reserved' && (
+            <button
+              type="button"
+              className="addnote"
+              style={{ marginLeft: 8 }}
+              disabled={busy}
+              onClick={() => setMode(mode === 'who' ? 'none' : 'who')}
+            >
+              + who
+            </button>
+          )
+        )}
+      </span>
+      <span className="v">
+        {kind === 'reserved' ? (
+          <>
+            <button type="button" className="btn sm primary" disabled={busy} onClick={() => setMode(mode === 'paid' ? 'none' : 'paid')}>
+              They paid
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              style={{ marginLeft: 6 }}
+              disabled={busy}
+              onClick={() => onSettle({ as: 'donation', unitPrice: 0, channelId: null, soldOn: todayISO() })}
+            >
+              Given
+            </button>
+          </>
+        ) : (
+          money(net)
+        )}
+        <button type="button" className="addnote" style={{ marginLeft: 8 }} disabled={busy} onClick={onUndo}>
+          {kind === 'reserved' ? 'release' : 'remove'}
+        </button>
+      </span>
+      {mode === 'who' && (
+        <div className="whoform" style={{ flexBasis: '100%' }}>
+          <PersonFields id={`who-${s.id}`} value={person} onChange={setPerson} people={people} />
+          <div className="btnrow" style={{ marginTop: 6 }}>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={busy || !hasPerson(person)}
+              onClick={() => {
+                onPerson(person)
+                setMode('none')
+              }}
+            >
+              Save
+            </button>
+            <button type="button" className="btn sm ghost" onClick={() => setMode('none')}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {mode === 'paid' && (
+        <div className="whoform" style={{ flexBasis: '100%' }}>
+          <div className="grid3">
+            <div className="fld">
+              <label className="lbl" htmlFor={`paid-${s.id}`}>Price each</label>
+              <input id={`paid-${s.id}`} type="number" min="0" step="any" value={price} onChange={(e) => setPrice(e.target.value)} />
+            </div>
+            <div className="fld">
+              <label className="lbl" htmlFor={`paidch-${s.id}`}>Where</label>
+              <select id={`paidch-${s.id}`} value={channelId} onChange={(e) => setChannelId(e.target.value)}>
+                <option value="">Direct — nobody takes a cut</option>
+                {channels.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="btnrow" style={{ marginTop: 6 }}>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={busy || price.trim() === '' || !(Number(price) >= 0)}
+              onClick={() => {
+                onSettle({ as: 'sale', unitPrice: Number(price), channelId: channelId || null, soldOn: todayISO() })
+                setMode('none')
+              }}
+            >
+              Record the sale
+            </button>
+            <button type="button" className="btn sm ghost" onClick={() => setMode('none')}>
+              Cancel
             </button>
           </div>
         </div>

@@ -11,6 +11,7 @@
  * directly rather than through either backend, so screens never need to
  * know this file exists.
  */
+import type { PersonInput, SaleKind } from './people'
 import type { MaterialRef, PrinterRef, RateSet } from './pricing'
 import { osCurrency, osLocale } from './locale'
 import { fmtHours } from './duration'
@@ -719,6 +720,13 @@ export interface ClientRow {
   owed: number
   /** Most recent job_events timestamp across all their projects. */
   lastActivity: string | null
+  /** Shelf pieces they bought, were given or have on hold (0046). */
+  shelfPieces?: number
+  /** They said yes to hearing from the shop, and when. */
+  marketingOk?: boolean
+  marketingOkOn?: string | null
+  /** Pieces it is time to ask them about. */
+  checkIns?: number
 }
 
 /** Editable fields on the Clients screen. */
@@ -1393,6 +1401,9 @@ export interface BatchRow {
   note: string | null
   units_sold: number
   units_left: number
+  /** Held for someone, not free to sell (0046). Not in units_left. */
+  units_reserved?: number
+  units_donated?: number
   revenue: number
   fees: number
   cost_of_sold: number
@@ -1465,6 +1476,13 @@ export interface SaleRow {
   /** What the buyer paid for shipping, and what the label cost (0041). */
   shipping_charged?: number
   shipping_cost?: number
+  /** Sold, donated, or held for someone (0046). Missing reads as sold. */
+  kind?: SaleKind
+  /** Who it went to, when anyone was named. */
+  client_id?: string | null
+  client_name?: string | null
+  /** When "how are you enjoying it" was asked. */
+  followed_up_on?: string | null
 }
 
 /** Rename a product, or change or clear its picture. */
@@ -1484,6 +1502,29 @@ export interface SaleInput {
    *  you (goes out). Both default to 0. */
   shippingCharged?: number
   shippingCost?: number
+  /** Sold (default), donated, or reserved for someone (0046). */
+  kind?: SaleKind
+  /** Who it went to. Optional for a sale or a donation; a reservation needs it. */
+  person?: PersonInput | null
+}
+
+/** Settling a reservation: it was paid for, or given. */
+export interface SettleInput {
+  as: 'sale' | 'donation'
+  unitPrice: number
+  channelId: string | null
+  soldOn: string
+}
+
+/** One Shelf piece in someone's history, for the Clients screen. */
+export interface ClientShelfRow {
+  saleId: string
+  product: string
+  kind: SaleKind
+  units: number
+  unitPrice: number
+  soldOn: string
+  followedUpOn: string | null
 }
 
 /** A series: the shop's own body of work, holding projects the way a client
