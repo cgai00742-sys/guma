@@ -257,6 +257,9 @@ describe('changing copies on the build sheet reprices the project (CG, 8 Oct)', 
     // they pay matches the headline less tax.
     expect(screen.getByRole('columnheader', { name: 'Build sheet' })).toBeDefined()
     expect(document.querySelector('[data-fold="estimate"]')!.textContent).toMatch(/Estimated margin/)
+    // Said both ways (CG, 23 Nov): what it paid you all in = your hours + what is on top.
+    const split = screen.getByTestId('hours-split').textContent ?? ''
+    expect(split).toMatch(/Paid you, all in.*=.*Your hours.*\+.*On top of that/)
     // The accepted price itself has not moved.
     expect(currentDb.sqlite.prepare('select count(*) as n from quotes').get()).toEqual({ n: 1 })
 

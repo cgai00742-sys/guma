@@ -167,7 +167,7 @@ import {
   descendantsOf,
   programTotals,
 } from '../lib/programs'
-import { buildComparison, compareToQuote, priceProjectQuote, type Comparison } from '../lib/actuals'
+import { buildComparison, compareToQuote, priceProjectQuote, type Comparison, type VarianceLine } from '../lib/actuals'
 import type { PricedQuote, RateSet } from '../lib/pricing'
 import { sheetVsQuote } from '../lib/sheetVsQuote'
 import HoursInput from '../components/HoursInput'
@@ -2018,6 +2018,8 @@ function Variance({ comparison, money }: { comparison: Comparison; money: (n: nu
           }
         />
       </div>
+
+      <HoursSplit lines={c.lines} margin={c.quotedMargin} actual={c.actualMargin} money={money} />
 
       {c.partial && (
         <div className="hint" style={{ marginTop: 8, color: 'var(--warn)' }}>
@@ -8149,6 +8151,7 @@ function EstimatedBuild({
           sub={changed ? `quoted ${money(a.quotedMargin)}` : 'before anything is printed'}
         />
       </div>
+      <HoursSplit lines={b.lines} margin={b.quotedMargin} actual={null} money={money} />
 
       {!inRecord && changed && (
         <div className="btnrow" style={{ marginTop: 12, alignItems: 'center' }}>
@@ -8170,6 +8173,52 @@ function EstimatedBuild({
 
 /** A priced quote's cost lines and margin, with nothing recorded against
  *  it -- the "quoted" half of the variance, on its own. */
+/**
+ * The margin above counts your own hours as a cost, at the rate you charge
+ * -- right for "would this pay a hired hand", but it made a $299 job look
+ * like it kept $12.66 (CG, 23 Nov). Said both ways: what the job paid you
+ * all in, as your hours plus what was left on top.
+ */
+function HoursSplit({
+  lines,
+  margin,
+  actual,
+  money,
+}: {
+  lines: VarianceLine[]
+  margin: number
+  actual: number | null
+  money: (n: number) => string
+}) {
+  const labour = lines.find((l) => l.key === 'labour')
+  if (!labour || labour.quoted <= 0) return null
+  const hours = actual !== null && labour.actual !== null ? labour.actual : labour.quoted
+  // The margin already has your hours taken out at your rate: what is
+  // left is profit on top of paying yourself.
+  const extra = actual ?? margin
+  const paid = extra + hours
+  return (
+    <div className="hoursplit" data-testid="hours-split">
+      <div>
+        <div className="lbl">Paid you, all in</div>
+        <div className="mono" style={{ fontSize: 16, color: paid < 0 ? 'var(--red)' : 'var(--ok)' }}>{money(paid)}</div>
+      </div>
+      <div className="hoursplit-eq">=</div>
+      <div>
+        <div className="lbl">Your hours</div>
+        <div className="mono" style={{ fontSize: 16 }}>{money(hours)}</div>
+        <div className="hint" style={{ marginTop: 2 }}>{actual !== null && labour.actual !== null ? 'as logged' : 'as quoted'}, at your rate</div>
+      </div>
+      <div className="hoursplit-eq">+</div>
+      <div>
+        <div className="lbl">On top of that</div>
+        <div className="mono" style={{ fontSize: 16, color: extra < 0 ? 'var(--red)' : undefined }}>{money(extra)}</div>
+        <div className="hint" style={{ marginTop: 2 }}>after material, machine and wear</div>
+      </div>
+    </div>
+  )
+}
+
 function estimateOf(p: PricedQuote, rates: RateSet) {
   return compareToQuote(p, NO_ACTUALS, rates)
 }

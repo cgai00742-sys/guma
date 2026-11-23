@@ -1892,3 +1892,6 @@ tr.dim td{opacity:.55}
    digit ("3" of 34 minutes) in the quote's per-copy column. */
 .hm input[type=number]{-moz-appearance:textfield;appearance:textfield;text-align:right;padding-right:8px}
 .hm input[type=number]::-webkit-inner-spin-button,.hm input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+/* What a job paid you, said both ways: your hours, and what the print kept. */
+.hoursplit{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
+.hoursplit-eq{font-family:var(--mono);color:var(--txt-3);padding-top:16px}
