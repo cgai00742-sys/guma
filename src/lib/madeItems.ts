@@ -11,6 +11,7 @@
  * failures, a good one's goes with it to the shelf or into an assembly.
  */
 import type { MaterialRef, PrinterRef } from './pricing'
+import type { MadeItemInput, PartRow, PrintRunInput, ShopContext, SliceImportRow } from './data.types'
 
 /** What one recorded print cost -- the same arithmetic as job_actuals
  *  (0033): material at the spool's cost, electricity when the machine has a
@@ -116,3 +117,49 @@ export function parseNeeds(text: string | null | undefined): Need[] {
 }
 
 const round6 = (n: number) => Math.round(n * 1e6) / 1e6
+
+/** The objects of a plate on a project, named as their parts are. Moved
+ *  here from the project screen so the Prusa Connect sync records a print
+ *  exactly as the screen does. */
+export function objectsOf(slice: SliceImportRow, parts: PartRow[]): PlateObject[] {
+  return plateObjects(
+    slice.sections.map((sec) => ({
+      id: sec.id,
+      label: parts.find((p) => p.id === sec.partId)?.label ?? sec.label,
+      qty: sec.qty,
+      estGrams: sec.estGrams,
+    })),
+    slice.estGrams,
+  )
+}
+
+/**
+ * What one recorded print made, ready to write: every object with its share
+ * of the print's cost. A whole plate that failed fails every object, each at
+ * its share of what came off the spool.
+ */
+export function madeFromPrint(
+  ctx: Pick<ShopContext, 'materials' | 'printers' | 'shop'>,
+  run: PrintRunInput,
+  objects: PlateObject[],
+  results: ObjectResult[] | null,
+): MadeItemInput[] {
+  if (!objects.length) return []
+  const total = runCost(run, ctx.materials, ctx.printers, ctx.shop.electricity_rate_kwh == null ? null : Number(ctx.shop.electricity_rate_kwh))
+  let rs: ObjectResult[]
+  if (run.outcome === 'success') rs = results && results.length === objects.length ? results : objects.map((o) => ({ ...o, failed: false, weighed: null }))
+  else {
+    const g = objects.reduce((a, o) => a + (o.grams ?? 0), 0)
+    rs = objects.map((o) => ({ ...o, failed: true, weighed: g > 0 && o.grams != null ? (Number(run.unitsUsed) || 0) * (o.grams / g) : null }))
+  }
+  const split = splitCost(rs, total)
+  return rs.map((r, i) => ({
+    sectionId: r.sectionId,
+    label: r.label,
+    grams: split[i].grams == null ? null : Math.round(split[i].grams! * 10) / 10,
+    unitCost: split[i].unitCost,
+    failed: r.failed,
+    note: r.failed ? run.failureReason ?? null : null,
+  }))
+}
+

@@ -45,6 +45,9 @@ import {
 } from '../data.types'
 import { GATES, PHASE_LABEL, flagsFor, gateStatus, nextPhase } from '../gates'
 import { todayISO } from '../dates'
+import { readFile } from 'node:fs/promises'
+import { basename } from 'node:path'
+import { findPlates, importPlateFile, recordConnectPrint } from '../plateSync'
 
 export interface ToolDef {
   name: string
@@ -469,6 +472,79 @@ export function buildTools(): ToolDef[] {
         })
         return { ok: true }
       },
+    },
+
+    /* ---- Prusa Connect sync (CG, 23 Nov 2026) --------------------------
+     * Connect has no API: an assistant reads the print history page and
+     * records each print here. These do what dropping a file on a project
+     * and recording it does -- same import, same build-sheet marks. */
+    {
+      name: 'guma_find_plate',
+      description:
+        'Find which project(s) a sliced file is already on, by file name (Finder copies like "x 1.bgcode" match "x.bgcode"), with the prints already recorded from it. Call this first for every Prusa Connect history entry: it tells you whether the print is new, a repeat of a plate already on a project, or a file Guma has never seen (then ask which project it belongs to).',
+      inputSchema: obj({ file_name: str('The file name exactly as Prusa Connect shows it.') }, ['file_name']),
+      handler: async (a, ctx) => findPlates(ctx, String(a.file_name)),
+    },
+    {
+      name: 'guma_list_series',
+      description: 'The shop\'s series (its own bodies of work, e.g. BathyTopo › Hawaiian Islands), with ids. Use with guma_set_series.',
+      inputSchema: obj({}),
+      handler: async (_a, ctx) =>
+        (await local.listSeries(ctx.shop.id))
+          .filter((x) => !x.archivedAt)
+          .map((x) => ({ id: x.id, name: x.name, parent_id: x.parentId })),
+    },
+    {
+      name: 'guma_set_series',
+      description: 'File a project in a series, or take it out with series_id null. Ask the person which series when it is not obvious.',
+      inputSchema: obj({ job_id: str(''), series_id: { type: ['string', 'null'], description: 'From guma_list_series, or null.' } }, ['job_id', 'series_id']),
+      writes: true,
+      handler: async (a, ctx) => {
+        await local.setJobSeries(ctx.shop.id, String(a.job_id), a.series_id ? String(a.series_id) : null, ctx.profile.id)
+        return { ok: true }
+      },
+    },
+    {
+      name: 'guma_import_plate',
+      description:
+        'Put a sliced file (.bgcode, .gcode, .gcode.3mf) on a project as a plate, reading it from a path on this computer -- e.g. a file just downloaded from Prusa Connect Files into ~/Downloads. Parts are matched to the build sheet or added, exactly as dropping the file on the project page does. Does NOT record a print: call guma_record_print next with the plate id it returns. Re-importing the same file is safe -- it returns the existing plate.',
+      inputSchema: obj({ job_id: str(''), file_path: str('Absolute path to the file on this computer.') }, ['job_id', 'file_path']),
+      writes: true,
+      handler: async (a, ctx) => {
+        const path = String(a.file_path)
+        const bytes = await readFile(path)
+        const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+        const res = await importPlateFile(ctx, String(a.job_id), {
+          name: basename(path),
+          arrayBuffer: async () => buf,
+          text: async () => new TextDecoder().decode(bytes),
+        })
+        return { plate_id: res.importId, file_name: res.fileName, already_on_project: res.duplicateOf != null, parts_added: res.partsAdded, parts_matched: res.partsMatched }
+      },
+    },
+    {
+      name: 'guma_record_print',
+      description:
+        'Record one print from Prusa Connect\'s history against a plate on a project: the day it ended, the real printing time Connect shows, and FINISHED (success) or STOPPED (cancelled). Grams come from the plate file; a stopped print is costed from how far it got. Material comes off the shelf and the build sheet is marked, as recording it in the app does. A print already recorded (same plate, same day, same time) is not counted twice -- syncing twice is safe.',
+      inputSchema: obj(
+        {
+          job_id: str(''),
+          plate_id: str('From guma_find_plate or guma_import_plate.'),
+          printed_on: str('YYYY-MM-DD: the "Print end" date in Connect.'),
+          minutes: num('Connect\'s "Printing time" in minutes. Omit when Connect shows none; the file\'s estimate is used.'),
+          outcome: { type: 'string', enum: ['success', 'cancelled', 'failed'], description: 'FINISHED = success, STOPPED = cancelled.' },
+          note: str('Why it stopped, if known.'),
+        },
+        ['job_id', 'plate_id', 'printed_on', 'outcome'],
+      ),
+      writes: true,
+      handler: async (a, ctx) =>
+        recordConnectPrint(ctx, String(a.job_id), String(a.plate_id), {
+          printedOn: String(a.printed_on),
+          minutes: a.minutes == null ? null : Number(a.minutes),
+          outcome: a.outcome as 'success' | 'cancelled' | 'failed',
+          note: a.note ?? null,
+        }),
     },
   ]
 }

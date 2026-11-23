@@ -176,8 +176,8 @@ import { fmtMinutes, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
 import { sameSliceFile, uniqueLabel, type PrintRunRow, type SliceImportRow, type StockHoldRow } from '../lib/data.types'
 import { splitJobCost } from '../lib/selling'
 import { fileExtras, type FileExtras } from '../lib/fileExtras'
-import { gramsUsed, plateObjects, runCost, splitCost, assemblyStatus, type ObjectResult, type PlateObject } from '../lib/madeItems'
-import type { MadeItemRow, AssemblyRow, MadeItemInput } from '../lib/data.types'
+import { gramsUsed, plateObjects, assemblyStatus, madeFromPrint, objectsOf, type ObjectResult, type PlateObject } from '../lib/madeItems'
+import type { MadeItemRow, AssemblyRow } from '../lib/data.types'
 import { plateRemoval, strandedReport } from '../lib/plateRemoval'
 import { baseName, choiceFrom, choiceValue, guessSort, nameFromFile, partSizes, perCopyOf, toAssign, type BatchPart, type SortChoice, type SortGuess } from '../lib/sortParts'
 import { materialCheck, trimHolds } from '../lib/scheduleCheck'
@@ -2390,48 +2390,6 @@ function ObjectResults({
 }
 
 /** The objects of a saved plate, each copy once, named as sorted. */
-function objectsOf(slice: SliceImportRow, parts: PartRow[]): PlateObject[] {
-  return plateObjects(
-    slice.sections.map((sec) => ({
-      id: sec.id,
-      label: parts.find((p) => p.id === sec.partId)?.label ?? sec.label,
-      qty: sec.qty,
-      estGrams: sec.estGrams,
-    })),
-    slice.estGrams,
-  )
-}
-
-/**
- * What one recorded print made, ready to write: every object with its share
- * of the print's cost. A whole plate that failed fails every object, each at
- * its share of what came off the spool.
- */
-function madeFromPrint(
-  ctx: ShopContext,
-  run: PrintRunInput,
-  objects: PlateObject[],
-  results: ObjectResult[] | null,
-): MadeItemInput[] {
-  if (!objects.length) return []
-  const total = runCost(run, ctx.materials, ctx.printers, ctx.shop.electricity_rate_kwh == null ? null : Number(ctx.shop.electricity_rate_kwh))
-  let rs: ObjectResult[]
-  if (run.outcome === 'success') rs = results && results.length === objects.length ? results : objects.map((o) => ({ ...o, failed: false, weighed: null }))
-  else {
-    const g = objects.reduce((a, o) => a + (o.grams ?? 0), 0)
-    rs = objects.map((o) => ({ ...o, failed: true, weighed: g > 0 && o.grams != null ? (Number(run.unitsUsed) || 0) * (o.grams / g) : null }))
-  }
-  const split = splitCost(rs, total)
-  return rs.map((r, i) => ({
-    sectionId: r.sectionId,
-    label: r.label,
-    grams: split[i].grams == null ? null : Math.round(split[i].grams! * 10) / 10,
-    unitCost: split[i].unitCost,
-    failed: r.failed,
-    note: r.failed ? run.failureReason ?? null : null,
-  }))
-}
-
 /** One object of a file being read in, named as the card sorted it. */
 function objectsOfRead(read: SliceFile, sorts: SortGuess[], parts: PartRow[]): PlateObject[] {
   return plateObjects(

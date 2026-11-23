@@ -425,3 +425,50 @@ describe('logging what actually happened', () => {
     expect(p.actuals.materialUnits).toBeCloseTo(744, 1)
   })
 })
+
+describe('Prusa Connect sync (CG, 23 Nov)', () => {
+  const SAMPLE = join(here, '../../../samples/maui-top_prusa-xl.bgcode')
+
+  it('imports a plate from a file on disk, records a Connect print once, and costs a stopped one by how far it got', async () => {
+    const k = await setup()
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Maui BathyTopo', brief: '', seriesId: null, neededBy: null })
+
+    const imp = await k.call('guma_import_plate', { job_id: jobId, file_path: SAMPLE })
+    expect(imp.plate_id).toBeTruthy()
+    expect(imp.parts_added).toBeGreaterThan(0)
+    // Same file again: the same plate, not a second one.
+    expect((await k.call('guma_import_plate', { job_id: jobId, file_path: SAMPLE })).plate_id).toBe(imp.plate_id)
+
+    // Connect shows a Finder copy's name; it still finds the plate.
+    const found = await k.call('guma_find_plate', { file_name: 'maui-top_prusa-xl 1.bgcode' })
+    expect(found).toHaveLength(1)
+    expect(found[0]).toMatchObject({ jobId, importId: imp.plate_id, prints: [] })
+
+    const first = await k.call('guma_record_print', { job_id: jobId, plate_id: imp.plate_id, printed_on: '2026-11-22', minutes: 470, outcome: 'success' })
+    expect(first.recorded).toBe(true)
+    expect(first.said).toMatch(/printed 2026-11-22, 7.83h/)
+    const again = await k.call('guma_record_print', { job_id: jobId, plate_id: imp.plate_id, printed_on: '2026-11-22', minutes: 471, outcome: 'success' })
+    expect(again.recorded).toBe(false)
+
+    const stopped = await k.call('guma_record_print', { job_id: jobId, plate_id: imp.plate_id, printed_on: '2026-11-23', minutes: 60, outcome: 'cancelled' })
+    expect(stopped.recorded).toBe(true)
+    const d = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
+    expect(d.runs).toHaveLength(2)
+    const full = d.runs.find((r) => r.outcome === 'success')!
+    const part = d.runs.find((r) => r.outcome === 'cancelled')!
+    expect(Number(full.unitsUsed)).toBeGreaterThan(60)
+    expect(Number(part.unitsUsed)).toBeGreaterThan(0)
+    expect(Number(part.unitsUsed)).toBeLessThan(Number(full.unitsUsed))
+    // In-house: what came off is in Made, ready for the Shelf.
+    expect((await k.local.listMadeItems(k.ctx.shop.id, jobId)).length).toBeGreaterThan(0)
+  })
+
+  it('files a project in a series', async () => {
+    const k = await setup()
+    const sid = await k.local.createSeries(k.ctx.shop.id, { name: 'BathyTopo' })
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Kauai', brief: '', seriesId: null, neededBy: null })
+    expect(await k.call('guma_list_series')).toEqual([{ id: sid, name: 'BathyTopo', parent_id: null }])
+    await k.call('guma_set_series', { job_id: jobId, series_id: sid })
+    expect((await k.local.loadProjectDetail(k.ctx.shop.id, jobId)).facts.seriesId).toBe(sid)
+  })
+})
