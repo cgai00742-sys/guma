@@ -465,7 +465,8 @@ describe('Prusa Connect sync (CG, 23 Nov)', () => {
 
   it('files a project in a series', async () => {
     const k = await setup()
-    const sid = await k.local.createSeries(k.ctx.shop.id, { name: 'BathyTopo' })
+    const sid = (await k.call('guma_create_series', { name: 'BathyTopo' })).series_id
+    expect(await k.call('guma_create_series', { name: 'bathytopo' })).toEqual({ series_id: sid, already_existed: true })
     const jobId = (await k.call('guma_create_inhouse', { title: 'Kauai' })).job_id
     expect((await k.local.loadProjectDetail(k.ctx.shop.id, jobId)).facts.kind).toBe('inhouse')
     expect(await k.call('guma_list_series')).toEqual([{ id: sid, name: 'BathyTopo', parent_id: null }])

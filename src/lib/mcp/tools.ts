@@ -495,6 +495,18 @@ export function buildTools(): ToolDef[] {
           .map((x) => ({ id: x.id, name: x.name, parent_id: x.parentId })),
     },
     {
+      name: 'guma_create_series',
+      description: 'Start a new series (a body of the shop\'s own work, e.g. "RacingSparrow RC Models"), optionally inside another. Only when the person asks for a new one -- check guma_list_series first so it is not made twice.',
+      inputSchema: obj({ name: str(''), parent_id: str('A series it sits inside, if any.') }, ['name']),
+      writes: true,
+      handler: async (a, ctx) => {
+        const name = String(a.name).trim()
+        const existing = (await local.listSeries(ctx.shop.id)).find((x) => x.name.toLowerCase() === name.toLowerCase() && !x.archivedAt)
+        if (existing) return { series_id: existing.id, already_existed: true }
+        return { series_id: await local.createSeries(ctx.shop.id, { name, parentId: a.parent_id ?? null }), already_existed: false }
+      },
+    },
+    {
       name: 'guma_create_inhouse',
       description:
         'Create a project of the shop\'s OWN work -- nobody is paying, so no quote and no invoice -- optionally filed in a series. Use when a Prusa Connect print belongs to something the shop is making for itself and no project exists yet. Ask the person first; never guess that a print is in-house. Client work is a draft from guma_create_draft instead.',
