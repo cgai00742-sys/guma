@@ -261,6 +261,10 @@ export function buildTools(): ToolDef[] {
         const gate = gateStatus(d.phase, d.gates[d.phase] ?? {}, d.facts)
         return {
           ...d,
+          // A plate's thumbnail and minute-by-minute progress curve are for
+          // the screen; sent here they made a 17-plate project 1.2 MB, more
+          // than Claude can read back (CG's RS850, 24 Nov).
+          slices: d.slices.map(({ thumbnail: _t, progress: _p, ...rest }) => rest),
           stage: PHASE_LABEL[d.phase],
           gate: {
             cleared: gate.done,

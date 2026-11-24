@@ -461,6 +461,11 @@ describe('Prusa Connect sync (CG, 23 Nov)', () => {
     expect(Number(part.unitsUsed)).toBeLessThan(Number(full.unitsUsed))
     // In-house: what came off is in Made, ready for the Shelf.
     expect((await k.local.listMadeItems(k.ctx.shop.id, jobId)).length).toBeGreaterThan(0)
+    // The project read leaves out what only the screen needs.
+    const proj = await k.call('guma_project', { job_id: jobId })
+    expect(proj.slices[0]).not.toHaveProperty('thumbnail')
+    expect(proj.slices[0]).not.toHaveProperty('progress')
+    expect(proj.slices[0].fileName).toBe('maui-top_prusa-xl.bgcode')
   })
 
   it('records the objects that did not come off, on the spool it really ran on, into an assembly (CG, 24 Nov)', async () => {
