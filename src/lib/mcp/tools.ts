@@ -495,6 +495,29 @@ export function buildTools(): ToolDef[] {
           .map((x) => ({ id: x.id, name: x.name, parent_id: x.parentId })),
     },
     {
+      name: 'guma_create_inhouse',
+      description:
+        'Create a project of the shop\'s OWN work -- nobody is paying, so no quote and no invoice -- optionally filed in a series. Use when a Prusa Connect print belongs to something the shop is making for itself and no project exists yet. Ask the person first; never guess that a print is in-house. Client work is a draft from guma_create_draft instead.',
+      inputSchema: obj(
+        {
+          title: str('Short project title, e.g. "RS850".'),
+          brief: str('A line on what it is.'),
+          series_id: str('From guma_list_series, if it belongs in one.'),
+        },
+        ['title'],
+      ),
+      writes: true,
+      handler: async (a, ctx) => {
+        const jobId = await local.createInHouseJob(ctx.shop.id, {
+          title: String(a.title),
+          brief: a.brief ?? null,
+          seriesId: a.series_id ?? null,
+          neededBy: null,
+        })
+        return { job_id: jobId }
+      },
+    },
+    {
       name: 'guma_set_series',
       description: 'File a project in a series, or take it out with series_id null. Ask the person which series when it is not obvious.',
       inputSchema: obj({ job_id: str(''), series_id: { type: ['string', 'null'], description: 'From guma_list_series, or null.' } }, ['job_id', 'series_id']),
