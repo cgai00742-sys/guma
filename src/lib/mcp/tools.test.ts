@@ -463,6 +463,32 @@ describe('Prusa Connect sync (CG, 23 Nov)', () => {
     expect((await k.local.listMadeItems(k.ctx.shop.id, jobId)).length).toBeGreaterThan(0)
   })
 
+  it('records the objects that did not come off, on the spool it really ran on, into an assembly (CG, 24 Nov)', async () => {
+    const k = await setup()
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'RS850', brief: '', seriesId: null, neededBy: null })
+    const other = k.ctx.materials[k.ctx.materials.length - 1]
+    const imp = await k.call('guma_import_plate', { job_id: jobId, file_path: join(here, '../../../samples/reef-buoy_prusa.gcode'), material_id: other.id })
+    const d0 = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
+    const labels = d0.parts.map((p) => p.label)
+    expect(labels.length).toBeGreaterThan(1)
+    const asmId = await k.local.saveAssembly(k.ctx.shop.id, jobId, { name: 'RS850 RC Sailboat', needs: labels.map((label) => ({ label, qty: 1 })) })
+    expect((await k.call('guma_list_assemblies', { job_id: jobId }))[0]).toMatchObject({ id: asmId, name: 'RS850 RC Sailboat' })
+
+    const r = await k.call('guma_record_print', {
+      job_id: jobId, plate_id: imp.plate_id, printed_on: '2026-11-22', minutes: 470, outcome: 'success',
+      failed_objects: [labels[0]], assembly_id: asmId, material_id: other.id,
+    })
+    expect(r.recorded).toBe(true)
+    expect(r.said).toMatch(/did not come off/)
+    const d = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
+    expect(d.runs[0].materialId).toBe(other.id)
+    const made = await k.local.listMadeItems(k.ctx.shop.id, jobId)
+    expect(new Set(made.filter((m) => m.status === 'failed').map((m) => m.label))).toEqual(new Set([labels[0]]))
+    expect(made.filter((m) => m.status === 'failed').length).toBeGreaterThan(0)
+    expect(made.filter((m) => m.assemblyId === asmId).length).toBeGreaterThan(0)
+    expect(made.filter((m) => m.assemblyId === asmId).every((m) => m.status === 'assembled')).toBe(true)
+  })
+
   it('files a project in a series', async () => {
     const k = await setup()
     const sid = (await k.call('guma_create_series', { name: 'BathyTopo' })).series_id

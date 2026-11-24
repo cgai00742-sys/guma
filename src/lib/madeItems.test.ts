@@ -57,6 +57,13 @@ describe('an assembly, and what it still needs', () => {
     expect(st.extras).toEqual([{ label: 'Spare pin', n: 1 }])
     expect(st).toMatchObject({ missing: 1, complete: false })
   })
+  it("counts a slicer instance as the piece it copies (CG, 24 Nov: two keel sections)", () => {
+    const st = assemblyStatus([{ label: 'M-RS850-Keel-Section', qty: 2 }], [
+      { label: 'M-RS850-Keel-Section.stl (Instance 1)' },
+      { label: 'M-RS850-Keel-Section.stl (Instance 2)' },
+    ])
+    expect(st).toMatchObject({ missing: 0, complete: true })
+  })
   it('reads needs back safely', () => {
     expect(parseNeeds('[{"label":" Base ","qty":2},{"label":"","qty":1},{"x":1}]')).toEqual([{ label: 'Base', qty: 2 }])
     expect(parseNeeds('nope')).toEqual([])

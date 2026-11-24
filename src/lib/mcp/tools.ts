@@ -48,6 +48,7 @@ import { todayISO } from '../dates'
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { findPlates, importPlateFile, recordConnectPrint } from '../plateSync'
+import { assemblyStatus } from '../madeItems'
 
 export interface ToolDef {
   name: string
@@ -543,17 +544,25 @@ export function buildTools(): ToolDef[] {
       name: 'guma_import_plate',
       description:
         'Put a sliced file (.bgcode, .gcode, .gcode.3mf) on a project as a plate, reading it from a path on this computer -- e.g. a file just downloaded from Prusa Connect Files into ~/Downloads. Parts are matched to the build sheet or added, exactly as dropping the file on the project page does. Does NOT record a print: call guma_record_print next with the plate id it returns. Re-importing the same file is safe -- it returns the existing plate.',
-      inputSchema: obj({ job_id: str(''), file_path: str('Absolute path to the file on this computer.') }, ['job_id', 'file_path']),
+      inputSchema: obj(
+        {
+          job_id: str(''),
+          file_path: str('Absolute path to the file on this computer.'),
+          material_id: str('From guma_shop: the spool it really runs on, when the file names a generic one (sliced as PLA, printed in Wood PLA). Ask when unsure.'),
+        },
+        ['job_id', 'file_path'],
+      ),
       writes: true,
       handler: async (a, ctx) => {
         const path = String(a.file_path)
         const bytes = await readFile(path)
         const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-        const res = await importPlateFile(ctx, String(a.job_id), {
-          name: basename(path),
-          arrayBuffer: async () => buf,
-          text: async () => new TextDecoder().decode(bytes),
-        })
+        const res = await importPlateFile(
+          ctx,
+          String(a.job_id),
+          { name: basename(path), arrayBuffer: async () => buf, text: async () => new TextDecoder().decode(bytes) },
+          a.material_id ?? null,
+        )
         return { plate_id: res.importId, file_name: res.fileName, already_on_project: res.duplicateOf != null, parts_added: res.partsAdded, parts_matched: res.partsMatched }
       },
     },
@@ -568,7 +577,10 @@ export function buildTools(): ToolDef[] {
           printed_on: str('YYYY-MM-DD: the "Print end" date in Connect.'),
           minutes: num('Connect\'s "Printing time" in minutes. Omit when Connect shows none; the file\'s estimate is used.'),
           outcome: { type: 'string', enum: ['success', 'cancelled', 'failed'], description: 'FINISHED = success, STOPPED = cancelled.' },
-          note: str('Why it stopped, if known.'),
+          note: str('Why it stopped or what failed, if known.'),
+          material_id: str('The spool it really ran on, if not the plate\'s.'),
+          failed_objects: { type: 'array', items: { type: 'string' }, description: 'With outcome success: objects that did not come off, by label (Connect shows "Cancelled" objects; the inspection may find more). Ask the person -- never assume.' },
+          assembly_id: str('From guma_list_assemblies: put the good pieces into this assembly. Ask which, for the shop\'s own work.'),
         },
         ['job_id', 'plate_id', 'printed_on', 'outcome'],
       ),
@@ -579,7 +591,22 @@ export function buildTools(): ToolDef[] {
           minutes: a.minutes == null ? null : Number(a.minutes),
           outcome: a.outcome as 'success' | 'cancelled' | 'failed',
           note: a.note ?? null,
+          materialId: a.material_id ?? null,
+          failedObjects: Array.isArray(a.failed_objects) ? a.failed_objects.map(String) : [],
+          assemblyId: a.assembly_id ?? null,
         }),
+    },
+    {
+      name: 'guma_list_assemblies',
+      description: 'The assemblies on one of the shop\'s own projects -- what each needs, what it has so far, open or finished -- with ids for guma_record_print\'s assembly_id.',
+      inputSchema: obj({ job_id: str('') }, ['job_id']),
+      handler: async (a, ctx) => {
+        const items = await local.listMadeItems(ctx.shop.id, String(a.job_id))
+        return (await local.listAssemblies(ctx.shop.id, String(a.job_id))).map((x) => {
+          const st = assemblyStatus(x.needs, items.filter((m) => m.assemblyId === x.id))
+          return { id: x.id, name: x.name, status: x.status, needs: st.lines }
+        })
+      },
     },
   ]
 }

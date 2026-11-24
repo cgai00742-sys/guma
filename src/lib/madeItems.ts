@@ -90,7 +90,16 @@ export interface Need {
  *  name (ignoring case and spacing). Extras -- in it, not on the list -- are
  *  reported so nothing in it goes uncounted. */
 export function assemblyStatus(needs: Need[], items: { label: string }[]) {
-  const key = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ')
+  // "M-RS850-Keel-Section.stl (Instance 2)" is a Keel Section: the slicer's
+  // instance number and file extension say which copy, not which piece
+  // (CG, 24 Nov: two keel sections into one RS850 assembly).
+  const key = (s: string) =>
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/\s*\((instance\s*)?\d+\)$/, '')
+      .replace(/\.(stl|3mf|obj|step|stp)$/, '')
+      .replace(/\s+/g, ' ')
   const have = new Map<string, number>()
   for (const it of items) have.set(key(it.label), (have.get(key(it.label)) ?? 0) + 1)
   const lines = needs.map((n) => {
