@@ -190,7 +190,9 @@ async function handle(msg: any): Promise<void> {
         const out = await callTool(toolName, params?.arguments ?? {})
         reply(id, {
           content: [{ type: 'text', text: JSON.stringify(out, null, 2) }],
-          structuredContent: out && typeof out === 'object' ? out : undefined,
+          // MCP wants an object here. A list (projects, plates, series)
+          // went out bare and Claude refused the whole result (23 Nov).
+          structuredContent: Array.isArray(out) ? { items: out } : out && typeof out === 'object' ? out : undefined,
         })
       } catch (e) {
         // A refusal is a RESULT, not a transport error: isError lets the
