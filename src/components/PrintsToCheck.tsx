@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import * as data from '../lib/data'
-import { listInbox, decideInbox, setInboxStatus, listJobs, listAssemblies } from '../lib/data'
+import { listInbox, decideInbox, setInboxStatus, listJobs, listAssemblies, createInHouseJob } from '../lib/data'
 import type { AssemblyRow, InboxDecision, InboxRow, JobListRow, ShopContext } from '../lib/data.types'
 import { approveInbox, notReady, objectCalls } from '../lib/printInbox'
 import { Flash, useFlash } from './Saving'
@@ -103,7 +103,7 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
   const guessable = shown.filter((r) => !r.decision.jobId && r.suggestedJobId && jobs.some((j) => j.jobId === r.suggestedJobId))
   const jobName = (id: string | null | undefined) => {
     const j = jobs.find((x) => x.jobId === id)
-    return j ? `${j.ref} · ${j.title}` : null
+    return j ? j.title : null
   }
 
   async function decide(row: InboxRow, patch: Partial<InboxDecision>) {
@@ -129,6 +129,32 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
       if (good) say(`${good} print${good === 1 ? '' : 's'} put on ${good === 1 ? 'its project' : 'their projects'}.`)
       if (bad) setError(`Stopped at ${bad.said} The prints after it are still waiting — they may be its reprints.`)
       await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** A project made from the picker, and the other waiting prints whose
+   *  file names carry its name -- offered, not filed (CG, 25 Nov: 18 prints
+   *  of one 32-inch model, no project for them yet). */
+  const [made, setMade] = useState<{ jobId: string; title: string } | null>(null)
+  const alike = made
+    ? (rows ?? []).filter((r) => !r.decision.jobId && r.fileName.toLowerCase().includes(made.title.toLowerCase()))
+    : []
+
+  async function createFor(row: InboxRow, title: string) {
+    const name = title.trim()
+    if (!name) return
+    setBusy(true)
+    setError(null)
+    try {
+      const jobId = await createInHouseJob(ctx.shop.id, { title: name })
+      setJobs(await listJobs(ctx.shop.id).then((j) => j.filter((x) => x.phase !== 'delivered')))
+      await decide(row, { jobId })
+      setMade({ jobId, title: name })
+      say(`${name} started as your own project.`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -191,6 +217,27 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
         </div>
 
         <Flash message={flash} />
+        {made && alike.length > 0 && (
+          <div className="attn warn" role="note" style={{ marginBottom: 8 }}>
+            <span>
+              {alike.length} other print{alike.length === 1 ? ' has' : 's have'} “{made.title}” in the file name.{' '}
+              <button
+                type="button"
+                className="btn sm"
+                disabled={busy}
+                onClick={() => {
+                  void Promise.all(alike.map((r) => decide(r, { jobId: made.jobId })))
+                  setMade(null)
+                }}
+              >
+                File {alike.length === 1 ? 'it' : `all ${alike.length}`} in {made.title}
+              </button>{' '}
+              <button type="button" className="linkbtn" style={{ width: 'auto', marginTop: 0 }} onClick={() => setMade(null)}>
+                no
+              </button>
+            </span>
+          </div>
+        )}
         {error && (
           <div className="attn crit" role="alert" style={{ marginBottom: 8 }}>
             <span>{error}</span>
@@ -208,6 +255,7 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
             onDecide={(p) => void decide(row, p)}
             onApprove={() => void approve([row.id])}
             onIgnore={() => void setAside(row)}
+            onCreate={(title) => void createFor(row, title)}
           />
         ))}
         {shown.length > FIRST && (
@@ -229,6 +277,7 @@ function InboxCard({
   onDecide,
   onApprove,
   onIgnore,
+  onCreate,
 }: {
   ctx: ShopContext
   row: InboxRow
@@ -238,7 +287,9 @@ function InboxCard({
   onDecide: (patch: Partial<InboxDecision>) => void
   onApprove: () => void
   onIgnore: () => void
+  onCreate: (title: string) => void
 }) {
+  const [naming, setNaming] = useState<string | null>(null)
   const calls = objectCalls(row)
   const failed = calls.filter((c) => c.call === 'failed')
   const missing = notReady(row)
@@ -283,22 +334,61 @@ function InboxCard({
         <div className="grid2" style={{ marginTop: 10, gap: 12 }}>
           <div className="fld">
             <label>Project</label>
-            <select value={d.jobId ?? ''} onChange={(e) => onDecide({ jobId: e.target.value || null })} disabled={busy}>
-              <option value="">— not decided —</option>
-              {jobs.map((j) => (
-                <option key={j.jobId} value={j.jobId}>
-                  {j.ref} · {j.title}
-                </option>
-              ))}
-            </select>
+            {/* Names only: the reference number is for paperwork, the name
+                is how a project is found (CG, 25 Nov). The last option
+                starts one, for a print whose project does not exist yet. */}
+            {naming == null ? (
+              <select
+                value={d.jobId ?? ''}
+                onChange={(e) => {
+                  if (e.target.value === '__new') setNaming('')
+                  else onDecide({ jobId: e.target.value || null })
+                }}
+                disabled={busy}
+              >
+                <option value="">— not decided —</option>
+                {jobs.map((j) => (
+                  <option key={j.jobId} value={j.jobId}>
+                    {j.title}
+                  </option>
+                ))}
+                <option value="__new">+ New project…</option>
+              </select>
+            ) : (
+              <form
+                style={{ display: 'flex', gap: 6 }}
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (naming.trim()) {
+                    onCreate(naming)
+                    setNaming(null)
+                  }
+                }}
+              >
+                <input autoFocus value={naming} placeholder="Name the project, e.g. 32 Inch Wood Filled Model" aria-label="New project name" onChange={(e) => setNaming(e.target.value)} />
+                <button type="submit" className="btn sm primary" disabled={busy || !naming.trim()}>
+                  Create
+                </button>
+                <button type="button" className="btn sm ghost" onClick={() => setNaming(null)}>
+                  Cancel
+                </button>
+              </form>
+            )}
+            {naming != null && (
+              <div className="hint">
+                Starts it as your own work, ready for plates and prints. Client work begins from{' '}
+                <Link to="/intake">+ New project</Link>, with a quote.
+              </div>
+            )}
             {row.suggestedJobId && d.jobId !== row.suggestedJobId && (
               <div className="hint" style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
                 <span>
                   {d.jobId ? 'Guma guessed another: ' : 'Guma’s guess: '}
-                  {row.suggestReason}
+                  {/* Rows saved before 25 Nov carry the reference number. */}
+                  {(row.suggestReason ?? '').replace(/\b[A-Z]+-\d{4}-\d{4}\s/g, '')}
                 </span>
                 <button type="button" className="linkbtn" style={{ width: 'auto', marginTop: 0 }} onClick={() => onDecide({ jobId: row.suggestedJobId })}>
-                  use {jobs.find((j) => j.jobId === row.suggestedJobId)?.ref ?? 'it'}
+                  use {jobs.find((j) => j.jobId === row.suggestedJobId)?.title ?? 'it'}
                 </button>
               </div>
             )}
@@ -410,7 +500,7 @@ function InboxCard({
 ) : (
           job && (
             <Link to={`/project/${job.jobId}`} className="linkbtn" style={{ width: 'auto' }}>
-              On {job.ref} · {job.title} →
+              On {job.title} →
             </Link>
           )
         )}

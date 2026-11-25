@@ -108,14 +108,14 @@ export async function suggestProject(
   const jobs = (await api.listJobs(ctx.shop.id)).filter((j) => j.phase !== 'delivered')
   for (const j of [...jobs].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
     const d = await api.loadProjectDetail(ctx.shop.id, j.jobId)
-    if (d.slices.some((s) => plainName(s.fileName) === want)) return { jobId: j.jobId, reason: `This file is already a plate on ${j.ref} ${j.title}.` }
+    if (d.slices.some((s) => plainName(s.fileName) === want)) return { jobId: j.jobId, reason: `This file is already a plate on ${j.title}.` }
   }
   // The first real word of the name: "A-RS850-Hull-Stern_..." and
   // "RS850 - 11.17..." both lead with RS850; a plate letter is skipped.
   const lead = fileName.trim().toLowerCase().split(/[\s_.\-]+/).find((w) => w.length >= 3)
   if (lead) {
     const hits = jobs.filter((j) => j.title.toLowerCase().split(/[^a-z0-9]+/).includes(lead))
-    if (hits.length === 1) return { jobId: hits[0].jobId, reason: `The file name starts with “${lead.toUpperCase()}”, like ${hits[0].ref} ${hits[0].title}.` }
+    if (hits.length === 1) return { jobId: hits[0].jobId, reason: `The file name starts with “${lead.toUpperCase()}”, like ${hits[0].title}.` }
   }
   return { jobId: null, reason: null }
 }
