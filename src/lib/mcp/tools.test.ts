@@ -456,7 +456,8 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect((await add(k, REEF, 1, '2026-11-20')).already_in_inbox).toBe(true)
     expect((await k.local.loadProjectDetail(k.ctx.shop.id, jobId)).runs).toHaveLength(0)
     const [row] = await k.call('guma_inbox_list', {})
-    expect(row).toMatchObject({ status: 'new', missing: null, file_name: 'reef-buoy_prusa.gcode' })
+    // Waiting for the person's inspection: the assistant cannot give it.
+    expect(row).toMatchObject({ status: 'new', missing: 'Say how it came off.', file_name: 'reef-buoy_prusa.gcode' })
     // Once a plate of it is on a project, the file itself is the reason.
     const { toolsFor } = await import('./tools')
     expect(toolsFor('write').map((t) => t.name).filter((n) => /approve|record_print|import_plate/.test(n))).toEqual([])
@@ -470,8 +471,8 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     const again = await add(k, capOnly(), 155, '2026-11-20')
     expect(again.suggested_project).toBe(jobId)
     const asm = await k.local.saveAssembly(k.ctx.shop.id, jobId, { name: 'Buoy', needs: [] })
-    await k.local.decideInbox(k.ctx.shop.id, first.inbox_id, { jobId, objects: { Cap: 'failed' }, reason: 'Quality: layer lines', assemblyId: asm })
-    await k.local.decideInbox(k.ctx.shop.id, again.inbox_id, { jobId, assemblyId: asm })
+    await k.local.decideInbox(k.ctx.shop.id, first.inbox_id, { jobId, objects: { Cap: 'failed' }, reason: 'Quality: layer lines', assemblyId: asm, inspected: true })
+    await k.local.decideInbox(k.ctx.shop.id, again.inbox_id, { jobId, assemblyId: asm, inspected: true })
 
     // Approved newest-first on purpose: the Inbox puts them in date order.
     const res = await approveInbox(k.ctx, k.local, [again.inbox_id, first.inbox_id])
@@ -500,7 +501,10 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect(res).toHaveLength(1)
     expect(res[0]).toMatchObject({ ok: false })
     expect(res[0].said).toMatch(/Pick the project/)
-    await k.local.decideInbox(k.ctx.shop.id, a.inbox_id, { jobId, objects: { Cap: 'failed' } })
+    // Not inspected yet: refused before anything else.
+    await k.local.decideInbox(k.ctx.shop.id, a.inbox_id, { jobId })
+    expect((await approveInbox(k.ctx, k.local, [a.inbox_id]))[0].said).toMatch(/Say how it came off/)
+    await k.local.decideInbox(k.ctx.shop.id, a.inbox_id, { jobId, objects: { Cap: 'failed' }, inspected: true })
     expect((await approveInbox(k.ctx, k.local, [a.inbox_id]))[0].said).toMatch(/Say why/)
   })
 
@@ -533,6 +537,8 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect(await k.local.listInbox(k.ctx.shop.id, 'all')).toHaveLength(1)
 
     // And it goes back on, decided again, onto the same plate.
+    expect((await approveInbox(k.ctx, k.local, [row.id]))[0].said).toMatch(/Say how it came off/)
+    await k.local.decideInbox(k.ctx.shop.id, row.id, { ...row.decision, inspected: true })
     const r = await approveInbox(k.ctx, k.local, [row.id])
     expect(r[0].ok).toBe(true)
     const d2 = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
@@ -540,7 +546,9 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect(d2.runs).toHaveLength(1)
     // Sent back once more: its own Inbox row comes back to "new".
     await sendBackToInbox(k.ctx, k.local, jobId, [r[0].runId!])
-    expect((await k.local.listInbox(k.ctx.shop.id, 'new')).map((x) => x.id)).toEqual([row.id])
+    const back = await k.local.listInbox(k.ctx.shop.id, 'new')
+    expect(back.map((x) => x.id)).toEqual([row.id])
+    expect(back[0].decision.inspected).toBe(false)
   })
 
   it('files a project in a series', async () => {

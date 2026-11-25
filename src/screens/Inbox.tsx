@@ -206,12 +206,16 @@ function InboxCard({
   const failed = calls.filter((c) => c.call === 'failed')
   const missing = notReady(row)
   const d = row.decision
+  const decided = row.status !== 'new'
   const job = jobs.find((j) => j.jobId === d.jobId)
   const inhouse = job?.facts.kind === 'inhouse'
   const fileMaterial = row.materialText ?? 'the file’s'
-  const setCall = (label: string, call: 'good' | 'failed') => onDecide({ objects: { ...(d.objects ?? {}), ...Object.fromEntries(calls.map((c) => [c.label, c.call])), [label]: call } })
-  const setAll = (call: 'good' | 'failed') => onDecide({ objects: Object.fromEntries(calls.map((c) => [c.label, call])) })
-  const decided = row.status !== 'new'
+  // Any answer here is the inspection: until one is given, nothing is
+  // highlighted and the print cannot be approved.
+  const setCall = (label: string, call: 'good' | 'failed') =>
+    onDecide({ inspected: true, objects: { ...(d.objects ?? {}), ...Object.fromEntries(calls.map((c) => [c.label, c.call])), [label]: call } })
+  const setAll = (call: 'good' | 'failed') => onDecide({ inspected: true, objects: Object.fromEntries(calls.map((c) => [c.label, call])) })
+  const asked = !!d.inspected || decided
   const over = row.minutes != null && row.estMinutes != null && row.minutes > row.estMinutes * 1.5 + 10
 
   return (
@@ -275,8 +279,13 @@ function InboxCard({
       {/* How it came off: always the person's call. */}
       <div className="objresults" role="group" aria-label={`How ${row.fileName} came off`} style={{ marginTop: 10 }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-          <span className="lbl">How it came off</span>
-          {!decided && calls.length > 1 && (
+          <span className="lbl">How it came off{asked ? '' : ' — your inspection'}</span>
+          {!decided && !asked && calls.length > 0 && (
+            <button type="button" className="btn sm" onClick={() => setAll('good')}>
+              ✓ All came off clean
+            </button>
+          )}
+          {!decided && asked && calls.length > 1 && (
             <>
               <button type="button" className="linkbtn" style={{ width: 'auto', marginTop: 0, fontSize: 11 }} onClick={() => setAll('good')}>
                 all good
@@ -297,10 +306,10 @@ function InboxCard({
                 {o && o.qty > 1 ? ` ×${o.qty}` : ''}
               </span>
               <span className="seg" role="group" aria-label={`How ${c.label} came off`}>
-                <button type="button" disabled={decided} className={`segbtn printed ${c.call === 'good' ? 'on' : ''}`} aria-pressed={c.call === 'good'} onClick={() => setCall(c.label, 'good')}>
+                <button type="button" disabled={decided} className={`segbtn printed ${asked && c.call === 'good' ? 'on' : ''}`} aria-pressed={asked && c.call === 'good'} onClick={() => setCall(c.label, 'good')}>
                   ✓ Good
                 </button>
-                <button type="button" disabled={decided} className={`segbtn reprint ${c.call === 'failed' ? 'on' : ''}`} aria-pressed={c.call === 'failed'} onClick={() => setCall(c.label, 'failed')}>
+                <button type="button" disabled={decided} className={`segbtn reprint ${asked && c.call === 'failed' ? 'on' : ''}`} aria-pressed={asked && c.call === 'failed'} onClick={() => setCall(c.label, 'failed')}>
                   ✕ Failed
                 </button>
               </span>
@@ -309,7 +318,13 @@ function InboxCard({
         })}
       </div>
 
-      {!decided && failed.length > 0 && (
+      {!decided && !asked && (row.state === 'stopped' || row.facts.cancelled?.length) ? (
+        <div className="hint" style={{ marginTop: 4 }}>
+          {row.state === 'stopped' ? 'The printer stopped it part way' : `Connect cancelled ${row.facts.cancelled!.join(', ')}`} — did anything still come off?
+        </div>
+      ) : null}
+
+      {!decided && asked && failed.length > 0 && (
         <div className="fld" style={{ marginTop: 8 }}>
           <label>Why it failed — it goes back on the build sheet to reprint</label>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
@@ -323,7 +338,7 @@ function InboxCard({
         </div>
       )}
 
-      {!decided && inhouse && failed.length < calls.length && (
+      {!decided && inhouse && asked && failed.length < calls.length && (
         <div className="fld" style={{ marginTop: 8 }}>
           <label>The good pieces go</label>
           <select value={d.assemblyId ?? ''} onChange={(e) => onDecide({ assemblyId: e.target.value || null })} disabled={busy}>

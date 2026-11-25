@@ -38,6 +38,7 @@ export type InboxApi = RecordApi &
     | 'deletePrintRun'
     | 'sliceFileContent'
     | 'adoptInboxItem'
+    | 'decideInbox'
   >
 
 async function sha1(bytes: Uint8Array): Promise<string> {
@@ -135,6 +136,7 @@ export function notReady(row: InboxRow): string | null {
   if (row.status !== 'new') return 'Already decided.'
   if (!row.decision.jobId) return 'Pick the project it belongs to.'
   if (!row.fileId) return 'Guma has no copy of the file — add it again.'
+  if (!row.decision.inspected) return 'Say how it came off.'
   const calls = objectCalls(row)
   if (calls.some((c) => c.call === 'failed') && !(row.decision.reason ?? '').trim()) return 'Say why what failed failed.'
   return null
@@ -284,8 +286,12 @@ export async function sendBackToInbox(
   })
   for (const p of order) {
     await api.deletePrintRun(ctx.shop.id, p.runId, true)
-    if (p.existing) await api.setInboxStatus(ctx.shop.id, p.existing.id, 'new')
-    else {
+    if (p.existing) {
+      await api.setInboxStatus(ctx.shop.id, p.existing.id, 'new')
+      // Sent back to be judged again: the earlier answers stay as a start,
+      // but it is not inspected until the person says so again.
+      await api.decideInbox(ctx.shop.id, p.existing.id, { ...p.existing.decision, inspected: false })
+    } else {
       const res = await api.addInboxItem(ctx.shop.id, p.add!)
       if (res.existed) await api.setInboxStatus(ctx.shop.id, res.id, 'new')
     }

@@ -1836,6 +1836,11 @@ export interface InboxDecision {
   /** Per object, by label as in the file. Missing means good on a finished
    *  print and failed on a stopped one. */
   objects?: Record<string, InboxObjectCall>
+  /** A person has looked at the print and said how it came off. Nothing is
+   *  approved without it -- "I still need to be asked if the print was a
+   *  success or failure based on the post print inspection" (CG, 23 Nov).
+   *  Set only by the person, in the app; no assistant tool can set it. */
+  inspected?: boolean
   /** Why what failed failed: "quality", "adhesion", or the shop's words. */
   reason?: string | null
   /** In-house work: the assembly the good pieces go into. */
