@@ -318,7 +318,7 @@ src-tauri/migrations/      the desktop schema. A shipped migration is FROZEN —
 cloud/supabase/migrations/ the same schema, reserved for the cloud edition
 mcp/                       the MCP server: stdio transport, the SQLite shim,
                            and where it looks for your database
-src/lib/mcp/tools.ts       the nineteen tools, and the list of what none of
+src/lib/mcp/tools.ts       the twenty tools, and the list of what none of
                            them can do
 scripts/repair-migrations.mjs   `npm run db:repair`, for a database whose
                            migration checksums have drifted

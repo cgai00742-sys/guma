@@ -38,6 +38,7 @@ import {
 } from '../lib/sliceImport'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ProjectInbox } from '../components/ProjectInbox'
+import { PrintPhotoLink, useRunPhotoRefs } from '../components/PrintPhotos'
 import {
   CLIENT_KIND_LABEL,
   PAYMENT_KINDS,
@@ -3737,6 +3738,7 @@ function SliceRuns({
   onChanged: () => Promise<void>
   setError: (m: string | null) => void
 }) {
+  const photoRefs = useRunPhotoRefs(ctx, detail.jobId, detail.runs.map((r) => r.id).join(','))
   const [openId, setOpenId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState<PrintRunInput | null>(null)
@@ -4577,6 +4579,7 @@ function SliceRuns({
                   <PrintLine
                     key={r.id}
                     run={r}
+                    photo={photoRefs[r.id] ? <PrintPhotoLink ctx={ctx} inboxId={photoRefs[r.id]} /> : null}
                     parts={detail.parts}
                     hideMarks={mine}
                     busy={busy || saving}
@@ -6562,6 +6565,7 @@ function RunLog({
    *  there, under its file, and not a second time here (CG, 15 Oct). */
   platesAbove?: boolean
 }) {
+  const photoRefs = useRunPhotoRefs(ctx, detail.jobId, detail.runs.map((r) => r.id).join(','))
   const [mode, setMode] = useState<'none' | 'run' | 'work'>('none')
   const [saving, setSaving] = useState(false)
   const sliceIds = new Set(detail.slices.map((x) => x.id))
@@ -6828,6 +6832,7 @@ function RunLog({
             <PrintLine
               key={r.id}
               run={r}
+              photo={photoRefs[r.id] ? <PrintPhotoLink ctx={ctx} inboxId={photoRefs[r.id]} /> : null}
               parts={detail.parts}
               busy={saving}
               onRemove={async (undo) => {
@@ -8870,7 +8875,10 @@ function PrintLine({
   onCorrect,
   showFile,
   hideMarks = false,
+  photo,
 }: {
+  /** The end-of-print photo it was approved on, when it has one. */
+  photo?: React.ReactNode
   run: PrintRunRow
   parts: PartRow[]
   /** Your own work tracks pieces in Made, not copies on a parts list. */
@@ -8919,6 +8927,7 @@ function PrintLine({
             .join('; ')}`}
       </span>
       <span style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+        {photo}
         {onCorrect && (
           <button
             type="button"

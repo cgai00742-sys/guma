@@ -52,6 +52,9 @@ import {
   type InboxRow,
   type InboxStatus,
   type InboxFacts,
+  type InboxPhotoKind,
+  type InboxPictures,
+  checkPhotoData,
   inboxFileSummary,
   parseJsonObject,
   type ItemPlace,
@@ -5654,4 +5657,53 @@ export async function adoptInboxItem(
       where id = ? and shop_id = ?`,
     [patch.sourceRef, patch.printerId, patch.startedAt, patch.endedAt, patch.minutes, JSON.stringify(patch.facts ?? {}), patch.state, id, shopId],
   )
+}
+
+/* ---- photos of a print (0049) ------------------------------------------ */
+
+/** Keep a photo with a print waiting or approved; one of each kind, the
+ *  newest replacing an older one. */
+export async function saveInboxPhoto(shopId: string, inboxId: string, kind: InboxPhotoKind, data: string, takenAt: string | null): Promise<void> {
+  checkPhotoData(data)
+  const d = await db()
+  const [r] = await d.select<{ id: string }[]>('select id from print_inbox where id = ? and shop_id = ?', [inboxId, shopId])
+  if (!r) throw new Error('That print is not in Prints to check.')
+  await d.execute('delete from print_inbox_photos where inbox_id = ? and kind = ?', [inboxId, kind])
+  await d.execute(
+    'insert into print_inbox_photos (id, shop_id, inbox_id, kind, taken_at, data) values (?, ?, ?, ?, ?, ?)',
+    [uuid(), shopId, inboxId, kind, takenAt, data],
+  )
+}
+
+/** The plate picture (from the kept file) and the printer's photos. */
+export async function inboxPictures(shopId: string, inboxId: string): Promise<InboxPictures> {
+  const d = await db()
+  const [p] = await d.select<{ plate: string | null }[]>(
+    `select json_extract(f.payload, '$.thumbnail') as plate from print_inbox i
+       left join print_inbox_files f on f.id = i.file_id
+      where i.id = ? and i.shop_id = ?`,
+    [inboxId, shopId],
+  )
+  const photos = await d.select<{ kind: InboxPhotoKind; taken_at: string | null; data: string }[]>(
+    "select kind, taken_at, data from print_inbox_photos where inbox_id = ? and shop_id = ? order by case kind when 'camera_last' then 0 else 1 end",
+    [inboxId, shopId],
+  )
+  return {
+    plate: typeof p?.plate === 'string' && p.plate.startsWith('data:image/') ? p.plate : null,
+    photos: photos.map((x) => ({ kind: x.kind, takenAt: x.taken_at, data: x.data })),
+  }
+}
+
+/** Prints on this project that came through Prints to check with a photo,
+ *  by print id -> inbox id. Cheap: no picture is read. */
+export async function runPhotoRefs(shopId: string, jobId: string): Promise<Record<string, string>> {
+  const d = await db()
+  const rows = await d.select<{ run_id: string; inbox_id: string }[]>(
+    `select r.id as run_id, i.id as inbox_id from print_runs r
+       join print_inbox i on i.run_id = r.id
+      where r.job_id = ? and r.shop_id = ?
+        and exists (select 1 from print_inbox_photos p where p.inbox_id = i.id)`,
+    [jobId, shopId],
+  )
+  return Object.fromEntries(rows.map((r) => [r.run_id, r.inbox_id]))
 }

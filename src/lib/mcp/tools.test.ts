@@ -602,6 +602,35 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect(d2.parts.length).toBeGreaterThan(0)
   })
 
+  it('keeps the printer camera photo with a print, and with the print once approved (CG, 25 Nov)', async () => {
+    const k = await setup()
+    const { approveInbox } = await import('../printInbox')
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Maui', brief: '', seriesId: null, neededBy: null })
+    const r = await k.call('guma_inbox_add_print', { file_path: SAMPLE, source_ref: 'connect:h:142', ended_at: '2026-11-12T19:22:00-10:00', state: 'finished', minutes: 71 })
+    const dir = mkdtempSync(join(tmpdir(), 'guma-photo-'))
+    // The smallest valid JPEG header is enough: Guma keeps bytes, it does not decode them.
+    const jpg = join(dir, 'guma-snapshot-hatsa-142-last.jpg')
+    writeFileSync(jpg, Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==', 'base64'))
+    const added = await k.call('guma_inbox_add_photo', { source_ref: 'connect:h:142', file_path: jpg, taken_at: '2026-11-12T19:22:23-10:00' })
+    expect(added).toMatchObject({ inbox_id: r.inbox_id, kind: 'camera_last' })
+    // Again: replaces, never two of a kind.
+    await k.call('guma_inbox_add_photo', { source_ref: 'connect:h:142', file_path: jpg })
+    const pics = await k.local.inboxPictures(k.ctx.shop.id, r.inbox_id)
+    expect(pics.photos).toHaveLength(1)
+    expect(pics.photos[0].data).toMatch(/^data:image\/jpeg;base64,\/9j\//)
+    // The plate picture comes from the kept file, no download.
+    expect(pics.plate).toMatch(/^data:image\/png;base64,/)
+
+    const txt = join(dir, 'notes.txt')
+    writeFileSync(txt, 'hello')
+    await expect(k.call('guma_inbox_add_photo', { source_ref: 'connect:h:142', file_path: txt })).rejects.toThrow(/jpg, .png or .webp/)
+    await expect(k.call('guma_inbox_add_photo', { source_ref: 'connect:h:999', file_path: jpg })).rejects.toThrow(/No print/)
+
+    await k.local.decideInbox(k.ctx.shop.id, r.inbox_id, { jobId, inspected: true })
+    const res = await approveInbox(k.ctx, k.local, [r.inbox_id])
+    expect(await k.local.runPhotoRefs(k.ctx.shop.id, jobId)).toEqual({ [res[0].runId!]: r.inbox_id })
+  })
+
   it('files a project in a series', async () => {
     const k = await setup()
     const sid = (await k.call('guma_create_series', { name: 'BathyTopo' })).series_id

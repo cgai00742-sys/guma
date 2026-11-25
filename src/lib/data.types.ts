@@ -1913,3 +1913,25 @@ export function inboxFileSummary(payload: string | null | undefined): Pick<Inbox
     materialText: p.materialText ?? null,
   }
 }
+
+/** A photo of a print (0049): the printer's camera at the end, or start. */
+export type InboxPhotoKind = 'camera_last' | 'camera_first'
+export interface InboxPhoto {
+  kind: InboxPhotoKind
+  takenAt: string | null
+  /** A data: URL (JPEG). */
+  data: string
+}
+/** What a print can be judged by: the plate the file says, the photos the
+ *  printer took. */
+export interface InboxPictures {
+  plate: string | null
+  photos: InboxPhoto[]
+}
+
+/** Only a JPEG or PNG data: URL, and not a huge one: a photo goes in a
+ *  database row. */
+export function checkPhotoData(data: string): void {
+  if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(data)) throw new Error('That is not a photo Guma can keep (JPEG, PNG or WebP).')
+  if (data.length > 2_500_000) throw new Error('That photo is too big to keep — resize it to about 1280 pixels wide first.')
+}

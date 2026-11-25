@@ -24,7 +24,7 @@ import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
-import { inboxFileSummary, parseJsonObject, type InboxAddInput, type InboxDecision, type InboxFacts, type InboxRow, type InboxStatus } from './data.types'
+import { checkPhotoData, inboxFileSummary, parseJsonObject, type InboxPhotoKind, type InboxPictures, type InboxAddInput, type InboxDecision, type InboxFacts, type InboxRow, type InboxStatus } from './data.types'
 import { describeHolds, quoteBases, uniqueLabel, validateMadeItems, shelfNote, type SectionAssign, type SectionMoveResult, type MadeItemRow, type MadeItemInput, type AssemblyRow, type AssemblyInput, type ItemPlace, type MadeStatus, type ProductPatch } from './data.types'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, describeRunCorrection, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
@@ -4774,4 +4774,39 @@ export async function adoptInboxItem(
   if (patch.printerId) row.printer_id = patch.printerId
   const { error } = await supabase.from('print_inbox').update(row).eq('id', id).eq('shop_id', shopId)
   if (error) throw error
+}
+
+export async function saveInboxPhoto(shopId: string, inboxId: string, kind: InboxPhotoKind, data: string, takenAt: string | null): Promise<void> {
+  checkPhotoData(data)
+  const { data: r, error: e1 } = await supabase.from('print_inbox').select('id').eq('id', inboxId).eq('shop_id', shopId).maybeSingle()
+  if (e1) throw e1
+  if (!r) throw new Error('That print is not in Prints to check.')
+  const { error: e2 } = await supabase.from('print_inbox_photos').delete().eq('inbox_id', inboxId).eq('kind', kind)
+  if (e2) throw e2
+  const { error } = await supabase.from('print_inbox_photos').insert({ shop_id: shopId, inbox_id: inboxId, kind, taken_at: takenAt, data })
+  if (error) throw error
+}
+
+export async function inboxPictures(shopId: string, inboxId: string): Promise<InboxPictures> {
+  const { data: row, error } = await supabase.from('print_inbox').select('print_inbox_files(payload)').eq('id', inboxId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  const thumb = parseJsonObject<{ thumbnail?: string }>((row as any)?.print_inbox_files?.payload ?? null).thumbnail
+  const { data: photos, error: e2 } = await supabase.from('print_inbox_photos').select('kind, taken_at, data').eq('inbox_id', inboxId).eq('shop_id', shopId)
+  if (e2) throw e2
+  return {
+    plate: typeof thumb === 'string' && thumb.startsWith('data:image/') ? thumb : null,
+    photos: ((photos ?? []) as any[])
+      .sort((a, b) => (a.kind === 'camera_last' ? 0 : 1) - (b.kind === 'camera_last' ? 0 : 1))
+      .map((x) => ({ kind: x.kind, takenAt: x.taken_at, data: x.data })),
+  }
+}
+
+export async function runPhotoRefs(shopId: string, jobId: string): Promise<Record<string, string>> {
+  const { data: runs, error } = await supabase.from('print_runs').select('id').eq('job_id', jobId).eq('shop_id', shopId)
+  if (error) throw error
+  const ids = ((runs ?? []) as any[]).map((r) => r.id)
+  if (!ids.length) return {}
+  const { data: rows, error: e2 } = await supabase.from('print_inbox').select('id, run_id, print_inbox_photos(id)').eq('shop_id', shopId).in('run_id', ids)
+  if (e2) throw e2
+  return Object.fromEntries(((rows ?? []) as any[]).filter((r) => (r.print_inbox_photos ?? []).length > 0).map((r) => [r.run_id, r.id]))
 }

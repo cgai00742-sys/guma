@@ -26,6 +26,7 @@ import type { AssemblyRow, ClientRow, InboxDecision, InboxRow, JobListRow, ShopC
 import { startProject, type StartInput } from '../lib/startProject'
 import { approveInbox, notReady, objectCalls } from '../lib/printInbox'
 import { Flash, useFlash } from './Saving'
+import { PrintPictures } from './PrintPhotos'
 
 const REASONS = ['Quality', 'Adhesion', 'Warping', 'Layer shift', 'Spaghetti', 'Stringing', 'Cancelled', 'Test print']
 /** Shown before "show the rest": the oldest few, since they go first. */
@@ -373,6 +374,9 @@ function InboxCard({
           {(row.facts.notes ?? []).join(' ')}
         </div>
       )}
+
+      {/* The photo first: it is what the inspection is made from. */}
+      <PrintPictures ctx={ctx} inboxId={row.id} />
 
       {!decided && (
         <div className="grid2" style={{ marginTop: 10, gap: 12 }}>

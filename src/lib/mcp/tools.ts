@@ -610,6 +610,33 @@ export function buildTools(): ToolDef[] {
       },
     },
     {
+      name: 'guma_inbox_add_photo',
+      description:
+        'Keep the printer camera\'s photo with a print in Prints to check -- the snapshot Prusa Connect shows under "Camera snapshots" on the job page (Last = the end of the print, what the person inspects; First = the start). Read it from a path on this computer: a JPEG saved from the snapshot, about 1280 pixels wide. The person sees it beside the print when saying how it came off, and it stays with the print once approved. A second photo of the same kind replaces the first.',
+      inputSchema: obj(
+        {
+          source_ref: str('The print\'s source_ref, as given to guma_inbox_add_print.'),
+          file_path: str('Absolute path to the .jpg (or .png) on this computer.'),
+          kind: { type: 'string', enum: ['camera_last', 'camera_first'], description: 'Default camera_last.' },
+          taken_at: str('When the camera took it, ISO with the shop\'s offset, if known.'),
+        },
+        ['source_ref', 'file_path'],
+      ),
+      writes: true,
+      handler: async (a, ctx) => {
+        const row = (await local.listInbox(ctx.shop.id, 'all')).find((r) => r.sourceRef === String(a.source_ref))
+        if (!row) throw new Error(`No print ${a.source_ref} in Prints to check — add it with guma_inbox_add_print first.`)
+        const path = String(a.file_path)
+        const ext = path.toLowerCase().split('.').pop()
+        const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : null
+        if (!mime) throw new Error('Only a .jpg, .png or .webp photo can be kept.')
+        const bytes = await readFile(path)
+        const kind = a.kind === 'camera_first' ? 'camera_first' : 'camera_last'
+        await local.saveInboxPhoto(ctx.shop.id, row.id, kind, `data:${mime};base64,${bytes.toString('base64')}`, a.taken_at ?? null)
+        return { inbox_id: row.id, file_name: row.fileName, kind, kept_kb: Math.round(bytes.length / 1024) }
+      },
+    },
+    {
       name: 'guma_inbox_list',
       description:
         'The Print Inbox: prints waiting for the person to approve (status "new"), or all of them. Each shows what the printer said, Guma\'s suggested project and why, and what is still missing before it can be approved. There is no tool to approve one: only the person, after inspecting the print, does that in the app.',

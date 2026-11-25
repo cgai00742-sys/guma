@@ -296,6 +296,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0048_print_inbox_summary.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 49,
+      description: "photos of a print, to judge it by",
+      sql: include_str!("../migrations/0049_print_inbox_photos.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

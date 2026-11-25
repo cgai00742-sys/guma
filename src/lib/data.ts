@@ -23,7 +23,7 @@
  * shared interface) are re-exported directly from data.types.ts rather than
  * routed through either backend, since both backends already do the same.
  */
-import type { ClientShelfRow, SettleInput, InboxAddInput, InboxDecision, InboxRow, InboxStatus } from './data.types'
+import type { ClientShelfRow, SettleInput, InboxAddInput, InboxDecision, InboxRow, InboxStatus, InboxPhotoKind, InboxPictures } from './data.types'
 import type { PersonInput } from './people'
 import type { FrozenPrice } from './draftQuote'
 import { isTauri } from '@tauri-apps/api/core'
@@ -964,4 +964,13 @@ export async function adoptInboxItem(
   patch: Pick<InboxAddInput, 'sourceRef' | 'printerId' | 'startedAt' | 'endedAt' | 'minutes' | 'facts' | 'state'>,
 ): Promise<void> {
   return (await backend()).adoptInboxItem(shopId, id, patch)
+}
+export async function saveInboxPhoto(shopId: string, inboxId: string, kind: InboxPhotoKind, data: string, takenAt: string | null): Promise<void> {
+  return (await backend()).saveInboxPhoto(shopId, inboxId, kind, data, takenAt)
+}
+export async function inboxPictures(shopId: string, inboxId: string): Promise<InboxPictures> {
+  return (await backend()).inboxPictures(shopId, inboxId)
+}
+export async function runPhotoRefs(shopId: string, jobId: string): Promise<Record<string, string>> {
+  return (await backend()).runPhotoRefs(shopId, jobId)
 }
