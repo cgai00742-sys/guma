@@ -58,6 +58,13 @@ export interface Section {
    * can wait until they go looking.
    */
   distorts: boolean
+  /**
+   * Where to fix it, once the shop is past first setup: the settings tab
+   * that holds the field. The wizard is for starting; sending a shop that
+   * finished it back through it read as "setup never saved" (CG, 25 Nov:
+   * "I have already set everything up").
+   */
+  fix?: { label: string; to: string }
 }
 
 export interface SetupPlan {
@@ -191,8 +198,14 @@ export function planFor({ shop, rateCard, printerRows, materials }: ShopSnapshot
 
   /* ---- the materials -------------------------------------------------- */
   const materialMissing: string[] = []
+  // Name the ones at zero. "Material reads as free" when one spare
+  // material of four had no price read as a false alarm on a shop that
+  // had priced everything it uses (CG, 25 Nov: X9 at $0).
+  const free = stocked.filter((m) => num(m.costPerUnit) <= 0)
+  const freeNames = free.map((m) => m.name)
+  const listed = freeNames.length <= 1 ? freeNames.join('') : `${freeNames.slice(0, -1).join(', ')} and ${freeNames[freeNames.length - 1]}`
   if (stocked.length === 0) materialMissing.push('at least one material')
-  else if (stocked.some((m) => num(m.costPerUnit) <= 0)) materialMissing.push('what it costs you')
+  else if (free.length) materialMissing.push(`what ${listed} cost${free.length === 1 ? 's' : ''} you`)
   sections.push({
     id: 'materials',
     title: 'What you print with',
@@ -200,10 +213,13 @@ export function planFor({ shop, rateCard, printerRows, materials }: ShopSnapshot
     status: statusOf(materialMissing, stocked.length > 0),
     missing: materialMissing,
     cost:
-      materialMissing.length > 0
+      stocked.length === 0
         ? 'Material reads as free, which flatters every quote and hides what your failures cost.'
-        : null,
+        : free.length > 0
+          ? `${listed} ${free.length === 1 ? 'has' : 'have'} no cost, so anything printed in ${free.length === 1 ? 'it' : 'them'} reads as free — give ${free.length === 1 ? 'it' : 'them'} a price, or retire ${free.length === 1 ? 'it' : 'them'} if you no longer use ${free.length === 1 ? 'it' : 'them'}.`
+          : null,
     distorts: materialMissing.length > 0,
+    fix: stocked.length > 0 && free.length > 0 ? { label: `price or retire ${listed}`, to: '/settings?tab=materials' } : undefined,
   })
 
   /* ---- your hours ----------------------------------------------------- */

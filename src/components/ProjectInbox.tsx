@@ -57,8 +57,8 @@ export function ProjectInbox({ ctx, detail, onChanged }: { ctx: ShopContext; det
     <div style={{ marginTop: 10 }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
         {waiting > 0 && (
-          <Link to={`/inbox?job=${detail.jobId}`} className="attn warn" style={{ textDecoration: 'none', padding: '4px 10px' }}>
-            {waiting} print{waiting === 1 ? '' : 's'} waiting in the Print Inbox — say how {waiting === 1 ? 'it' : 'they'} came off →
+          <Link to={`/projects?prints=${detail.jobId}`} className="attn warn" style={{ textDecoration: 'none', padding: '4px 10px' }}>
+            {waiting} print{waiting === 1 ? '' : 's'} waiting to be checked — say how {waiting === 1 ? 'it' : 'they'} came off →
           </Link>
         )}
         {runs.length > 0 && (

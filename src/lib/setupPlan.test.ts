@@ -63,6 +63,16 @@ describe('a gap in a cost input is never reported as neutral', () => {
     expect(mats.cost).toMatch(/free|flatter/i)
   })
 
+  it('names the one material at zero and sends you to price it, not back to the wizard (CG, 25 Nov)', () => {
+    const s = complete({
+      materials: [material({ name: 'PETG' }), material({ name: 'X9', costPerUnit: 0 }), material({ name: 'Old resin', costPerUnit: 0, archived: true })],
+    })
+    const mats = section(s, 'materials')
+    expect(mats.cost).toMatch(/^X9 has no cost, so anything printed in it reads as free/)
+    expect(mats.cost).not.toMatch(/Old resin/)
+    expect(mats.fix).toEqual({ label: 'price or retire X9', to: '/settings?tab=materials' })
+  })
+
   it('says unpriced hours are how a shop works a year for free', () => {
     const s = complete({ rateCard: makeRateCard({ design_hourly: 0, finishing_hourly: 0 }) })
     const labour = section(s, 'labour')

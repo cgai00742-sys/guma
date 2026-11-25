@@ -1,20 +1,22 @@
 /**
- * Print Inbox — every print the printer logged, waiting for a person to say
- * how it came off and where it belongs (CG, 24 Nov 2026).
+ * Prints to check — every print the printer logged, waiting for a person to
+ * say how it came off and where it belongs (CG, 24 Nov 2026).
  *
  * The first Prusa Connect sync wrote straight onto RS850: how each print
  * came off, which project, which assembly the pieces went into. A day later
  * CG found a plate had failed on quality, and Guma would not let him say so
  * (its pieces were already placed), nor tie it to the reprint that had
- * already been recorded. "Due to how complicated the print history can be
- * what might seem part of a project might not be part of that specific
- * project."
+ * already been recorded.
  *
- * So prints land here first. What the printer said is shown as fact; what
- * Guma guesses -- the project, the spool -- is shown as a guess, with why;
+ * So prints wait here first. What the printer said is shown as fact; what
+ * Guma guesses (the project) is offered beside the field, never filled in;
  * how it came off is always the person's call. Approving puts prints on
  * their projects OLDEST FIRST, so a failure queues its reprint before the
  * reprint arrives and the two are linked without anyone linking them.
+ *
+ * It lives at the top of Projects, not on a page of its own (CG, 25 Nov:
+ * "what a user needs to check off when entering the Projects tab ... less
+ * is more"), and shows nothing at all when nothing is waiting.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -22,9 +24,11 @@ import * as data from '../lib/data'
 import { listInbox, decideInbox, setInboxStatus, listJobs, listAssemblies } from '../lib/data'
 import type { AssemblyRow, InboxDecision, InboxRow, JobListRow, ShopContext } from '../lib/data.types'
 import { approveInbox, notReady, objectCalls } from '../lib/printInbox'
-import { Flash, useFlash } from '../components/Saving'
+import { Flash, useFlash } from './Saving'
 
 const REASONS = ['Quality', 'Adhesion', 'Warping', 'Layer shift', 'Spaghetti', 'Stringing', 'Cancelled', 'Test print']
+/** Shown before "show the rest": the oldest few, since they go first. */
+const FIRST = 4
 
 function when(iso: string | null): string {
   if (!iso) return 'date unknown'
@@ -40,24 +44,48 @@ function hm(min: number | null): string {
   return h ? `${h}h ${m}m` : `${m}m`
 }
 
-export default function Inbox({ ctx }: { ctx: ShopContext }) {
+/** How many prints are waiting -- for the Dashboard and a project page. A
+ *  missing or failing read counts as none rather than breaking the page. */
+export function useWaitingPrints(ctx: ShopContext | null, deps: unknown[] = []): InboxRow[] {
+  const [rows, setRows] = useState<InboxRow[]>([])
+  useEffect(() => {
+    if (!ctx) return
+    let live = true
+    Promise.resolve()
+      .then(() => listInbox(ctx.shop.id, 'new'))
+      .then(
+        (r) => live && setRows(Array.isArray(r) ? r : []),
+        () => {},
+      )
+    return () => {
+      live = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx?.shop.id, ...deps])
+  return rows
+}
+
+export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
   const [search, setSearch] = useSearchParams()
-  const only = search.get('job')
-  const [showDone, setShowDone] = useState(false)
+  const only = search.get('prints')
   const [rows, setRows] = useState<InboxRow[] | null>(null)
   const [jobs, setJobs] = useState<JobListRow[]>([])
   const [assemblies, setAssemblies] = useState<Record<string, AssemblyRow[]>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [all, setAll] = useState(false)
   const [flash, say] = useFlash()
 
   const reload = useCallback(async () => {
-    const [r, j] = await Promise.all([listInbox(ctx.shop.id, showDone ? 'all' : 'new'), listJobs(ctx.shop.id)])
-    setRows(r)
+    const [r, j] = await Promise.all([listInbox(ctx.shop.id, 'new'), listJobs(ctx.shop.id)])
+    setRows(Array.isArray(r) ? r : [])
     setJobs(j.filter((x) => x.phase !== 'delivered'))
-  }, [ctx.shop.id, showDone])
+  }, [ctx.shop.id])
   useEffect(() => {
-    void reload().catch((e) => setError(e instanceof Error ? e.message : String(e)))
+    // Read safely: a shop whose data layer has no Inbox shows no section.
+    Promise.resolve()
+      .then(reload)
+      .catch(() => setRows([]))
   }, [reload])
 
   // The assemblies of every project a waiting print points at.
@@ -71,9 +99,8 @@ export default function Inbox({ ctx }: { ctx: ShopContext }) {
   }, [rows, assemblies, ctx.shop.id])
 
   const shown = useMemo(() => (rows ?? []).filter((r) => !only || r.decision.jobId === only || r.suggestedJobId === only), [rows, only])
-  const ready = shown.filter((r) => r.status === 'new' && !notReady(r))
-  const guessable = shown.filter((r) => r.status === 'new' && !r.decision.jobId && r.suggestedJobId && jobs.some((j) => j.jobId === r.suggestedJobId))
-  const waiting = (rows ?? []).filter((r) => r.status === 'new').length
+  const ready = shown.filter((r) => !notReady(r))
+  const guessable = shown.filter((r) => !r.decision.jobId && r.suggestedJobId && jobs.some((j) => j.jobId === r.suggestedJobId))
   const jobName = (id: string | null | undefined) => {
     const j = jobs.find((x) => x.jobId === id)
     return j ? `${j.ref} · ${j.title}` : null
@@ -109,86 +136,86 @@ export default function Inbox({ ctx }: { ctx: ShopContext }) {
     }
   }
 
-  async function status(row: InboxRow, to: 'ignored' | 'new') {
+  async function setAside(row: InboxRow) {
     setBusy(true)
     try {
-      await setInboxStatus(ctx.shop.id, row.id, to)
+      await setInboxStatus(ctx.shop.id, row.id, 'ignored')
+      say(`${row.fileName} set aside — not counted on any project.`)
       await reload()
     } finally {
       setBusy(false)
     }
   }
 
+  // Nothing waiting: no section at all. The flash still shows what just
+  // happened, so approving the last print is not met with silence.
+  if (!rows || (shown.length === 0 && !only)) return flash ? <div className="wrap" style={{ paddingTop: 12 }}><Flash message={flash} /></div> : null
+  const list = all ? shown : shown.slice(0, FIRST)
+
   return (
-    <div className="wrap" style={{ paddingTop: 20, paddingBottom: 32 }}>
-      <div className="section-head">
-        <div>
-          <h2>Print Inbox</h2>
-          <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--txt-3)', marginTop: 3 }}>
-            {rows ? `${waiting} waiting · oldest first · nothing reaches a project until you approve it` : 'Loading…'}
+    <div className="wrap" style={{ paddingTop: 16 }} id="prints-to-check">
+      <div className="pane" style={{ marginBottom: 0 }}>
+        <div className="section-head" style={{ marginBottom: 8 }}>
+          <div>
+            <h3 style={{ margin: 0 }}>
+              {shown.length} print{shown.length === 1 ? '' : 's'} to check
+            </h3>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--txt-3)', marginTop: 3 }}>
+              from your printer · oldest first · nothing reaches a project until you say how it came off
+            </div>
           </div>
-        </div>
-        <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {only && (
-            <span className="chip">
-              {jobName(only) ?? 'one project'}{' '}
-              <button type="button" className="linkbtn" style={{ width: 'auto', marginTop: 0 }} onClick={() => setSearch({})}>
-                show all
+          <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {only && (
+              <span className="chip">
+                {jobName(only) ?? 'one project'}{' '}
+                <button type="button" className="linkbtn" style={{ width: 'auto', marginTop: 0 }} onClick={() => setSearch({})}>
+                  show all
+                </button>
+              </span>
+            )}
+            {guessable.length > 0 && (
+              <button
+                type="button"
+                className="btn sm"
+                disabled={busy}
+                title="Take Guma's guess of the project on every print that has one and no project yet. You still say how each came off."
+                onClick={() => void Promise.all(guessable.map((r) => decide(r, { jobId: r.suggestedJobId })))}
+              >
+                Use the suggested project for {guessable.length}
               </button>
-            </span>
-          )}
-          <label style={{ fontSize: 12, display: 'flex', gap: 4, alignItems: 'center' }}>
-            <input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> Show decided
-          </label>
-          {guessable.length > 0 && (
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              title="Take Guma's guess of the project on every print that has one and no project yet. You still say how each came off."
-              onClick={() => void Promise.all(guessable.map((r) => decide(r, { jobId: r.suggestedJobId })))}
-            >
-              Use the suggested project for {guessable.length}
+            )}
+            <button type="button" className="btn sm primary" disabled={busy || ready.length === 0} onClick={() => void approve(ready.map((r) => r.id))}>
+              {busy ? 'Approving…' : `Approve ${ready.length} ready`}
             </button>
-          )}
-          <button type="button" className="btn primary" disabled={busy || ready.length === 0} onClick={() => void approve(ready.map((r) => r.id))}>
-            {busy ? 'Approving…' : `Approve ${ready.length} ready`}
-          </button>
-        </span>
-      </div>
-
-      <Flash message={flash} />
-      {error && (
-        <div className="attn crit" role="alert" style={{ marginBottom: 8 }}>
-          <span>{error}</span>
+          </span>
         </div>
-      )}
 
-      {rows && shown.length === 0 && (
-        <div className="pane">
-          <h3>Nothing waiting</h3>
-          <div style={{ fontSize: 13, lineHeight: '19px', color: 'var(--txt-2)', maxWidth: 560 }}>
-            Prints synced from Prusa Connect land here — the file, the times, what each spool gave — and wait for
-            you to say how they came off and which project they belong to. Ask Claude to sync your print history,
-            or send a recorded print back here from its project if it was put in the wrong place.
+        <Flash message={flash} />
+        {error && (
+          <div className="attn crit" role="alert" style={{ marginBottom: 8 }}>
+            <span>{error}</span>
           </div>
-        </div>
-      )}
+        )}
 
-      {shown.map((row) => (
-        <InboxCard
-          key={row.id}
-          ctx={ctx}
-          row={row}
-          jobs={jobs}
-          assemblies={row.decision.jobId ? (assemblies[row.decision.jobId] ?? []) : []}
-          busy={busy}
-          onDecide={(p) => void decide(row, p)}
-          onApprove={() => void approve([row.id])}
-          onIgnore={() => void status(row, 'ignored')}
-          onRestore={() => void status(row, 'new')}
-        />
-      ))}
+        {list.map((row) => (
+          <InboxCard
+            key={row.id}
+            ctx={ctx}
+            row={row}
+            jobs={jobs}
+            assemblies={row.decision.jobId ? (assemblies[row.decision.jobId] ?? []) : []}
+            busy={busy}
+            onDecide={(p) => void decide(row, p)}
+            onApprove={() => void approve([row.id])}
+            onIgnore={() => void setAside(row)}
+          />
+        ))}
+        {shown.length > FIRST && (
+          <button type="button" className="linkbtn" style={{ width: 'auto' }} onClick={() => setAll((x) => !x)}>
+            {all ? 'Show fewer' : `Show the other ${shown.length - FIRST}`}
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -202,7 +229,6 @@ function InboxCard({
   onDecide,
   onApprove,
   onIgnore,
-  onRestore,
 }: {
   ctx: ShopContext
   row: InboxRow
@@ -212,7 +238,6 @@ function InboxCard({
   onDecide: (patch: Partial<InboxDecision>) => void
   onApprove: () => void
   onIgnore: () => void
-  onRestore: () => void
 }) {
   const calls = objectCalls(row)
   const failed = calls.filter((c) => c.call === 'failed')
@@ -231,7 +256,7 @@ function InboxCard({
   const over = row.minutes != null && row.estMinutes != null && row.minutes > row.estMinutes * 1.5 + 10
 
   return (
-    <div className="pane" data-testid={`inbox-${row.id}`} style={{ opacity: decided ? 0.7 : 1 }}>
+    <div className="pane" data-testid={`inbox-${row.id}`} style={{ opacity: decided ? 0.7 : 1, marginBottom: 10, background: 'var(--bg)' }}>
       {/* What the printer said: facts, not choices. */}
       <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
         <span style={{ color: row.state === 'stopped' ? 'var(--warn)' : 'var(--ok)', fontFamily: 'var(--mono)', fontSize: 11 }}>
@@ -382,11 +407,7 @@ function InboxCard({
             </button>
             {missing && <span className="hint" style={{ marginTop: 0 }}>{missing}</span>}
           </>
-        ) : row.status === 'ignored' ? (
-          <button type="button" className="btn sm" disabled={busy} onClick={onRestore}>
-            Back to waiting
-          </button>
-        ) : (
+) : (
           job && (
             <Link to={`/project/${job.jobId}`} className="linkbtn" style={{ width: 'auto' }}>
               On {job.ref} · {job.title} →

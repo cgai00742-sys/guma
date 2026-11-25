@@ -24,6 +24,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import Jobs from './Jobs'
 import Pipeline from './Pipeline'
 import { planFor } from '../lib/setupPlan'
+import { PrintsToCheck } from '../components/PrintsToCheck'
 import type { ShopContext } from '../lib/data'
 
 type View = 'board' | 'list'
@@ -88,8 +89,8 @@ export default function Projects({ ctx }: { ctx: ShopContext }) {
           {plan.distorting.length > 0
             ? plan.distorting[0].cost
             : `Still to do: ${plan.remaining.map((s) => s.title.toLowerCase()).join(', ')}.`}{' '}
-          <button type="button" className="addnote" onClick={() => navigate('/setup-guide')}>
-            {plan.distorting.length > 0 ? 'finish setting up' : 'carry on setting up'}
+          <button type="button" className="addnote" onClick={() => navigate(plan.distorting[0]?.fix?.to ?? '/setup-guide')}>
+            {plan.distorting[0]?.fix?.label ?? (plan.distorting.length > 0 ? 'finish setting up' : 'carry on setting up')}
           </button>
         </span>
       </div>
@@ -99,6 +100,9 @@ export default function Projects({ ctx }: { ctx: ShopContext }) {
   return (
     <>
       {banner}
+      {/* Prints from the printer waiting for how they came off: the first
+          thing to check off on Projects, and absent when there are none. */}
+      <PrintsToCheck ctx={ctx} />
       {view === 'board' ? (
         <Pipeline ctx={ctx} viewSwitch={viewSwitch} />
       ) : (

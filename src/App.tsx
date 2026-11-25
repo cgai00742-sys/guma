@@ -2,7 +2,7 @@ import { lazy, startTransition, Suspense, useCallback, useEffect, useState } fro
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { isTauri } from '@tauri-apps/api/core'
-import { listInbox, loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
+import { loadShopContext, NeedsSetup, type ShopContext } from './lib/data'
 import { isDemo, switchWorkspace } from './lib/workspace'
 import Wizard from './screens/Wizard'
 import Settings from './screens/Settings'
@@ -13,7 +13,6 @@ import Project from './screens/Project'
 import Clients from './screens/Clients'
 import Series from './screens/Series'
 import Shelf from './screens/Shelf'
-import Inbox from './screens/Inbox'
 import QuoteDoc from './screens/QuoteDoc'
 import Closeout from './screens/Closeout'
 import WelcomeModal from './components/WelcomeModal'
@@ -386,7 +385,9 @@ export default function App() {
             <Route path="/series" element={<Series ctx={ctx} />} />
             <Route path="/series/:seriesId" element={<Series ctx={ctx} />} />
             <Route path="/shelf" element={<Shelf ctx={ctx} />} />
-            <Route path="/inbox" element={<Inbox ctx={ctx} />} />
+            {/* The Print Inbox lives at the top of Projects (CG, 25 Nov: less
+                is more). Kept as a redirect so an old link still lands. */}
+            <Route path="/inbox" element={<Navigate to="/projects" replace />} />
             <Route path="/settings" element={<Settings ctx={ctx} onSaved={refresh} />} />
             {/* Reachable any time, resuming wherever the shop left off. */}
             <Route
@@ -583,21 +584,6 @@ function TopBar({
   const owns = (to: string) =>
     pathname.startsWith(to) || (to === '/projects' && pathname.startsWith('/project/'))
 
-  // Prints waiting for a person to say how they came off. Counted again on
-  // every screen change, so approving some brings the number down.
-  const [waiting, setWaiting] = useState(0)
-  useEffect(() => {
-    if (!ctx) return
-    let live = true
-    void listInbox(ctx.shop.id, 'new').then(
-      (r) => live && setWaiting(r.length),
-      () => {},
-    )
-    return () => {
-      live = false
-    }
-  }, [ctx, pathname])
-
   const tab = (to: string, label: string) => (
     <Link
       to={to}
@@ -666,8 +652,6 @@ function TopBar({
                 on Etsy does work nobody commissioned, and until this tab
                 existed none of it was anywhere in the program. */}
             {tab('/shelf', 'Shelf')}
-            {/* Prints from the printer's log, waiting for how they came off. */}
-            {tab('/inbox', waiting ? `Print Inbox (${waiting})` : 'Print Inbox')}
             {tab('/settings', 'Shop settings')}
           </div>
           {/* Search sits between the tabs and the action, because it is

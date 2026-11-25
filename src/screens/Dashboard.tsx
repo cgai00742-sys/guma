@@ -28,11 +28,15 @@ import { makeMoney } from '../lib/pricing'
 import { osCurrency, osLocale } from '../lib/locale'
 import { flagsFor } from '../lib/gates'
 import { planFor } from '../lib/setupPlan'
+import { useWaitingPrints } from '../components/PrintsToCheck'
 import { daysBetweenLocal } from '../lib/dates'
 import { fmtHours } from '../lib/duration'
 
 export default function Dashboard({ ctx }: { ctx: ShopContext }) {
   const [jobs, setJobs] = useState<JobListRow[] | null>(null)
+  // Prints from the printer nobody has said came off yet (the Inbox at the
+  // top of Projects). Something to address, so it is said here too.
+  const waitingPrints = useWaitingPrints(ctx)
   const [materials, setMaterials] = useState<MaterialRow[] | null>(null)
   const [shelf, setShelf] = useState<ProductRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -115,9 +119,21 @@ export default function Dashboard({ ctx }: { ctx: ShopContext }) {
             {setup.distorting.length > 0
               ? setup.distorting[0].cost
               : `Still to do: ${setup.remaining.map((x) => x.title.toLowerCase()).join(', ')}.`}{' '}
-            <Link to="/setup-guide">
-              {setup.distorting.length > 0 ? 'finish setting up' : 'carry on setting up'}
+            <Link to={setup.distorting[0]?.fix?.to ?? '/setup-guide'}>
+              {setup.distorting[0]?.fix?.label ?? (setup.distorting.length > 0 ? 'finish setting up' : 'carry on setting up')}
             </Link>
+          </span>
+        </div>
+      )}
+
+      {waitingPrints.length > 0 && (
+        <div className="attn warn" style={{ marginTop: 0, marginBottom: 14 }} data-testid="prints-waiting">
+          <span>
+            <b>
+              {waitingPrints.length} print{waitingPrints.length === 1 ? '' : 's'} from your printer to check.
+            </b>{' '}
+            Say how {waitingPrints.length === 1 ? 'it' : 'they'} came off before {waitingPrints.length === 1 ? 'it counts' : 'they count'} on a project.{' '}
+            <Link to="/projects">Check them</Link>
           </span>
         </div>
       )}
