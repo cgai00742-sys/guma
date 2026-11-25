@@ -4696,7 +4696,7 @@ export async function addInboxItem(shopId: string, input: InboxAddInput): Promis
       facts: JSON.stringify(input.facts ?? {}),
       suggested_job_id: input.suggestedJobId,
       suggest_reason: input.suggestReason,
-      decision: JSON.stringify(input.decision ?? (input.suggestedJobId ? { jobId: input.suggestedJobId } : {})),
+      decision: JSON.stringify(input.decision ?? {}),
     })
     .select('id')
     .single()

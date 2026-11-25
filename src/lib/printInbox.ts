@@ -156,13 +156,36 @@ export interface ApproveResult {
  */
 export async function approveInbox(ctx: ShopContext, api: InboxApi, ids: string[]): Promise<ApproveResult[]> {
   const want = new Set(ids)
-  const rows = (await api.listInbox(ctx.shop.id, 'new')).filter((r) => want.has(r.id))
-  rows.sort((a, b) => (a.endedAt ?? a.createdAt).localeCompare(b.endedAt ?? b.createdAt))
+  const waiting = await api.listInbox(ctx.shop.id, 'new')
+  const rows = waiting.filter((r) => want.has(r.id))
+  const at = (r: InboxRow) => r.endedAt ?? r.createdAt
+  rows.sort((a, b) => at(a).localeCompare(at(b)))
+  // An older print of the same piece, still undecided and not in this
+  // batch, has to go first: it may be the failure this one reprints. (In
+  // the preview, approving a reprint on its own before its failed plate
+  // left the failure with nothing to fail.)
+  const labels = (r: InboxRow) => new Set((r.objects ?? []).map((o) => norm(o.label)))
+  const blockedBy = (row: InboxRow) => {
+    const mine = labels(row)
+    const job = row.decision.jobId
+    return waiting.find(
+      (o) =>
+        !want.has(o.id) &&
+        (o.decision.jobId ?? o.suggestedJobId) === job &&
+        at(o) < at(row) &&
+        [...labels(o)].some((l) => mine.has(l)),
+    )
+  }
   const out: ApproveResult[] = []
   for (const row of rows) {
     try {
       const why = notReady(row)
       if (why) throw new Error(why)
+      const first = blockedBy(row)
+      if (first)
+        throw new Error(
+          `an older print of the same piece is still waiting (${first.fileName}, ${(at(first) ?? '').slice(0, 10)}) — decide it first, or set it aside as not a project. It may be the failure this one reprints.`,
+        )
       const d = row.decision
       const jobId = d.jobId!
       const importId = await plateFor(ctx, api, jobId, row, d)
@@ -390,8 +413,10 @@ export async function addPrinterLogPrint(
     facts: print.facts,
     suggestedJobId: suggestion.jobId,
     suggestReason: suggestion.reason,
+    // Only what the person said: the project when they named it, never the
+    // guess (it is shown beside the field, one click to take).
     decision: {
-      jobId: suggestion.jobId,
+      jobId: print.jobId ?? null,
       materialId: print.materialId ?? null,
       assemblyId: print.assemblyId ?? null,
     },

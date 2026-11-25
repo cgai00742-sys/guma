@@ -457,7 +457,9 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect((await k.local.loadProjectDetail(k.ctx.shop.id, jobId)).runs).toHaveLength(0)
     const [row] = await k.call('guma_inbox_list', {})
     // Waiting for the person's inspection: the assistant cannot give it.
-    expect(row).toMatchObject({ status: 'new', missing: 'Say how it came off.', file_name: 'reef-buoy_prusa.gcode' })
+    // The guess is offered, not filled in: the project waits for the person.
+    expect(row).toMatchObject({ status: 'new', missing: 'Pick the project it belongs to.', suggested_project: jobId, file_name: 'reef-buoy_prusa.gcode' })
+    expect(row.decision.jobId ?? null).toBeNull()
     // Once a plate of it is on a project, the file itself is the reason.
     const { toolsFor } = await import('./tools')
     expect(toolsFor('write').map((t) => t.name).filter((n) => /approve|record_print|import_plate/.test(n))).toEqual([])
@@ -474,6 +476,10 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     await k.local.decideInbox(k.ctx.shop.id, first.inbox_id, { jobId, objects: { Cap: 'failed' }, reason: 'Quality: layer lines', assemblyId: asm, inspected: true })
     await k.local.decideInbox(k.ctx.shop.id, again.inbox_id, { jobId, assemblyId: asm, inspected: true })
 
+    // The reprint alone, before the plate it may be reprinting: refused.
+    const alone = await approveInbox(k.ctx, k.local, [again.inbox_id])
+    expect(alone[0].ok).toBe(false)
+    expect(alone[0].said).toMatch(/older print of the same piece/)
     // Approved newest-first on purpose: the Inbox puts them in date order.
     const res = await approveInbox(k.ctx, k.local, [again.inbox_id, first.inbox_id])
     expect(res.map((r) => r.ok)).toEqual([true, true])
@@ -525,6 +531,8 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     const d = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
     expect(d.runs).toHaveLength(0)
     expect(d.parts.every((p) => Number(p.printedN) === 0)).toBe(true)
+    // What it made goes with it.
+    expect(await k.local.listMadeItems(k.ctx.shop.id, jobId)).toHaveLength(0)
     const [row] = await k.local.listInbox(k.ctx.shop.id)
     expect(row).toMatchObject({ sourceRef: `run:${rec.runId}`, fileName: 'reef-buoy_prusa.gcode', minutes: 120 })
     expect(row.objects?.map((o) => o.label).sort()).toEqual(['Cap', 'Hull shell'])

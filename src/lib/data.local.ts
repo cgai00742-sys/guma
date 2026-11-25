@@ -5540,7 +5540,9 @@ export async function addInboxItem(shopId: string, input: InboxAddInput): Promis
     [
       id, shopId, input.sourceRef, input.printerId, input.fileId, input.fileName, input.startedAt, input.endedAt, input.state,
       input.minutes, JSON.stringify(input.facts ?? {}), input.suggestedJobId, input.suggestReason,
-      JSON.stringify(input.decision ?? (input.suggestedJobId ? { jobId: input.suggestedJobId } : {})),
+      // The suggestion stays a suggestion: a guess in the field looks
+      // answered (standing rule), so the project is blank until chosen.
+      JSON.stringify(input.decision ?? {}),
     ],
   )
   return { id, existed: false }

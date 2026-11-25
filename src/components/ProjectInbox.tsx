@@ -63,7 +63,7 @@ export function ProjectInbox({ ctx, detail, onChanged }: { ctx: ShopContext; det
         )}
         {runs.length > 0 && (
           <button type="button" className="linkbtn" style={{ width: 'auto', marginTop: 0, fontSize: 12 }} onClick={() => setOpen((x) => !x)}>
-            {open ? 'Cancel' : 'Send prints back to the Inbox…'}
+            {open ? 'Close' : 'Send prints back to the Inbox…'}
           </button>
         )}
       </div>

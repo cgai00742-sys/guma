@@ -72,6 +72,7 @@ export default function Inbox({ ctx }: { ctx: ShopContext }) {
 
   const shown = useMemo(() => (rows ?? []).filter((r) => !only || r.decision.jobId === only || r.suggestedJobId === only), [rows, only])
   const ready = shown.filter((r) => r.status === 'new' && !notReady(r))
+  const guessable = shown.filter((r) => r.status === 'new' && !r.decision.jobId && r.suggestedJobId && jobs.some((j) => j.jobId === r.suggestedJobId))
   const waiting = (rows ?? []).filter((r) => r.status === 'new').length
   const jobName = (id: string | null | undefined) => {
     const j = jobs.find((x) => x.jobId === id)
@@ -139,6 +140,17 @@ export default function Inbox({ ctx }: { ctx: ShopContext }) {
           <label style={{ fontSize: 12, display: 'flex', gap: 4, alignItems: 'center' }}>
             <input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> Show decided
           </label>
+          {guessable.length > 0 && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              title="Take Guma's guess of the project on every print that has one and no project yet. You still say how each came off."
+              onClick={() => void Promise.all(guessable.map((r) => decide(r, { jobId: r.suggestedJobId })))}
+            >
+              Use the suggested project for {guessable.length}
+            </button>
+          )}
           <button type="button" className="btn primary" disabled={busy || ready.length === 0} onClick={() => void approve(ready.map((r) => r.id))}>
             {busy ? 'Approving…' : `Approve ${ready.length} ready`}
           </button>
@@ -254,10 +266,15 @@ function InboxCard({
                 </option>
               ))}
             </select>
-            {row.suggestReason && (
-              <div className="hint">
-                {d.jobId === row.suggestedJobId ? 'Guessed: ' : 'Guma guessed another: '}
-                {row.suggestReason}
+            {row.suggestedJobId && d.jobId !== row.suggestedJobId && (
+              <div className="hint" style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                <span>
+                  {d.jobId ? 'Guma guessed another: ' : 'Guma’s guess: '}
+                  {row.suggestReason}
+                </span>
+                <button type="button" className="linkbtn" style={{ width: 'auto', marginTop: 0 }} onClick={() => onDecide({ jobId: row.suggestedJobId })}>
+                  use {jobs.find((j) => j.jobId === row.suggestedJobId)?.ref ?? 'it'}
+                </button>
               </div>
             )}
           </div>
