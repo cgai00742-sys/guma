@@ -18,11 +18,12 @@
  * "what a user needs to check off when entering the Projects tab ... less
  * is more"), and shows nothing at all when nothing is waiting.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import * as data from '../lib/data'
-import { listInbox, decideInbox, setInboxStatus, listJobs, listAssemblies, listClients } from '../lib/data'
-import type { AssemblyRow, ClientRow, InboxDecision, InboxRow, JobListRow, ShopContext } from '../lib/data.types'
+import { listInbox, decideInbox, setInboxStatus, listJobs, listAssemblies, listClients, listShelf } from '../lib/data'
+import type { AssemblyRow, ClientRow, InboxDecision, InboxRow, JobListRow, ProductRow, ShopContext } from '../lib/data.types'
+import { placeOf } from '../lib/data.types'
 import { startProject, type StartInput } from '../lib/startProject'
 import { approveInbox, notReady, objectCalls } from '../lib/printInbox'
 import { Flash, useFlash } from './Saving'
@@ -80,7 +81,9 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
 
   const reload = useCallback(async () => {
     const [r, j] = await Promise.all([listInbox(ctx.shop.id, 'new'), listJobs(ctx.shop.id)])
-    setRows(Array.isArray(r) ? r : [])
+    const list = Array.isArray(r) ? r : []
+    latest.current = Object.fromEntries(list.map((x) => [x.id, x.decision]))
+    setRows(list)
     setJobs(j.filter((x) => x.phase !== 'delivered'))
   }, [ctx.shop.id])
   useEffect(() => {
@@ -108,13 +111,28 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
     return j ? j.title : null
   }
 
+  // Every save on this screen goes through one queue, in order, each built
+  // on the newest answer for that print -- two quick changes to one print
+  // each started from the print as drawn, so the second undid the first;
+  // and Approve waits for the queue, so it never reads a print mid-save.
+  const writes = useRef<Promise<unknown>>(Promise.resolve())
+  const latest = useRef<Record<string, InboxDecision>>({})
+
   async function decide(row: InboxRow, patch: Partial<InboxDecision>) {
-    const next = { ...row.decision, ...patch }
-    // A new project means a new set of assemblies; the old choice is gone.
-    if ('jobId' in patch && patch.jobId !== row.decision.jobId) next.assemblyId = null
+    const base = latest.current[row.id] ?? row.decision
+    const next = { ...base, ...patch }
+    // A new project means a new set of assemblies; an assembly chosen on
+    // the old one is gone. The Shelf is the shop's, so it stays.
+    if ('jobId' in patch && patch.jobId !== base.jobId) {
+      next.assemblyId = null
+      if (next.place?.kind === 'assembly') next.place = null
+    }
+    latest.current[row.id] = next
     setRows((rs) => rs?.map((r) => (r.id === row.id ? { ...r, decision: next } : r)) ?? null)
+    const write = writes.current.then(() => decideInbox(ctx.shop.id, row.id, next))
+    writes.current = write.catch(() => {})
     try {
-      await decideInbox(ctx.shop.id, row.id, next)
+      await write
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       await reload()
@@ -125,6 +143,7 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
     setBusy(true)
     setError(null)
     try {
+      await writes.current
       const res = await approveInbox(ctx, data, ids)
       const bad = res.find((r) => !r.ok)
       const good = res.filter((r) => r.ok).length
@@ -158,6 +177,14 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
       setBusy(false)
     }
   }
+
+  // What is on the Shelf, for "the good pieces go".
+  const [products, setProducts] = useState<ProductRow[]>([])
+  useEffect(() => {
+    Promise.resolve()
+      .then(() => listShelf(ctx.shop.id))
+      .then((p) => setProducts(Array.isArray(p) ? p.filter((x) => !x.archived) : []), () => {})
+  }, [ctx.shop.id, rows?.length])
 
   // Clients, for the "For a client" form -- read when first wanted.
   const [clients, setClients] = useState<ClientRow[] | null>(null)
@@ -291,6 +318,7 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
             onCreate={(input) => createFor(row, input)}
             clients={clients}
             wantClients={wantClients}
+            products={products}
           />
         ))}
         {shown.length > FIRST && (
@@ -315,6 +343,7 @@ function InboxCard({
   onCreate,
   clients,
   wantClients,
+  products,
 }: {
   ctx: ShopContext
   row: InboxRow
@@ -327,6 +356,7 @@ function InboxCard({
   onCreate: (input: StartInput) => Promise<boolean>
   clients: ClientRow[] | null
   wantClients: () => void
+  products: ProductRow[]
 }) {
   // The new-project form, open or not: what kind, its name, the client.
   const [naming, setNaming] = useState<{ kind: 'inhouse' | 'client'; title: string; client: string } | null>(null)
@@ -580,25 +610,75 @@ function InboxCard({
               </button>
             ))}
           </div>
-          <input value={d.reason ?? ''} placeholder="Or say it in your words" onChange={(e) => onDecide({ reason: e.target.value })} />
+          <SavedOnLeave label="Why it failed, in your words" value={d.reason ?? ''} placeholder="Or say it in your words" onSave={(v) => onDecide({ reason: v })} />
         </div>
       )}
 
-      {!decided && inhouse && asked && failed.length < calls.length && (
-        <div className="fld" style={{ marginTop: 8 }}>
-          <label>The good pieces go</label>
-          <select value={d.assemblyId ?? ''} onChange={(e) => onDecide({ assemblyId: e.target.value || null })} disabled={busy}>
-            <option value="">Stay in Made — place them later</option>
-            {assemblies
-              .filter((a) => a.status === 'open')
-              .map((a) => (
-                <option key={a.id} value={a.id}>
-                  Into {a.name}
-                </option>
-              ))}
-          </select>
-        </div>
-      )}
+      {!decided && inhouse && asked && failed.length < calls.length && (() => {
+        // The same places the project's Made list sends pieces to.
+        const place = placeOf(d)
+        const value = !place ? '' : place.kind === 'kept' ? 'kept' : place.kind === 'assembly' ? `asm:${place.assemblyId}` : place.productId ? `shelf:${place.productId}` : 'shelf:new'
+        const firstGood = calls.find((c) => c.call === 'good')?.label ?? ''
+        const typed = place?.kind === 'shelf' && !place.productId ? (place.name ?? '') : ''
+        const sameName = place?.kind === 'shelf' && !place.productId ? products.find((p) => p.name.trim().toLowerCase() === (typed.trim() || firstGood).trim().toLowerCase()) : undefined
+        const openAsm = assemblies.filter((a) => a.status === 'open')
+        return (
+          <div className="fld" style={{ marginTop: 8 }}>
+            <label>The good pieces go</label>
+            <select
+              value={value}
+              disabled={busy}
+              aria-label="Where the good pieces go"
+              onChange={(e) => {
+                const v = e.target.value
+                if (!v) onDecide({ place: null, assemblyId: null })
+                else if (v === 'kept') onDecide({ place: { kind: 'kept' }, assemblyId: null })
+                else if (v === 'shelf:new') onDecide({ place: { kind: 'shelf', productId: null, name: '' }, assemblyId: null })
+                else if (v.startsWith('shelf:')) onDecide({ place: { kind: 'shelf', productId: v.slice(6) }, assemblyId: null })
+                else onDecide({ place: { kind: 'assembly', assemblyId: v.slice(4) }, assemblyId: null })
+              }}
+            >
+              <option value="">Stay in Made — place them later</option>
+              <optgroup label="The Shelf, to sell">
+                <option value="shelf:new">A new product…</option>
+                {products.map((p) => (
+                  <option key={p.id} value={`shelf:${p.id}`}>
+                    {p.name}
+                  </option>
+                ))}
+              </optgroup>
+              {openAsm.length > 0 && (
+                <optgroup label="Into an assembly">
+                  {openAsm.map((a) => (
+                    <option key={a.id} value={`asm:${a.id}`}>
+                      {a.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              <option value="kept">Keep — not for sale</option>
+            </select>
+            {place?.kind === 'shelf' && !place.productId && (
+              <>
+                <SavedOnLeave
+                  style={{ marginTop: 6 }}
+                  label="New product name"
+                  value={typed}
+                  placeholder={firstGood ? `Product name — blank uses “${firstGood}”` : 'Product name'}
+                  onSave={(v) => onDecide({ place: { kind: 'shelf', productId: null, name: v } })}
+                />
+                <div className="hint">
+                  {sameName
+                    ? `“${sameName.name}” is already on the Shelf — these join it as a new batch.`
+                    : 'A new product on the Shelf, costed from this print. Set its price on the Shelf.'}
+                </div>
+              </>
+            )}
+            {place?.kind === 'shelf' && place.productId && <div className="hint">A new batch of it on the Shelf, costed from this print.</div>}
+            {place?.kind === 'kept' && <div className="hint">Yours to keep — not for sale.</div>}
+          </div>
+        )
+      })()}
 
       <div className="btnrow" style={{ marginTop: 10, alignItems: 'center' }}>
         {!decided ? (
@@ -620,5 +700,44 @@ function InboxCard({
         )}
       </div>
     </div>
+  )
+}
+
+/** A text box that saves when you leave it or press Enter, not on every
+ *  key: each save is a database write, and a burst of them could land out
+ *  of order (25 Nov). Follows the saved value when it changes elsewhere. */
+function SavedOnLeave({
+  value,
+  onSave,
+  label,
+  placeholder,
+  style,
+}: {
+  value: string
+  onSave: (v: string) => void
+  label: string
+  placeholder?: string
+  style?: React.CSSProperties
+}) {
+  const [text, setText] = useState(value)
+  useEffect(() => setText(value), [value])
+  const commit = () => {
+    if (text !== value) onSave(text)
+  }
+  return (
+    <input
+      style={style}
+      aria-label={label}
+      value={text}
+      placeholder={placeholder}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          commit()
+        }
+      }}
+    />
   )
 }

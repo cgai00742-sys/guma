@@ -17,8 +17,8 @@
  * the dispatcher.
  */
 import type * as Local from './data.local'
-import type { InboxAddInput, InboxDecision, InboxObjectCall, InboxRow, ShopContext, SliceImportInput, SliceImportRow } from './data.types'
-import { parseJsonObject } from './data.types'
+import type { InboxAddInput, InboxDecision, InboxObjectCall, InboxRow, ItemPlace, ShopContext, SliceImportInput, SliceImportRow } from './data.types'
+import { parseJsonObject, placeOf } from './data.types'
 import { parseSliceFile, matchMaterial, matchPrinter, type SliceFileLike } from './sliceImport'
 import { fileExtras } from './fileExtras'
 import { packFile, unpackFile } from './sliceFile'
@@ -39,6 +39,7 @@ export type InboxApi = RecordApi &
     | 'sliceFileContent'
     | 'adoptInboxItem'
     | 'decideInbox'
+    | 'listShelf'
   >
 
 async function sha1(bytes: Uint8Array): Promise<string> {
@@ -194,6 +195,11 @@ export async function approveInbox(ctx: ShopContext, api: InboxApi, ids: string[
       const good = calls.length - failed.length
       const outcome = failed.length === 0 ? 'success' : good === 0 ? (row.state === 'stopped' ? 'cancelled' : 'failed') : row.state === 'stopped' ? 'cancelled' : 'success'
       const spoolGrams = (row.facts.spools ?? []).reduce((a, s) => a + (Number(s.grams) || 0), 0)
+      // A new product with no name takes the first good piece's name -- and
+      // so finds the product of that name already on the Shelf.
+      const asked = placeOf(d)
+      const named = asked?.kind === 'shelf' && !asked.productId && !asked.name?.trim() ? { ...asked, name: calls.find((c) => c.call === 'good')?.label ?? null } : asked
+      const place = await resolvePlace(ctx, api, named, (row.endedAt ?? row.createdAt).slice(0, 10))
       const res = await recordConnectPrint(
         ctx,
         jobId,
@@ -205,7 +211,7 @@ export async function approveInbox(ctx: ShopContext, api: InboxApi, ids: string[
           note: d.reason?.trim() || (outcome === 'cancelled' ? 'Stopped part way.' : null),
           materialId: d.materialId ?? null,
           failedObjects: failed,
-          assemblyId: d.assemblyId ?? null,
+          place,
           grams: spoolGrams > 0 ? spoolGrams : null,
           known: true,
         },
@@ -296,7 +302,11 @@ export async function sendBackToInbox(
           materialId: r.materialId,
           reason: r.failureReason,
           // Where its pieces were: the earlier answer, kept as the start.
-          assemblyId: results.find((m) => m.status === 'assembled' && m.assemblyId)?.assemblyId ?? null,
+          place: (() => {
+            const asm = results.find((m) => m.status === 'assembled' && m.assemblyId)?.assemblyId
+            if (asm) return { kind: 'assembly' as const, assemblyId: asm }
+            return results.some((m) => m.status === 'kept') ? { kind: 'kept' as const } : null
+          })(),
           objects: failedLabels.length ? Object.fromEntries(slice.sections.map((s) => [s.label, failedLabels.includes(s.label) ? 'failed' : 'good'])) : undefined,
         },
         ...fb,
@@ -424,4 +434,26 @@ export async function addPrinterLogPrint(
     },
   })
   return { ...res, adopted: false, suggestion, fileName: kept.fileName }
+}
+
+/**
+ * Where the good pieces go, ready to place: a new product whose name is
+ * already on the Shelf goes to that product -- two prints of the Kauai
+ * magnet each saying "a new product" are one product with two batches,
+ * not two products. Shelved on the day the print ended.
+ */
+export async function resolvePlace(
+  ctx: ShopContext,
+  api: Pick<InboxApi, 'listShelf'>,
+  place: ReturnType<typeof placeOf>,
+  madeOn: string,
+): Promise<ItemPlace | null> {
+  if (!place) return null
+  if (place.kind !== 'shelf') return place
+  let productId = place.productId
+  if (!productId && place.name?.trim()) {
+    const want = place.name.trim().toLowerCase()
+    productId = (await api.listShelf(ctx.shop.id)).find((p) => !p.archived && p.name.trim().toLowerCase() === want)?.id ?? null
+  }
+  return { kind: 'shelf', productId, name: place.name?.trim() || undefined, madeOn }
 }

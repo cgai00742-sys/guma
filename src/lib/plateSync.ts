@@ -14,7 +14,7 @@
 // Type only: the app passes the dispatcher (data.ts) and guma-mcp passes
 // data.local, so the desktop database is never bundled into the web build.
 import type * as Local from './data.local'
-import type { PrintRunInput, RunOutcome, ShopContext, SliceImportRow } from './data.types'
+import type { ItemPlace, PrintRunInput, RunOutcome, ShopContext, SliceImportRow } from './data.types'
 import { parseSliceFile, matchMaterial, matchPrinter, type SliceFileLike } from './sliceImport'
 import { fileExtras } from './fileExtras'
 import { packFile } from './sliceFile'
@@ -91,6 +91,9 @@ export interface ConnectPrint {
   failedObjects?: string[]
   /** An open assembly of this project to put the good pieces into. */
   assemblyId?: string | null
+  /** Anywhere the Made list can send them: the shelf, an assembly, kept.
+   *  Wins over assemblyId. */
+  place?: ItemPlace | null
   /** What the printer measured off the spool, when it says -- truer than
    *  the file's estimate, above all for a print stopped part way. */
   grams?: number | null
@@ -189,13 +192,15 @@ export async function recordConnectPrint(
       ? await api.markPlatePrinted(ctx.shop.id, jobId, ctx.profile.id, importId, runId)
       : await api.markPlateFailed(ctx.shop.id, jobId, ctx.profile.id, importId, runId, why)
   let placed = 0
-  if (print.assemblyId && detail.facts.kind === 'inhouse') {
+  const to: ItemPlace | null = print.place ?? (print.assemblyId ? { kind: 'assembly', assemblyId: print.assemblyId } : null)
+  if (to && detail.facts.kind === 'inhouse') {
     const good = (await api.listMadeItems(ctx.shop.id, jobId)).filter((m) => m.runId === runId && m.status === 'made')
     if (good.length) {
-      await api.placeItems(ctx.shop.id, jobId, good.map((m) => m.id), { kind: 'assembly', assemblyId: print.assemblyId })
+      await api.placeItems(ctx.shop.id, jobId, good.map((m) => m.id), to.kind === 'shelf' && !to.name && !to.productId ? { ...to, name: good[0].label } : to)
       placed = good.length
     }
   }
+  const where = to?.kind === 'shelf' ? 'put on the Shelf' : to?.kind === 'kept' ? 'kept, not for sale' : 'put in the assembly'
   return {
     recorded: true,
     runId,
@@ -204,7 +209,7 @@ export async function recordConnectPrint(
       (materialId ? `, ${Math.round(grams)} g off the shelf` : ', no material matched so nothing came off the shelf') +
       (marked ? `, ${marked} part${marked === 1 ? '' : 's'} marked ${clean ? 'printed' : 'failed'}` : '') +
       (partial ? `; did not come off: ${print.failedObjects!.join(', ')}` : '') +
-      (placed ? `; ${placed} piece${placed === 1 ? '' : 's'} put in the assembly` : '') +
+      (placed ? `; ${placed} piece${placed === 1 ? '' : 's'} ${where}` : '') +
       (clean || partial ? '.' : '. If some objects came off, open the plate in Guma and use correct to say which.'),
   }
 }

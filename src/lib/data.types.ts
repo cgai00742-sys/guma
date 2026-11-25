@@ -1843,9 +1843,27 @@ export interface InboxDecision {
   inspected?: boolean
   /** Why what failed failed: "quality", "adhesion", or the shop's words. */
   reason?: string | null
-  /** In-house work: the assembly the good pieces go into. */
+  /** In-house work: the assembly the good pieces go into. Older decisions
+   *  carry this; newer ones say it as `place`. */
   assemblyId?: string | null
+  /** In-house work: where the good pieces go (CG, 25 Nov: "the piece can
+   *  go to the shelf to be sold"). None: they wait in Made. */
+  place?: InboxPlace | null
   note?: string | null
+}
+
+/** Where a print's good pieces go once approved -- the same places the
+ *  project's Made list sends them. A new product is named (or takes the
+ *  first piece's name); one of the same name already on the Shelf is used
+ *  rather than a second made. */
+export type InboxPlace =
+  | { kind: 'shelf'; productId: string | null; name?: string | null }
+  | { kind: 'assembly'; assemblyId: string }
+  | { kind: 'kept' }
+
+export function placeOf(d: Pick<InboxDecision, 'place' | 'assemblyId'>): InboxPlace | null {
+  if (d.place) return d.place
+  return d.assemblyId ? { kind: 'assembly', assemblyId: d.assemblyId } : null
 }
 
 export type InboxStatus = 'new' | 'approved' | 'ignored'

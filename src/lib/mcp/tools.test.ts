@@ -535,7 +535,7 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect(await k.local.listMadeItems(k.ctx.shop.id, jobId)).toHaveLength(0)
     const [row] = await k.local.listInbox(k.ctx.shop.id)
     expect(row).toMatchObject({ sourceRef: `run:${rec.runId}`, fileName: 'reef-buoy_prusa.gcode', minutes: 120 })
-    expect(row.decision).toMatchObject({ jobId, assemblyId: asm })
+    expect(row.decision).toMatchObject({ jobId, place: { kind: 'assembly', assemblyId: asm } })
     expect(row.objects?.map((o) => o.label).sort()).toEqual(['Cap', 'Hull shell'])
 
     // Syncing the same Connect print later finds it rather than adding it.
@@ -629,6 +629,47 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     await k.local.decideInbox(k.ctx.shop.id, r.inbox_id, { jobId, inspected: true })
     const res = await approveInbox(k.ctx, k.local, [r.inbox_id])
     expect(await k.local.runPhotoRefs(k.ctx.shop.id, jobId)).toEqual({ [res[0].runId!]: r.inbox_id })
+  })
+
+  it('sends the good pieces to the Shelf, and a second print of the same thing joins that product (CG, 25 Nov)', async () => {
+    const k = await setup()
+    const { approveInbox } = await import('../printInbox')
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Kauai BathyTopo', brief: '', seriesId: null, neededBy: null })
+    const add = (n: number, day: string) =>
+      k.call('guma_inbox_add_print', { file_path: REEF, source_ref: `connect:h:${n}`, ended_at: `${day}T16:05:00-10:00`, state: 'finished', minutes: 120 })
+    const a = await add(144, '2026-11-13')
+    const b = await add(145, '2026-11-15')
+    const c = await add(146, '2026-11-15')
+    // 144: a new product, named. Cap failed: it must not reach the Shelf.
+    await k.local.decideInbox(k.ctx.shop.id, a.inbox_id, { jobId, inspected: true, objects: { Cap: 'failed' }, reason: 'Quality', place: { kind: 'shelf', productId: null, name: 'Kauai magnet' } })
+    // 145: "a new product" again, same name in another case: joins it.
+    await k.local.decideInbox(k.ctx.shop.id, b.inbox_id, { jobId, inspected: true, place: { kind: 'shelf', productId: null, name: ' kauai MAGNET ' } })
+    // 146: kept.
+    await k.local.decideInbox(k.ctx.shop.id, c.inbox_id, { jobId, inspected: true, place: { kind: 'kept' } })
+    const res = await approveInbox(k.ctx, k.local, [a.inbox_id, b.inbox_id, c.inbox_id])
+    expect(res.map((r) => r.ok)).toEqual([true, true, true])
+    expect(res[0].said).toMatch(/put on the Shelf/)
+    expect(res[2].said).toMatch(/kept, not for sale/)
+
+    const shelf = (await k.local.listShelf(k.ctx.shop.id)).filter((p: any) => !p.archived)
+    expect(shelf.map((p: any) => p.name)).toEqual(['Kauai magnet'])
+    const made = await k.local.listMadeItems(k.ctx.shop.id, jobId)
+    // 144: two hulls shelved, the cap failed. 145: all three shelved. 146: three kept.
+    expect(made.filter((m) => m.status === 'shelved')).toHaveLength(5)
+    expect(made.filter((m) => m.status === 'failed').map((m) => m.label)).toEqual(['Cap'])
+    expect(made.filter((m) => m.status === 'kept')).toHaveLength(3)
+    // Two batches of the one product, made on the days the prints ended.
+    expect(new Set(made.filter((m) => m.status === 'shelved').map((m) => m.batchId)).size).toBe(2)
+  })
+
+  it('names a new product after the first good piece when left blank', async () => {
+    const k = await setup()
+    const { approveInbox } = await import('../printInbox')
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Buoys', brief: '', seriesId: null, neededBy: null })
+    const r = await k.call('guma_inbox_add_print', { file_path: REEF, source_ref: 'connect:h:1', ended_at: '2026-11-13T16:05:00-10:00', state: 'finished', minutes: 120 })
+    await k.local.decideInbox(k.ctx.shop.id, r.inbox_id, { jobId, inspected: true, objects: { 'Hull shell': 'failed' }, reason: 'warped', place: { kind: 'shelf', productId: null, name: '' } })
+    expect((await approveInbox(k.ctx, k.local, [r.inbox_id]))[0].ok).toBe(true)
+    expect((await k.local.listShelf(k.ctx.shop.id)).map((p: any) => p.name)).toEqual(['Cap'])
   })
 
   it('files a project in a series', async () => {
