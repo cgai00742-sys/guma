@@ -181,7 +181,7 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
       setMade({ jobId, title })
       say(
         input.kind === 'client'
-          ? `${title} started for ${input.clientName.trim()} — it is on the board at Intake, waiting for its quote.`
+          ? `${title} started for ${(clients ?? []).find((c) => c.name.trim().toLowerCase() === input.clientName.trim().toLowerCase())?.name ?? input.clientName.trim()} — it is on the board at Intake, waiting for its quote.`
           : `${title} started as your own project.`,
       )
       return true
