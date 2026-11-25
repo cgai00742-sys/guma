@@ -295,6 +295,8 @@ export async function sendBackToInbox(
           jobId,
           materialId: r.materialId,
           reason: r.failureReason,
+          // Where its pieces were: the earlier answer, kept as the start.
+          assemblyId: results.find((m) => m.status === 'assembled' && m.assemblyId)?.assemblyId ?? null,
           objects: failedLabels.length ? Object.fromEntries(slice.sections.map((s) => [s.label, failedLabels.includes(s.label) ? 'failed' : 'good'])) : undefined,
         },
         ...fb,

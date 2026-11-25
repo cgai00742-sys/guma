@@ -535,6 +535,7 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect(await k.local.listMadeItems(k.ctx.shop.id, jobId)).toHaveLength(0)
     const [row] = await k.local.listInbox(k.ctx.shop.id)
     expect(row).toMatchObject({ sourceRef: `run:${rec.runId}`, fileName: 'reef-buoy_prusa.gcode', minutes: 120 })
+    expect(row.decision).toMatchObject({ jobId, assemblyId: asm })
     expect(row.objects?.map((o) => o.label).sort()).toEqual(['Cap', 'Hull shell'])
 
     // Syncing the same Connect print later finds it rather than adding it.
