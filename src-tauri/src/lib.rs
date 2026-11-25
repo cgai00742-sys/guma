@@ -290,6 +290,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0047_print_inbox.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 48,
+      description: "the Print Inbox: what a kept file shows without unpacking it",
+      sql: include_str!("../migrations/0048_print_inbox_summary.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 

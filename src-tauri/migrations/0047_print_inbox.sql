@@ -23,9 +23,6 @@ create table print_inbox_files (
   sha1        text not null,
   -- The import, ready to run: SliceImportInput as JSON, file included.
   payload     text not null,
-  -- What the screen shows without unpacking the file: the objects and the
-  -- slicer's estimate, as JSON.
-  summary     text not null default '{}',
   created_at  text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   unique (shop_id, sha1)
 );
