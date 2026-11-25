@@ -24,6 +24,7 @@ import { decodeProgress, encodeProgress, type ProgressPoint } from './gcodeWalk'
 // validateRun/validateHours/runEventBody live in data.types.ts so both
 // backends share one definition and cannot drift on what a valid run is.
 import type { SeriesRow, SeriesInput, StockHoldRow, StockHoldInput } from './data.types'
+import { inboxFileSummary, parseJsonObject, type InboxAddInput, type InboxDecision, type InboxFacts, type InboxRow, type InboxStatus } from './data.types'
 import { describeHolds, quoteBases, uniqueLabel, validateMadeItems, shelfNote, type SectionAssign, type SectionMoveResult, type MadeItemRow, type MadeItemInput, type AssemblyRow, type AssemblyInput, type ItemPlace, type MadeStatus, type ProductPatch } from './data.types'
 import { NeedsSetup, asClientKind, validateRun, validateHours, runEventBody, describeRunCorrection, validateRevision, CHANGE_CAUSE_LABEL, sameSliceFile, type ShopContext, type SetupPayload, type Shop, type RateCardRow, type PrinterRow, type PrinterInput, type Profile } from './data.types'
 export {
@@ -4652,5 +4653,126 @@ export async function setAssemblyHardware(shopId: string, assemblyId: string, it
     ? supabase.from('assembly_hardware').delete().eq('assembly_id', assemblyId).eq('item_id', itemId)
     : supabase.from('assembly_hardware').upsert({ assembly_id: assemblyId, item_id: itemId, per_unit: n })
   const { error } = await q
+  if (error) throw error
+}
+
+/* ---- the Print Inbox (0051) ------------------------------------------ */
+
+export async function saveInboxFile(shopId: string, fileName: string, sha1: string, payload: string, summary: string): Promise<string> {
+  const { data: had, error: e1 } = await supabase.from('print_inbox_files').select('id').eq('shop_id', shopId).eq('sha1', sha1).maybeSingle()
+  if (e1) throw e1
+  if (had) return (had as any).id
+  const { data, error } = await supabase
+    .from('print_inbox_files')
+    .insert({ shop_id: shopId, file_name: fileName, sha1, payload, summary })
+    .select('id')
+    .single()
+  if (error) throw error
+  return (data as any).id
+}
+
+export async function inboxFilePayload(shopId: string, fileId: string): Promise<string | null> {
+  const { data, error } = await supabase.from('print_inbox_files').select('payload').eq('id', fileId).eq('shop_id', shopId).maybeSingle()
+  if (error) throw error
+  return (data as any)?.payload ?? null
+}
+
+export async function addInboxItem(shopId: string, input: InboxAddInput): Promise<{ id: string; existed: boolean }> {
+  const { data: had, error: e1 } = await supabase.from('print_inbox').select('id').eq('shop_id', shopId).eq('source_ref', input.sourceRef).maybeSingle()
+  if (e1) throw e1
+  if (had) return { id: (had as any).id, existed: true }
+  const { data, error } = await supabase
+    .from('print_inbox')
+    .insert({
+      shop_id: shopId,
+      source_ref: input.sourceRef,
+      printer_id: input.printerId,
+      file_id: input.fileId,
+      file_name: input.fileName,
+      started_at: input.startedAt,
+      ended_at: input.endedAt,
+      state: input.state,
+      minutes: input.minutes,
+      facts: JSON.stringify(input.facts ?? {}),
+      suggested_job_id: input.suggestedJobId,
+      suggest_reason: input.suggestReason,
+      decision: JSON.stringify(input.decision ?? (input.suggestedJobId ? { jobId: input.suggestedJobId } : {})),
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+  return { id: (data as any).id, existed: false }
+}
+
+function inboxFromRow(r: any): InboxRow {
+  return {
+    id: r.id,
+    sourceRef: r.source_ref,
+    printerId: r.printer_id,
+    fileId: r.file_id,
+    fileName: r.file_name,
+    startedAt: r.started_at,
+    endedAt: r.ended_at,
+    state: r.state,
+    minutes: r.minutes == null ? null : Number(r.minutes),
+    facts: parseJsonObject<InboxFacts>(r.facts),
+    suggestedJobId: r.suggested_job_id,
+    suggestReason: r.suggest_reason,
+    decision: parseJsonObject<InboxDecision>(r.decision),
+    status: r.status,
+    runId: r.run_id,
+    decidedAt: r.decided_at,
+    createdAt: r.created_at,
+    ...inboxFileSummary(r.print_inbox_files?.summary ?? null),
+  }
+}
+
+export async function listInbox(shopId: string, status: InboxStatus | 'all' = 'new'): Promise<InboxRow[]> {
+  let q = supabase.from('print_inbox').select('*, print_inbox_files(summary)').eq('shop_id', shopId)
+  if (status !== 'all') q = q.eq('status', status)
+  const { data, error } = await q.order('ended_at', { ascending: true, nullsFirst: false }).order('created_at')
+  if (error) throw error
+  return ((data ?? []) as any[]).map(inboxFromRow)
+}
+
+export async function decideInbox(shopId: string, id: string, decision: InboxDecision): Promise<void> {
+  const { data: r, error: e1 } = await supabase.from('print_inbox').select('status').eq('id', id).eq('shop_id', shopId).maybeSingle()
+  if (e1) throw e1
+  if (!r) throw new Error('That print is no longer in the Inbox.')
+  if ((r as any).status === 'approved') throw new Error('That print is already on its project — correct it there, or send it back to the Inbox.')
+  const { error } = await supabase.from('print_inbox').update({ decision: JSON.stringify(decision ?? {}) }).eq('id', id).eq('shop_id', shopId)
+  if (error) throw error
+}
+
+export async function setInboxStatus(shopId: string, id: string, status: InboxStatus, runId: string | null = null): Promise<void> {
+  const { error } = await supabase
+    .from('print_inbox')
+    .update({ status, run_id: status === 'approved' ? runId : null, decided_at: status === 'new' ? null : new Date().toISOString() })
+    .eq('id', id)
+    .eq('shop_id', shopId)
+  if (error) throw error
+}
+
+export async function inboxForRun(shopId: string, runId: string): Promise<InboxRow | null> {
+  const { data, error } = await supabase.from('print_inbox').select('*, print_inbox_files(summary)').eq('shop_id', shopId).eq('run_id', runId).maybeSingle()
+  if (error) throw error
+  return data ? inboxFromRow(data) : null
+}
+
+export async function adoptInboxItem(
+  shopId: string,
+  id: string,
+  patch: Pick<InboxAddInput, 'sourceRef' | 'printerId' | 'startedAt' | 'endedAt' | 'minutes' | 'facts' | 'state'>,
+): Promise<void> {
+  const row: Record<string, unknown> = {
+    source_ref: patch.sourceRef,
+    started_at: patch.startedAt,
+    ended_at: patch.endedAt,
+    minutes: patch.minutes,
+    facts: JSON.stringify(patch.facts ?? {}),
+    state: patch.state,
+  }
+  if (patch.printerId) row.printer_id = patch.printerId
+  const { error } = await supabase.from('print_inbox').update(row).eq('id', id).eq('shop_id', shopId)
   if (error) throw error
 }

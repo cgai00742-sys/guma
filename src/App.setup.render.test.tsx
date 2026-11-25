@@ -27,6 +27,7 @@ vi.mock('./lib/data', async () => {
     ...types,
     loadShopContext,
     listJobs: vi.fn(async () => []),
+    listInbox: vi.fn(async () => []),
     listGuideSeen: vi.fn(async () => []),
     markGuideSeen: vi.fn(async () => {}),
     dismissWelcome: vi.fn(async () => {}),

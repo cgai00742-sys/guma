@@ -15,7 +15,8 @@
  * something fails when it does. `writeRefusals` is the list; every entry gets
  * a test.
  */
-import { readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -158,7 +159,7 @@ describe('the boundary', () => {
     expect(writeRefusals.length).toBeGreaterThanOrEqual(5)
     for (const r of writeRefusals) {
       expect(r.what.length).toBeGreaterThan(10)
-      expect(['money', 'agreeing to do work', 'irreversible']).toContain(r.why)
+      expect(['money', 'agreeing to do work', 'irreversible', 'a person inspects the print']).toContain(r.why)
     }
   })
 
@@ -426,72 +427,120 @@ describe('logging what actually happened', () => {
   })
 })
 
-describe('Prusa Connect sync (CG, 23 Nov)', () => {
+describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
   const SAMPLE = join(here, '../../../samples/maui-top_prusa-xl.bgcode')
+  const REEF = join(here, '../../../samples/reef-buoy_prusa.gcode')
+  /** A second file with only the Cap on it: the reprint. */
+  function capOnly(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'guma-inbox-'))
+    const path = join(dir, 'reef-buoy cap reprint.gcode')
+    writeFileSync(
+      path,
+      readFileSync(REEF, 'utf8')
+        .replace('; printing object Hull shell id:0 copy 0\n', '')
+        .replace('; printing object Hull shell id:0 copy 1\n', '')
+        .replace('total filament used [g] = 86.5', 'total filament used [g] = 12.5')
+        .replace('filament used [g] = 86.5', 'filament used [g] = 12.5'),
+    )
+    return path
+  }
+  const add = (k: any, file: string, n: number, day: string, extra: Record<string, unknown> = {}) =>
+    k.call('guma_inbox_add_print', { file_path: file, source_ref: `connect:hatsa:${n}`, ended_at: `${day}T12:00:00-10:00`, state: 'finished', minutes: 120, ...extra })
 
-  it('imports a plate from a file on disk, records a Connect print once, and costs a stopped one by how far it got', async () => {
+  it('keeps the file and suggests the project, but puts nothing on a project', async () => {
     const k = await setup()
-    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Maui BathyTopo', brief: '', seriesId: null, neededBy: null })
-
-    const imp = await k.call('guma_import_plate', { job_id: jobId, file_path: SAMPLE })
-    expect(imp.plate_id).toBeTruthy()
-    expect(imp.parts_added).toBeGreaterThan(0)
-    // Same file again: the same plate, not a second one.
-    expect((await k.call('guma_import_plate', { job_id: jobId, file_path: SAMPLE })).plate_id).toBe(imp.plate_id)
-
-    // Connect shows a Finder copy's name; it still finds the plate.
-    const found = await k.call('guma_find_plate', { file_name: 'maui-top_prusa-xl 1.bgcode' })
-    expect(found).toHaveLength(1)
-    expect(found[0]).toMatchObject({ jobId, importId: imp.plate_id, prints: [] })
-
-    const first = await k.call('guma_record_print', { job_id: jobId, plate_id: imp.plate_id, printed_on: '2026-11-22', minutes: 470, outcome: 'success' })
-    expect(first.recorded).toBe(true)
-    expect(first.said).toMatch(/printed 2026-11-22, 7.83h/)
-    const again = await k.call('guma_record_print', { job_id: jobId, plate_id: imp.plate_id, printed_on: '2026-11-22', minutes: 471, outcome: 'success' })
-    expect(again.recorded).toBe(false)
-
-    const stopped = await k.call('guma_record_print', { job_id: jobId, plate_id: imp.plate_id, printed_on: '2026-11-23', minutes: 60, outcome: 'cancelled' })
-    expect(stopped.recorded).toBe(true)
-    const d = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
-    expect(d.runs).toHaveLength(2)
-    const full = d.runs.find((r) => r.outcome === 'success')!
-    const part = d.runs.find((r) => r.outcome === 'cancelled')!
-    expect(Number(full.unitsUsed)).toBeGreaterThan(60)
-    expect(Number(part.unitsUsed)).toBeGreaterThan(0)
-    expect(Number(part.unitsUsed)).toBeLessThan(Number(full.unitsUsed))
-    // In-house: what came off is in Made, ready for the Shelf.
-    expect((await k.local.listMadeItems(k.ctx.shop.id, jobId)).length).toBeGreaterThan(0)
-    // The project read leaves out what only the screen needs.
-    const proj = await k.call('guma_project', { job_id: jobId })
-    expect(proj.slices[0]).not.toHaveProperty('thumbnail')
-    expect(proj.slices[0]).not.toHaveProperty('progress')
-    expect(proj.slices[0].fileName).toBe('maui-top_prusa-xl.bgcode')
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Reef buoy', brief: '', seriesId: null, neededBy: null })
+    const r = await add(k, REEF, 1, '2026-11-20')
+    expect(r).toMatchObject({ already_in_inbox: false, suggested_project: jobId })
+    expect(r.why).toMatch(/REEF/)
+    expect((await add(k, REEF, 1, '2026-11-20')).already_in_inbox).toBe(true)
+    expect((await k.local.loadProjectDetail(k.ctx.shop.id, jobId)).runs).toHaveLength(0)
+    const [row] = await k.call('guma_inbox_list', {})
+    expect(row).toMatchObject({ status: 'new', missing: null, file_name: 'reef-buoy_prusa.gcode' })
+    // Once a plate of it is on a project, the file itself is the reason.
+    const { toolsFor } = await import('./tools')
+    expect(toolsFor('write').map((t) => t.name).filter((n) => /approve|record_print|import_plate/.test(n))).toEqual([])
   })
 
-  it('records the objects that did not come off, on the spool it really ran on, into an assembly (CG, 24 Nov)', async () => {
+  it('applies prints oldest first, so a failure found on inspection queues its reprint (the RS850 case)', async () => {
     const k = await setup()
-    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'RS850', brief: '', seriesId: null, neededBy: null })
-    const other = k.ctx.materials[k.ctx.materials.length - 1]
-    const imp = await k.call('guma_import_plate', { job_id: jobId, file_path: join(here, '../../../samples/reef-buoy_prusa.gcode'), material_id: other.id })
-    const d0 = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
-    const labels = d0.parts.map((p) => p.label)
-    expect(labels.length).toBeGreaterThan(1)
-    const asmId = await k.local.saveAssembly(k.ctx.shop.id, jobId, { name: 'RS850 RC Sailboat', needs: labels.map((label) => ({ label, qty: 1 })) })
-    expect((await k.call('guma_list_assemblies', { job_id: jobId }))[0]).toMatchObject({ id: asmId, name: 'RS850 RC Sailboat' })
+    const { approveInbox } = await import('../printInbox')
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Reef buoy', brief: '', seriesId: null, neededBy: null })
+    const first = await add(k, REEF, 153, '2026-11-19')
+    const again = await add(k, capOnly(), 155, '2026-11-20')
+    expect(again.suggested_project).toBe(jobId)
+    const asm = await k.local.saveAssembly(k.ctx.shop.id, jobId, { name: 'Buoy', needs: [] })
+    await k.local.decideInbox(k.ctx.shop.id, first.inbox_id, { jobId, objects: { Cap: 'failed' }, reason: 'Quality: layer lines', assemblyId: asm })
+    await k.local.decideInbox(k.ctx.shop.id, again.inbox_id, { jobId, assemblyId: asm })
 
-    const r = await k.call('guma_record_print', {
-      job_id: jobId, plate_id: imp.plate_id, printed_on: '2026-11-22', minutes: 470, outcome: 'success',
-      failed_objects: [labels[0]], assembly_id: asmId, material_id: other.id,
-    })
-    expect(r.recorded).toBe(true)
-    expect(r.said).toMatch(/did not come off/)
+    // Approved newest-first on purpose: the Inbox puts them in date order.
+    const res = await approveInbox(k.ctx, k.local, [again.inbox_id, first.inbox_id])
+    expect(res.map((r) => r.ok)).toEqual([true, true])
+    expect(res[0].said).toMatch(/did not come off: Cap/)
+
     const d = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
-    expect(d.runs[0].materialId).toBe(other.id)
+    expect(d.runs).toHaveLength(2)
+    const cap = d.parts.find((p) => p.label === 'Cap')!
+    // The reprint filled the failed copy: printed, nothing still owed.
+    expect(cap.status).not.toBe('reprint')
+    expect(Number(cap.printedN) + Number(cap.passedN)).toBe(Number(cap.qty))
     const made = await k.local.listMadeItems(k.ctx.shop.id, jobId)
-    expect(new Set(made.filter((m) => m.status === 'failed').map((m) => m.label))).toEqual(new Set([labels[0]]))
-    expect(made.filter((m) => m.status === 'failed').length).toBeGreaterThan(0)
-    expect(made.filter((m) => m.assemblyId === asmId).length).toBeGreaterThan(0)
-    expect(made.filter((m) => m.assemblyId === asmId).every((m) => m.status === 'assembled')).toBe(true)
+    expect(made.filter((m) => m.label === 'Cap').map((m) => m.status).sort()).toEqual(['assembled', 'failed'])
+    expect((await k.local.listInbox(k.ctx.shop.id, 'new'))).toHaveLength(0)
+  })
+
+  it('refuses to approve what is not decided, and stops before the prints after it', async () => {
+    const k = await setup()
+    const { approveInbox } = await import('../printInbox')
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Nothing alike', brief: '', seriesId: null, neededBy: null })
+    const a = await add(k, REEF, 1, '2026-11-19')
+    const b = await add(k, SAMPLE, 2, '2026-11-20', { job_id: jobId })
+    expect(a.suggested_project).toBeNull()
+    const res = await approveInbox(k.ctx, k.local, [a.inbox_id, b.inbox_id])
+    expect(res).toHaveLength(1)
+    expect(res[0]).toMatchObject({ ok: false })
+    expect(res[0].said).toMatch(/Pick the project/)
+    await k.local.decideInbox(k.ctx.shop.id, a.inbox_id, { jobId, objects: { Cap: 'failed' } })
+    expect((await approveInbox(k.ctx, k.local, [a.inbox_id]))[0].said).toMatch(/Say why/)
+  })
+
+  it('sends recorded prints back to the Inbox, and a later sync adopts them instead of adding them twice', async () => {
+    const k = await setup()
+    const { approveInbox, sendBackToInbox, addPrinterLogPrint } = await import('../printInbox')
+    const { recordConnectPrint, importPlateFile } = await import('../plateSync')
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'Reef buoy', brief: '', seriesId: null, neededBy: null })
+    const asm = await k.local.saveAssembly(k.ctx.shop.id, jobId, { name: 'Buoy', needs: [] })
+    // The first RS850 sync: straight onto the project, pieces placed.
+    const bytes = readFileSync(REEF)
+    const file = { name: 'reef-buoy_prusa.gcode', arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), text: async () => bytes.toString('utf8') }
+    const plate = await importPlateFile(k.ctx, jobId, file, null, k.local)
+    const rec = await recordConnectPrint(k.ctx, jobId, plate.importId, { printedOn: '2026-11-19', minutes: 120, outcome: 'success', assemblyId: asm }, k.local)
+    expect((await k.local.listMadeItems(k.ctx.shop.id, jobId)).every((m) => m.status === 'assembled')).toBe(true)
+
+    expect(await sendBackToInbox(k.ctx, k.local, jobId, [rec.runId!])).toBe(1)
+    const d = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
+    expect(d.runs).toHaveLength(0)
+    expect(d.parts.every((p) => Number(p.printedN) === 0)).toBe(true)
+    const [row] = await k.local.listInbox(k.ctx.shop.id)
+    expect(row).toMatchObject({ sourceRef: `run:${rec.runId}`, fileName: 'reef-buoy_prusa.gcode', minutes: 120 })
+    expect(row.objects?.map((o) => o.label).sort()).toEqual(['Cap', 'Hull shell'])
+
+    // Syncing the same Connect print later finds it rather than adding it.
+    const adopted = await addPrinterLogPrint(k.ctx, k.local, file, {
+      sourceRef: 'connect:hatsa:153', printerId: null, startedAt: null, endedAt: '2026-11-19T15:00:00-10:00', state: 'finished', minutes: 122, facts: { job: 153 },
+    })
+    expect(adopted).toMatchObject({ id: row.id, adopted: true })
+    expect(await k.local.listInbox(k.ctx.shop.id, 'all')).toHaveLength(1)
+
+    // And it goes back on, decided again, onto the same plate.
+    const r = await approveInbox(k.ctx, k.local, [row.id])
+    expect(r[0].ok).toBe(true)
+    const d2 = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
+    expect(d2.slices).toHaveLength(1)
+    expect(d2.runs).toHaveLength(1)
+    // Sent back once more: its own Inbox row comes back to "new".
+    await sendBackToInbox(k.ctx, k.local, jobId, [r[0].runId!])
+    expect((await k.local.listInbox(k.ctx.shop.id, 'new')).map((x) => x.id)).toEqual([row.id])
   })
 
   it('files a project in a series', async () => {

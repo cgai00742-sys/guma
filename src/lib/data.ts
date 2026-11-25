@@ -23,7 +23,7 @@
  * shared interface) are re-exported directly from data.types.ts rather than
  * routed through either backend, since both backends already do the same.
  */
-import type { ClientShelfRow, SettleInput } from './data.types'
+import type { ClientShelfRow, SettleInput, InboxAddInput, InboxDecision, InboxRow, InboxStatus } from './data.types'
 import type { PersonInput } from './people'
 import type { FrozenPrice } from './draftQuote'
 import { isTauri } from '@tauri-apps/api/core'
@@ -933,4 +933,35 @@ export async function setPartHardware(shopId: string, partId: string, itemId: st
 }
 export async function setAssemblyHardware(shopId: string, assemblyId: string, itemId: string, perUnit: number): Promise<void> {
   return (await backend()).setAssemblyHardware(shopId, assemblyId, itemId, perUnit)
+}
+
+/* ---- the Print Inbox ---------------------------------------------------- */
+
+export async function saveInboxFile(shopId: string, fileName: string, sha1: string, payload: string, summary: string): Promise<string> {
+  return (await backend()).saveInboxFile(shopId, fileName, sha1, payload, summary)
+}
+export async function inboxFilePayload(shopId: string, fileId: string): Promise<string | null> {
+  return (await backend()).inboxFilePayload(shopId, fileId)
+}
+export async function addInboxItem(shopId: string, input: InboxAddInput): Promise<{ id: string; existed: boolean }> {
+  return (await backend()).addInboxItem(shopId, input)
+}
+export async function listInbox(shopId: string, status: InboxStatus | 'all' = 'new'): Promise<InboxRow[]> {
+  return (await backend()).listInbox(shopId, status)
+}
+export async function decideInbox(shopId: string, id: string, decision: InboxDecision): Promise<void> {
+  return (await backend()).decideInbox(shopId, id, decision)
+}
+export async function setInboxStatus(shopId: string, id: string, status: InboxStatus, runId: string | null = null): Promise<void> {
+  return (await backend()).setInboxStatus(shopId, id, status, runId)
+}
+export async function inboxForRun(shopId: string, runId: string): Promise<InboxRow | null> {
+  return (await backend()).inboxForRun(shopId, runId)
+}
+export async function adoptInboxItem(
+  shopId: string,
+  id: string,
+  patch: Pick<InboxAddInput, 'sourceRef' | 'printerId' | 'startedAt' | 'endedAt' | 'minutes' | 'facts' | 'state'>,
+): Promise<void> {
+  return (await backend()).adoptInboxItem(shopId, id, patch)
 }

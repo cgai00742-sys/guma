@@ -47,7 +47,8 @@ import { GATES, PHASE_LABEL, flagsFor, gateStatus, nextPhase } from '../gates'
 import { todayISO } from '../dates'
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
-import { findPlates, importPlateFile, recordConnectPrint } from '../plateSync'
+import { findPlates } from '../plateSync'
+import { addPrinterLogPrint, notReady } from '../printInbox'
 import { assemblyStatus } from '../madeItems'
 
 export interface ToolDef {
@@ -71,6 +72,7 @@ export const writeRefusals = [
   { what: 'change a rate, markup, deposit or minimum', why: 'money' },
   { what: 'take a draft in as a real project', why: 'agreeing to do work' },
   { what: 'delete a project, payment, run, part or work entry', why: 'irreversible' },
+  { what: 'approve a print from the Print Inbox, or say how one came off', why: 'a person inspects the print' },
 ] as const
 
 const str = (d: string) => ({ type: 'string', description: d })
@@ -488,7 +490,7 @@ export function buildTools(): ToolDef[] {
       description:
         'Find which project(s) a sliced file is already on, by file name (Finder copies like "x 1.bgcode" match "x.bgcode"), with the prints already recorded from it. Call this first for every Prusa Connect history entry: it tells you whether the print is new, a repeat of a plate already on a project, or a file Guma has never seen (then ask which project it belongs to).',
       inputSchema: obj({ file_name: str('The file name exactly as Prusa Connect shows it.') }, ['file_name']),
-      handler: async (a, ctx) => findPlates(ctx, String(a.file_name)),
+      handler: async (a, ctx) => findPlates(ctx, String(a.file_name), local),
     },
     {
       name: 'guma_list_series',
@@ -545,64 +547,93 @@ export function buildTools(): ToolDef[] {
       },
     },
     {
-      name: 'guma_import_plate',
+      name: 'guma_inbox_add_print',
       description:
-        'Put a sliced file (.bgcode, .gcode, .gcode.3mf) on a project as a plate, reading it from a path on this computer -- e.g. a file just downloaded from Prusa Connect Files into ~/Downloads. Parts are matched to the build sheet or added, exactly as dropping the file on the project page does. Does NOT record a print: call guma_record_print next with the plate id it returns. Re-importing the same file is safe -- it returns the existing plate.',
+        'Put one print from the printer\'s log (Prusa Connect history) into Guma\'s Print Inbox, with its plate file read from a path on this computer. Nothing reaches a project: the person approves each print in the app -- how it came off, which project, where the pieces go. Guma suggests the project itself (a file already on a project, or a name that matches one); pass job_id only when the person told you. Never pass a judgment of how it came off: Connect\'s cancelled objects go in cancelled_objects as facts. The same source_ref twice finds the first -- syncing twice is safe.',
       inputSchema: obj(
         {
-          job_id: str(''),
-          file_path: str('Absolute path to the file on this computer.'),
-          material_id: str('From guma_shop: the spool it really runs on, when the file names a generic one (sliced as PLA, printed in Wood PLA). Ask when unsure.'),
+          file_path: str('Absolute path to the downloaded .bgcode/.gcode on this computer.'),
+          source_ref: str('"connect:<printer uuid>:<Connect job number>".'),
+          printer_id: str('From guma_shop, if known.'),
+          started_at: str('ISO date-time with the shop\'s offset, e.g. 2026-11-24T10:22:00-10:00.'),
+          ended_at: str('Same form: Connect\'s print end.'),
+          state: { type: 'string', enum: ['finished', 'stopped'], description: 'Connect FINISHED / DONE = finished; STOPPED = stopped.' },
+          minutes: num('Printing time in minutes as Connect\'s job page shows it.'),
+          cancelled_objects: { type: 'array', items: { type: 'string' }, description: 'Objects Connect shows as "Cancelled" under Cancel objects.' },
+          spools: {
+            type: 'array',
+            items: { type: 'object', properties: { name: { type: 'string' }, material: { type: 'string' }, grams: { type: 'number' } }, required: ['name', 'grams'] },
+            description: 'Connect\'s "Material consumption": what each spool actually gave.',
+          },
+          notes: { type: 'array', items: { type: 'string' }, description: 'Anything odd, in plain words: "ran 10h for a 1h34m file".' },
+          job_id: str('Only when the person named the project.'),
+          material_id: str('From guma_shop: the spool it ran on, when the person has said (e.g. CHERRYW is Wood PLA).'),
+          assembly_id: str('From guma_list_assemblies, when the person has said where the pieces go.'),
         },
-        ['job_id', 'file_path'],
+        ['file_path', 'source_ref', 'ended_at', 'state'],
       ),
       writes: true,
       handler: async (a, ctx) => {
         const path = String(a.file_path)
         const bytes = await readFile(path)
         const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-        const res = await importPlateFile(
+        const res = await addPrinterLogPrint(
           ctx,
-          String(a.job_id),
+          local,
           { name: basename(path), arrayBuffer: async () => buf, text: async () => new TextDecoder().decode(bytes) },
-          a.material_id ?? null,
+          {
+            sourceRef: String(a.source_ref),
+            printerId: a.printer_id ?? null,
+            startedAt: a.started_at ?? null,
+            endedAt: String(a.ended_at),
+            state: a.state === 'stopped' ? 'stopped' : 'finished',
+            minutes: a.minutes == null ? null : Number(a.minutes),
+            facts: {
+              job: Number(String(a.source_ref).split(':').pop()) || null,
+              cancelled: Array.isArray(a.cancelled_objects) ? a.cancelled_objects.map(String) : [],
+              spools: Array.isArray(a.spools) ? a.spools.map((x: any) => ({ name: String(x.name), material: x.material ?? null, grams: Number(x.grams) || 0 })) : [],
+              notes: Array.isArray(a.notes) ? a.notes.map(String) : [],
+            },
+            jobId: a.job_id ?? null,
+            materialId: a.material_id ?? null,
+            assemblyId: a.assembly_id ?? null,
+          },
         )
-        return { plate_id: res.importId, file_name: res.fileName, already_on_project: res.duplicateOf != null, parts_added: res.partsAdded, parts_matched: res.partsMatched }
+        return {
+          inbox_id: res.id,
+          file_name: res.fileName,
+          already_in_inbox: res.existed && !res.adopted,
+          matched_a_print_sent_back: res.adopted,
+          suggested_project: res.suggestion.jobId,
+          why: res.suggestion.reason,
+        }
       },
     },
     {
-      name: 'guma_record_print',
+      name: 'guma_inbox_list',
       description:
-        'Record one print from Prusa Connect\'s history against a plate on a project: the day it ended, the real printing time Connect shows, and FINISHED (success) or STOPPED (cancelled). Grams come from the plate file; a stopped print is costed from how far it got. Material comes off the shelf and the build sheet is marked, as recording it in the app does. A print already recorded (same plate, same day, same time) is not counted twice -- syncing twice is safe.',
-      inputSchema: obj(
-        {
-          job_id: str(''),
-          plate_id: str('From guma_find_plate or guma_import_plate.'),
-          printed_on: str('YYYY-MM-DD: the "Print end" date in Connect.'),
-          minutes: num('Connect\'s "Printing time" in minutes. Omit when Connect shows none; the file\'s estimate is used.'),
-          outcome: { type: 'string', enum: ['success', 'cancelled', 'failed'], description: 'FINISHED = success, STOPPED = cancelled.' },
-          note: str('Why it stopped or what failed, if known.'),
-          material_id: str('The spool it really ran on, if not the plate\'s.'),
-          failed_objects: { type: 'array', items: { type: 'string' }, description: 'With outcome success: objects that did not come off, by label (Connect shows "Cancelled" objects; the inspection may find more). Ask the person -- never assume.' },
-          assembly_id: str('From guma_list_assemblies: put the good pieces into this assembly. Ask which, for the shop\'s own work.'),
-        },
-        ['job_id', 'plate_id', 'printed_on', 'outcome'],
-      ),
-      writes: true,
+        'The Print Inbox: prints waiting for the person to approve (status "new"), or all of them. Each shows what the printer said, Guma\'s suggested project and why, and what is still missing before it can be approved. There is no tool to approve one: only the person, after inspecting the print, does that in the app.',
+      inputSchema: obj({ status: { type: 'string', enum: ['new', 'approved', 'ignored', 'all'], description: 'Default new.' } }),
       handler: async (a, ctx) =>
-        recordConnectPrint(ctx, String(a.job_id), String(a.plate_id), {
-          printedOn: String(a.printed_on),
-          minutes: a.minutes == null ? null : Number(a.minutes),
-          outcome: a.outcome as 'success' | 'cancelled' | 'failed',
-          note: a.note ?? null,
-          materialId: a.material_id ?? null,
-          failedObjects: Array.isArray(a.failed_objects) ? a.failed_objects.map(String) : [],
-          assemblyId: a.assembly_id ?? null,
-        }),
+        (await local.listInbox(ctx.shop.id, (a.status as any) ?? 'new')).map((r) => ({
+          id: r.id,
+          source_ref: r.sourceRef,
+          file_name: r.fileName,
+          ended_at: r.endedAt,
+          state: r.state,
+          minutes: r.minutes,
+          facts: r.facts,
+          suggested_project: r.suggestedJobId,
+          why: r.suggestReason,
+          decision: r.decision,
+          status: r.status,
+          missing: r.status === 'new' ? notReady(r) : null,
+          print_id: r.runId,
+        })),
     },
     {
       name: 'guma_list_assemblies',
-      description: 'The assemblies on one of the shop\'s own projects -- what each needs, what it has so far, open or finished -- with ids for guma_record_print\'s assembly_id.',
+      description: 'The assemblies on one of the shop\'s own projects -- what each needs, what it has so far, open or finished -- with ids for guma_inbox_add_print\'s assembly_id.',
       inputSchema: obj({ job_id: str('') }, ['job_id']),
       handler: async (a, ctx) => {
         const items = await local.listMadeItems(ctx.shop.id, String(a.job_id))

@@ -37,6 +37,7 @@ import {
   type SliceFile,
 } from '../lib/sliceImport'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { ProjectInbox } from '../components/ProjectInbox'
 import {
   CLIENT_KIND_LABEL,
   PAYMENT_KINDS,
@@ -1252,6 +1253,9 @@ export default function Project({ ctx }: { ctx: ShopContext }) {
           )}
         </span>
       </div>
+
+      {/* Prints from the printer's log that belong here, and the way back. */}
+      {!isDraft && <ProjectInbox ctx={ctx} detail={detail} onChanged={reload} />}
 
       {/* A draft is deliberately not on the board. Saying so here, with the
           one action that changes it, is the difference between "where did my
@@ -4113,7 +4117,29 @@ function SliceRuns({
         // What it made is rewritten first: if any of it is already placed
         // that refuses, and the print is left as it was.
         const items = made({ ...form, printerId: correcting.printerId ?? form.printerId, materialId: correcting.materialId })
-        if (items) await recordMadeItems(ctx.shop.id, detail.jobId, correcting.id, items)
+        // Pieces already in an open assembly or on the Shelf used to block
+        // this (CG, 24 Nov: a plate found failed on quality the next day
+        // could not be marked). Take them back, rewrite what the print made,
+        // and put the ones still good back into the assembly they were in.
+        let backInto: { label: string; assemblyId: string }[] = []
+        if (items) {
+          const before = (await listMadeItems(ctx.shop.id, detail.jobId)).filter((m) => m.runId === correcting.id)
+          backInto = before.filter((m) => m.status === 'assembled' && m.assemblyId).map((m) => ({ label: m.label, assemblyId: m.assemblyId! }))
+          if (before.some((m) => m.status === 'shelved' || m.status === 'assembled' || m.status === 'kept'))
+            await takeBackPlaced(ctx.shop.id, [correcting.id])
+          await recordMadeItems(ctx.shop.id, detail.jobId, correcting.id, items)
+          if (backInto.length) {
+            const fresh = (await listMadeItems(ctx.shop.id, detail.jobId)).filter((m) => m.runId === correcting.id && m.status === 'made')
+            const byAsm = new Map<string, string[]>()
+            for (const want of backInto) {
+              const i = fresh.findIndex((m) => m.label === want.label)
+              if (i < 0) continue
+              byAsm.set(want.assemblyId, [...(byAsm.get(want.assemblyId) ?? []), fresh[i].id])
+              fresh.splice(i, 1)
+            }
+            for (const [assemblyId, ids] of byAsm) await placeItems(ctx.shop.id, detail.jobId, ids, { kind: 'assembly', assemblyId })
+          }
+        }
         await correctPrintRun(
           ctx.shop.id,
           correcting.id,

@@ -156,7 +156,11 @@ export function madeFromPrint(
   if (!objects.length) return []
   const total = runCost(run, ctx.materials, ctx.printers, ctx.shop.electricity_rate_kwh == null ? null : Number(ctx.shop.electricity_rate_kwh))
   let rs: ObjectResult[]
-  if (run.outcome === 'success') rs = results && results.length === objects.length ? results : objects.map((o) => ({ ...o, failed: false, weighed: null }))
+  // A stopped print can still have some objects come off fine (CG, 24 Nov:
+  // the Print Inbox asks object by object); when it says so, use that.
+  const told = results && results.length === objects.length ? results : null
+  if (run.outcome === 'success') rs = told ?? objects.map((o) => ({ ...o, failed: false, weighed: null }))
+  else if (told && told.some((r) => !r.failed)) rs = told
   else {
     const g = objects.reduce((a, o) => a + (o.grams ?? 0), 0)
     rs = objects.map((o) => ({ ...o, failed: true, weighed: g > 0 && o.grams != null ? (Number(run.unitsUsed) || 0) * (o.grams / g) : null }))

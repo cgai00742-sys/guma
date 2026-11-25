@@ -1809,3 +1809,102 @@ export function validateHardware(next: HardwareInput): HardwareInput {
     if (!Number.isFinite(Number(v)) || Number(v) < 0) throw new Error(`${what} must be zero or more.`)
   return { ...next, name, unitCost: Number(next.unitCost), markupPct: Number(next.markupPct), onHand: Number(next.onHand), reorderAt: Number(next.reorderAt) }
 }
+
+/* ---- the Print Inbox (0047) ------------------------------------------ */
+
+/** What Connect (or any printer log) says about one print. Never edited. */
+export interface InboxFacts {
+  /** Connect's job number on that printer. */
+  job?: number | null
+  /** Objects cancelled mid-print in Connect ("Cancel objects"). */
+  cancelled?: string[]
+  /** What the printer measured off each spool. */
+  spools?: { name: string; material: string | null; grams: number }[]
+  /** Anything else worth showing: "printing time far longer than sliced". */
+  notes?: string[]
+}
+
+/** How one object on the plate came off, as the shop judged it. */
+export type InboxObjectCall = 'good' | 'failed'
+
+/** The shop's decision on one print. Every field optional until approved. */
+export interface InboxDecision {
+  /** The project it belongs to. */
+  jobId?: string | null
+  /** The spool it really ran on, when not the file's. */
+  materialId?: string | null
+  /** Per object, by label as in the file. Missing means good on a finished
+   *  print and failed on a stopped one. */
+  objects?: Record<string, InboxObjectCall>
+  /** Why what failed failed: "quality", "adhesion", or the shop's words. */
+  reason?: string | null
+  /** In-house work: the assembly the good pieces go into. */
+  assemblyId?: string | null
+  note?: string | null
+}
+
+export type InboxStatus = 'new' | 'approved' | 'ignored'
+
+export interface InboxRow {
+  id: string
+  sourceRef: string
+  printerId: string | null
+  fileId: string | null
+  fileName: string
+  startedAt: string | null
+  endedAt: string | null
+  state: 'finished' | 'stopped'
+  minutes: number | null
+  facts: InboxFacts
+  suggestedJobId: string | null
+  suggestReason: string | null
+  decision: InboxDecision
+  status: InboxStatus
+  runId: string | null
+  decidedAt: string | null
+  createdAt: string
+  /** From the kept file, for the screen: the objects on the plate, and the
+   *  slicer's estimate. Null when the file was not kept. */
+  objects: { label: string; qty: number; estGrams: number | null }[] | null
+  estMinutes: number | null
+  estGrams: number | null
+  materialText: string | null
+}
+
+export interface InboxAddInput {
+  sourceRef: string
+  printerId: string | null
+  fileId: string | null
+  fileName: string
+  startedAt: string | null
+  endedAt: string | null
+  state: 'finished' | 'stopped'
+  minutes: number | null
+  facts: InboxFacts
+  suggestedJobId: string | null
+  suggestReason: string | null
+  /** A starting decision -- the suggestion, a remembered spool. */
+  decision?: InboxDecision
+}
+
+/** Read a stored JSON column back, never throwing on a bad value. */
+export function parseJsonObject<T extends object>(text: string | null | undefined): T {
+  try {
+    const v = JSON.parse(text ?? '{}')
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as T) : ({} as T)
+  } catch {
+    return {} as T
+  }
+}
+
+/** The slice summary an inbox row shows, read from a kept file's payload. */
+export function inboxFileSummary(payload: string | null | undefined): Pick<InboxRow, 'objects' | 'estMinutes' | 'estGrams' | 'materialText'> {
+  const p = parseJsonObject<Partial<SliceImportInput>>(payload)
+  if (!p.sections) return { objects: null, estMinutes: null, estGrams: null, materialText: null }
+  return {
+    objects: p.sections.map((s) => ({ label: s.label, qty: Math.max(1, s.qty || 1), estGrams: s.estGrams ?? null })),
+    estMinutes: p.estMinutes ?? null,
+    estGrams: p.estGrams ?? null,
+    materialText: p.materialText ?? null,
+  }
+}

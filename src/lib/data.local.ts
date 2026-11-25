@@ -47,6 +47,13 @@ import {
   type MadeItemInput,
   type AssemblyRow,
   type AssemblyInput,
+  type InboxAddInput,
+  type InboxDecision,
+  type InboxRow,
+  type InboxStatus,
+  type InboxFacts,
+  inboxFileSummary,
+  parseJsonObject,
   type ItemPlace,
   type MadeStatus,
   type ProductPatch, type ProductPhoto,
@@ -5491,4 +5498,153 @@ export async function setAssemblyHardware(shopId: string, assemblyId: string, it
       'insert into assembly_hardware (assembly_id, item_id, per_unit) values (?, ?, ?) on conflict (assembly_id, item_id) do update set per_unit = excluded.per_unit',
       [assemblyId, itemId, n],
     )
+}
+
+/* ---- the Print Inbox (0047) ------------------------------------------ */
+
+/**
+ * Keep a plate file for the Inbox, once: the same bytes are the same row.
+ * `payload` is the import, ready to run (SliceImportInput as JSON);
+ * `summary` is what the screen shows without unpacking it.
+ */
+export async function saveInboxFile(shopId: string, fileName: string, sha1: string, payload: string, summary: string): Promise<string> {
+  const d = await db()
+  const [had] = await d.select<{ id: string }[]>('select id from print_inbox_files where shop_id = ? and sha1 = ?', [shopId, sha1])
+  if (had) return had.id
+  const id = uuid()
+  await d.execute(
+    'insert into print_inbox_files (id, shop_id, file_name, sha1, payload, summary) values (?, ?, ?, ?, ?, ?)',
+    [id, shopId, fileName, sha1, payload, summary],
+  )
+  return id
+}
+
+/** The kept import for an Inbox file, or null. */
+export async function inboxFilePayload(shopId: string, fileId: string): Promise<string | null> {
+  const d = await db()
+  const [r] = await d.select<{ payload: string }[]>('select payload from print_inbox_files where id = ? and shop_id = ?', [fileId, shopId])
+  return r?.payload ?? null
+}
+
+/** Put a print in the Inbox. The same print again (same source_ref) finds
+ *  the first and changes nothing -- syncing twice is safe. */
+export async function addInboxItem(shopId: string, input: InboxAddInput): Promise<{ id: string; existed: boolean }> {
+  const d = await db()
+  const [had] = await d.select<{ id: string }[]>('select id from print_inbox where shop_id = ? and source_ref = ?', [shopId, input.sourceRef])
+  if (had) return { id: had.id, existed: true }
+  const id = uuid()
+  await d.execute(
+    `insert into print_inbox (id, shop_id, source_ref, printer_id, file_id, file_name, started_at, ended_at, state, minutes,
+                              facts, suggested_job_id, suggest_reason, decision)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id, shopId, input.sourceRef, input.printerId, input.fileId, input.fileName, input.startedAt, input.endedAt, input.state,
+      input.minutes, JSON.stringify(input.facts ?? {}), input.suggestedJobId, input.suggestReason,
+      JSON.stringify(input.decision ?? (input.suggestedJobId ? { jobId: input.suggestedJobId } : {})),
+    ],
+  )
+  return { id, existed: false }
+}
+
+interface InboxSql {
+  id: string
+  source_ref: string
+  printer_id: string | null
+  file_id: string | null
+  file_name: string
+  started_at: string | null
+  ended_at: string | null
+  state: 'finished' | 'stopped'
+  minutes: number | null
+  facts: string
+  suggested_job_id: string | null
+  suggest_reason: string | null
+  decision: string
+  status: InboxStatus
+  run_id: string | null
+  decided_at: string | null
+  created_at: string
+  summary: string | null
+}
+
+function inboxRow(r: InboxSql): InboxRow {
+  return {
+    id: r.id,
+    sourceRef: r.source_ref,
+    printerId: r.printer_id,
+    fileId: r.file_id,
+    fileName: r.file_name,
+    startedAt: r.started_at,
+    endedAt: r.ended_at,
+    state: r.state,
+    minutes: r.minutes == null ? null : Number(r.minutes),
+    facts: parseJsonObject<InboxFacts>(r.facts),
+    suggestedJobId: r.suggested_job_id,
+    suggestReason: r.suggest_reason,
+    decision: parseJsonObject<InboxDecision>(r.decision),
+    status: r.status,
+    runId: r.run_id,
+    decidedAt: r.decided_at,
+    createdAt: r.created_at,
+    ...inboxFileSummary(r.summary),
+  }
+}
+
+/** The Inbox, oldest print first -- the order approving applies them in. */
+export async function listInbox(shopId: string, status: InboxStatus | 'all' = 'new'): Promise<InboxRow[]> {
+  const d = await db()
+  const rows = await d.select<InboxSql[]>(
+    `select i.*, f.summary from print_inbox i
+       left join print_inbox_files f on f.id = i.file_id
+      where i.shop_id = ? and (? = 'all' or i.status = ?)
+      order by coalesce(i.ended_at, i.created_at), i.rowid`,
+    [shopId, status, status],
+  )
+  return rows.map(inboxRow)
+}
+
+/** Change the decision on a print still waiting. */
+export async function decideInbox(shopId: string, id: string, decision: InboxDecision): Promise<void> {
+  const d = await db()
+  const [r] = await d.select<{ status: string }[]>('select status from print_inbox where id = ? and shop_id = ?', [id, shopId])
+  if (!r) throw new Error('That print is no longer in the Inbox.')
+  if (r.status === 'approved') throw new Error('That print is already on its project — correct it there, or send it back to the Inbox.')
+  await d.execute('update print_inbox set decision = ? where id = ? and shop_id = ?', [JSON.stringify(decision ?? {}), id, shopId])
+}
+
+/** Approved (with the print it became), set aside, or back to waiting. */
+export async function setInboxStatus(shopId: string, id: string, status: InboxStatus, runId: string | null = null): Promise<void> {
+  const d = await db()
+  await d.execute(
+    `update print_inbox set status = ?, run_id = ?, decided_at = case when ? = 'new' then null else strftime('%Y-%m-%dT%H:%M:%fZ','now') end
+      where id = ? and shop_id = ?`,
+    [status, status === 'approved' ? runId : null, status, id, shopId],
+  )
+}
+
+/** The Inbox row a recorded print came from, if any. */
+export async function inboxForRun(shopId: string, runId: string): Promise<InboxRow | null> {
+  const d = await db()
+  const [r] = await d.select<InboxSql[]>(
+    `select i.*, f.summary from print_inbox i left join print_inbox_files f on f.id = i.file_id
+      where i.shop_id = ? and i.run_id = ?`,
+    [shopId, runId],
+  )
+  return r ? inboxRow(r) : null
+}
+
+/** A print sent back from a project (source "run:...") turns out to be one
+ *  the printer log has: it takes the log's id and facts, keeping the
+ *  decision -- so syncing it from Connect later does not add it twice. */
+export async function adoptInboxItem(
+  shopId: string,
+  id: string,
+  patch: Pick<InboxAddInput, 'sourceRef' | 'printerId' | 'startedAt' | 'endedAt' | 'minutes' | 'facts' | 'state'>,
+): Promise<void> {
+  const d = await db()
+  await d.execute(
+    `update print_inbox set source_ref = ?, printer_id = coalesce(?, printer_id), started_at = ?, ended_at = ?, minutes = ?, facts = ?, state = ?
+      where id = ? and shop_id = ?`,
+    [patch.sourceRef, patch.printerId, patch.startedAt, patch.endedAt, patch.minutes, JSON.stringify(patch.facts ?? {}), patch.state, id, shopId],
+  )
 }

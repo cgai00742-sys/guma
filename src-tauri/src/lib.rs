@@ -284,6 +284,12 @@ fn migrations() -> Vec<tauri_plugin_sql::Migration> {
       sql: include_str!("../migrations/0046_shelf_people.sql"),
       kind: tauri_plugin_sql::MigrationKind::Up,
     },
+    tauri_plugin_sql::Migration {
+      version: 47,
+      description: "the Print Inbox: prints wait for a person to say how they came off",
+      sql: include_str!("../migrations/0047_print_inbox.sql"),
+      kind: tauri_plugin_sql::MigrationKind::Up,
+    },
   ]
 }
 
