@@ -1124,8 +1124,10 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
   // version is never touched -- it is what the client agreed to.
   if (args.reviseJobId) return reviseQuote(d, args, args.reviseJobId)
 
+  // The same client by name, ignoring case -- an exact match. LIKE made
+  // "_" and "%" in a name wildcards, so "A_B" found "AxB" (25 Nov).
   const existing = await d.select<{ id: string }[]>(
-    'select id from clients where shop_id = ? and system = 0 and name like ? limit 1',
+    'select id from clients where shop_id = ? and system = 0 and lower(trim(name)) = lower(trim(?)) limit 1',
     [args.shopId, args.client.name],
   )
 
@@ -1146,9 +1148,12 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
       ],
     )
   } else {
+    // Only what was given: a project started without the client's details
+    // (from Prints to check, from an assistant's draft) wiped the phone and
+    // email already on file (25 Nov). Clearing a detail is done on Clients.
     await d.execute(
-      'update clients set contact = ?, email = ?, phone = ? where id = ?',
-      [args.client.contact || null, args.client.email || null, args.client.phone || null, clientId],
+      'update clients set contact = coalesce(?, contact), email = coalesce(?, email), phone = coalesce(?, phone) where id = ?',
+      [args.client.contact?.trim() || null, args.client.email?.trim() || null, args.client.phone?.trim() || null, clientId],
     )
   }
 

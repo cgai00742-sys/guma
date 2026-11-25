@@ -21,8 +21,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import * as data from '../lib/data'
-import { listInbox, decideInbox, setInboxStatus, listJobs, listAssemblies, createInHouseJob } from '../lib/data'
-import type { AssemblyRow, InboxDecision, InboxRow, JobListRow, ShopContext } from '../lib/data.types'
+import { listInbox, decideInbox, setInboxStatus, listJobs, listAssemblies, listClients } from '../lib/data'
+import type { AssemblyRow, ClientRow, InboxDecision, InboxRow, JobListRow, ShopContext } from '../lib/data.types'
+import { startProject, type StartInput } from '../lib/startProject'
 import { approveInbox, notReady, objectCalls } from '../lib/printInbox'
 import { Flash, useFlash } from './Saving'
 
@@ -140,23 +141,53 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
    *  file names carry its name -- offered, not filed (CG, 25 Nov: 18 prints
    *  of one 32-inch model, no project for them yet). */
   const [made, setMade] = useState<{ jobId: string; title: string } | null>(null)
-  const alike = made
-    ? (rows ?? []).filter((r) => !r.decision.jobId && r.fileName.toLowerCase().includes(made.title.toLowerCase()))
-    : []
+  // Four letters or more: a short name ("Fins") would match unrelated files.
+  const alike =
+    made && made.title.length >= 4
+      ? (rows ?? []).filter((r) => !r.decision.jobId && r.fileName.toLowerCase().includes(made.title.toLowerCase()))
+      : []
 
-  async function createFor(row: InboxRow, title: string) {
-    const name = title.trim()
-    if (!name) return
+  /** Several prints at once, one after another: saved together, SQLite
+   *  turned some away as busy and those prints silently kept no project. */
+  async function decideEach(list: InboxRow[], patch: (r: InboxRow) => Partial<InboxDecision>) {
+    setBusy(true)
+    try {
+      for (const r of list) await decide(r, patch(r))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Clients, for the "For a client" form -- read when first wanted.
+  const [clients, setClients] = useState<ClientRow[] | null>(null)
+  const wantClients = () => {
+    if (clients) return
+    Promise.resolve()
+      .then(() => listClients(ctx.shop.id))
+      .then((c) => setClients(c), () => setClients([]))
+  }
+
+  /** Start the project and file this print in it. True when it worked, so
+   *  the form closes only then and keeps what was typed otherwise. */
+  async function createFor(row: InboxRow, input: StartInput): Promise<boolean> {
     setBusy(true)
     setError(null)
     try {
-      const jobId = await createInHouseJob(ctx.shop.id, { title: name })
+      const jobId = await startProject(ctx, data, input, 'Prints to check')
       setJobs(await listJobs(ctx.shop.id).then((j) => j.filter((x) => x.phase !== 'delivered')))
+      if (input.kind === 'client') setClients(null)
       await decide(row, { jobId })
-      setMade({ jobId, title: name })
-      say(`${name} started as your own project.`)
+      const title = input.title.trim()
+      setMade({ jobId, title })
+      say(
+        input.kind === 'client'
+          ? `${title} started for ${input.clientName.trim()} — it is on the board at Intake, waiting for its quote.`
+          : `${title} started as your own project.`,
+      )
+      return true
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      return false
     } finally {
       setBusy(false)
     }
@@ -205,7 +236,7 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
                 className="btn sm"
                 disabled={busy}
                 title="Take Guma's guess of the project on every print that has one and no project yet. You still say how each came off."
-                onClick={() => void Promise.all(guessable.map((r) => decide(r, { jobId: r.suggestedJobId })))}
+                onClick={() => void decideEach(guessable, (r) => ({ jobId: r.suggestedJobId }))}
               >
                 Use the suggested project for {guessable.length}
               </button>
@@ -226,8 +257,9 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
                 className="btn sm"
                 disabled={busy}
                 onClick={() => {
-                  void Promise.all(alike.map((r) => decide(r, { jobId: made.jobId })))
+                  const to = made.jobId
                   setMade(null)
+                  void decideEach(alike, () => ({ jobId: to }))
                 }}
               >
                 File {alike.length === 1 ? 'it' : `all ${alike.length}`} in {made.title}
@@ -255,7 +287,9 @@ export function PrintsToCheck({ ctx }: { ctx: ShopContext }) {
             onDecide={(p) => void decide(row, p)}
             onApprove={() => void approve([row.id])}
             onIgnore={() => void setAside(row)}
-            onCreate={(title) => void createFor(row, title)}
+            onCreate={(input) => createFor(row, input)}
+            clients={clients}
+            wantClients={wantClients}
           />
         ))}
         {shown.length > FIRST && (
@@ -278,6 +312,8 @@ function InboxCard({
   onApprove,
   onIgnore,
   onCreate,
+  clients,
+  wantClients,
 }: {
   ctx: ShopContext
   row: InboxRow
@@ -287,9 +323,17 @@ function InboxCard({
   onDecide: (patch: Partial<InboxDecision>) => void
   onApprove: () => void
   onIgnore: () => void
-  onCreate: (title: string) => void
+  onCreate: (input: StartInput) => Promise<boolean>
+  clients: ClientRow[] | null
+  wantClients: () => void
 }) {
-  const [naming, setNaming] = useState<string | null>(null)
+  // The new-project form, open or not: what kind, its name, the client.
+  const [naming, setNaming] = useState<{ kind: 'inhouse' | 'client'; title: string; client: string } | null>(null)
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+  const clash = naming && naming.title.trim() ? jobs.find((j) => same(j.title, naming.title)) : undefined
+  const known = naming?.kind === 'client' && naming.client.trim() ? (clients ?? []).find((c) => same(c.name, naming.client)) : undefined
+  const canCreate = !!naming && !!naming.title.trim() && !clash && (naming.kind === 'inhouse' || !!naming.client.trim())
+  const listId = `clients-${row.id}`
   const calls = objectCalls(row)
   const failed = calls.filter((c) => c.call === 'failed')
   const missing = notReady(row)
@@ -341,7 +385,7 @@ function InboxCard({
               <select
                 value={d.jobId ?? ''}
                 onChange={(e) => {
-                  if (e.target.value === '__new') setNaming('')
+                  if (e.target.value === '__new') setNaming({ kind: 'inhouse', title: '', client: '' })
                   else onDecide({ jobId: e.target.value || null })
                 }}
                 disabled={busy}
@@ -356,29 +400,95 @@ function InboxCard({
               </select>
             ) : (
               <form
-                style={{ display: 'flex', gap: 6 }}
+                className="pane"
+                style={{ margin: 0, padding: 10, display: 'grid', gap: 8 }}
+                aria-label="Start a new project"
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setNaming(null)
+                }}
                 onSubmit={(e) => {
                   e.preventDefault()
-                  if (naming.trim()) {
-                    onCreate(naming)
-                    setNaming(null)
-                  }
+                  if (!canCreate || busy) return
+                  const input: StartInput =
+                    naming.kind === 'client'
+                      ? { kind: 'client', title: naming.title, clientName: naming.client }
+                      : { kind: 'inhouse', title: naming.title }
+                  void onCreate(input).then((ok) => ok && setNaming(null))
                 }}
               >
-                <input autoFocus value={naming} placeholder="Name the project, e.g. 32 Inch Wood Filled Model" aria-label="New project name" onChange={(e) => setNaming(e.target.value)} />
-                <button type="submit" className="btn sm primary" disabled={busy || !naming.trim()}>
-                  Create
-                </button>
-                <button type="button" className="btn sm ghost" onClick={() => setNaming(null)}>
-                  Cancel
-                </button>
+                <div className="seg" role="group" aria-label="Whose project">
+                  <button type="button" aria-pressed={naming.kind === 'inhouse'} onClick={() => setNaming({ ...naming, kind: 'inhouse' })}>
+                    Your own work
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={naming.kind === 'client'}
+                    onClick={() => {
+                      wantClients()
+                      setNaming({ ...naming, kind: 'client' })
+                    }}
+                  >
+                    For a client
+                  </button>
+                </div>
+                {naming.kind === 'client' && (
+                  <div>
+                    <input
+                      list={listId}
+                      value={naming.client}
+                      placeholder="Client — pick one, or type a new name"
+                      aria-label="Client"
+                      onChange={(e) => setNaming({ ...naming, client: e.target.value })}
+                    />
+                    <datalist id={listId}>
+                      {(clients ?? []).map((c) => (
+                        <option key={c.id} value={c.name} />
+                      ))}
+                    </datalist>
+                    {naming.client.trim() && (
+                      <div className="hint">
+                        {known ? `${known.name}, already in Clients — their details stay as they are.` : `A new client, “${naming.client.trim()}”. Add their details in Clients after.`}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <input
+                  autoFocus
+                  value={naming.title}
+                  placeholder={naming.kind === 'client' ? 'What it is, e.g. Proa hull fittings' : 'Name the project, e.g. 32 Inch Wood Filled Model'}
+                  aria-label="New project name"
+                  onChange={(e) => setNaming({ ...naming, title: e.target.value })}
+                />
+                {clash && (
+                  <div className="hint" style={{ color: 'var(--warn)' }}>
+                    You already have “{clash.title}”.{' '}
+                    <button
+                      type="button"
+                      className="linkbtn"
+                      style={{ width: 'auto', marginTop: 0 }}
+                      onClick={() => {
+                        onDecide({ jobId: clash.jobId })
+                        setNaming(null)
+                      }}
+                    >
+                      use it
+                    </button>
+                  </div>
+                )}
+                <div className="hint" style={{ marginTop: 0 }}>
+                  {naming.kind === 'client'
+                    ? 'Goes on the board at Intake with an unpriced draft quote — it still needs quoting before it moves on.'
+                    : 'Your own work: no quote, ready for plates and prints.'}
+                </div>
+                <div className="btnrow" style={{ marginTop: 0 }}>
+                  <button type="submit" className="btn sm primary" disabled={busy || !canCreate}>
+                    {busy ? 'Starting…' : 'Start it'}
+                  </button>
+                  <button type="button" className="btn sm ghost" onClick={() => setNaming(null)}>
+                    Cancel
+                  </button>
+                </div>
               </form>
-            )}
-            {naming != null && (
-              <div className="hint">
-                Starts it as your own work, ready for plates and prints. Client work begins from{' '}
-                <Link to="/intake">+ New project</Link>, with a quote.
-              </div>
             )}
             {row.suggestedJobId && d.jobId !== row.suggestedJobId && (
               <div className="hint" style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>

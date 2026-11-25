@@ -560,6 +560,48 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect(back[0].decision.inspected).toBe(false)
   })
 
+  it('starts a client project from a waiting print without touching the client on file (CG, 25 Nov)', async () => {
+    const k = await setup()
+    const { startProject, clientNamed } = await import('../startProject')
+    const { approveInbox } = await import('../printInbox')
+    const anson = await k.local.createClient(k.ctx.shop.id, { name: 'Sakman Mario', kind: 'individual' as any, email: 'mario@example.com', phone: '808-555-0100' })
+    await k.local.createClient(k.ctx.shop.id, { name: 'AxB Surf', kind: 'business' as any })
+
+    // Picked by name in any case: the same client, details kept.
+    const jobId = await startProject(k.ctx, k.local, { kind: 'client', title: 'Proa hull fittings', clientName: 'sakman mario' }, 'Prints to check')
+    const clients = await k.local.listClients(k.ctx.shop.id)
+    expect(clients.filter((c) => c.name.toLowerCase() === 'sakman mario')).toHaveLength(1)
+    expect(clients.find((c) => c.id === anson)).toMatchObject({ email: 'mario@example.com', phone: '808-555-0100' })
+
+    // On the board at Intake, with a draft quote that prices nothing.
+    const d = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
+    expect(d).toMatchObject({ phase: 'intake', title: 'Proa hull fittings' })
+    expect(d.client.name).toBe('Sakman Mario')
+    expect(d.facts.kind).toBe('client')
+    expect((await k.local.listJobs(k.ctx.shop.id)).some((j) => j.jobId === jobId)).toBe(true)
+    const listed = await k.call('guma_list_projects', {})
+    expect(listed.find((j: any) => j.job_id === jobId)?.quoted_total ?? null).toBeNull()
+
+    // A name with _ is not a wildcard: "A_B Surf" is a new client, not AxB.
+    await startProject(k.ctx, k.local, { kind: 'client', title: 'Fins', clientName: 'A_B Surf' }, 'Prints to check')
+    expect((await k.local.listClients(k.ctx.shop.id)).map((c) => c.name).sort()).toEqual(['A_B Surf', 'AxB Surf', 'Sakman Mario'])
+    expect(await clientNamed(k.ctx, k.local, 'a_b surf')).toMatchObject({ name: 'A_B Surf' })
+
+    // No second project of the same name, of either kind.
+    await expect(startProject(k.ctx, k.local, { kind: 'inhouse', title: ' proa HULL fittings ' }, 'x')).rejects.toThrow(/already have a project called “Proa hull fittings”/)
+    await expect(startProject(k.ctx, k.local, { kind: 'client', title: 'New', clientName: '  ' }, 'x')).rejects.toThrow(/who the client is/)
+    await expect(startProject(k.ctx, k.local, { kind: 'client', title: 'New', clientName: 'In-House' }, 'x')).rejects.toThrow(/your own work/)
+
+    // And a waiting print goes onto it like any other.
+    const r = await k.call('guma_inbox_add_print', { file_path: join(here, '../../../samples/reef-buoy_prusa.gcode'), source_ref: 'connect:h:9', ended_at: '2026-11-20T12:00:00-10:00', state: 'finished', minutes: 120 })
+    await k.local.decideInbox(k.ctx.shop.id, r.inbox_id, { jobId, inspected: true })
+    const res = await approveInbox(k.ctx, k.local, [r.inbox_id])
+    expect(res[0]).toMatchObject({ ok: true })
+    const d2 = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
+    expect(d2.runs).toHaveLength(1)
+    expect(d2.parts.length).toBeGreaterThan(0)
+  })
+
   it('files a project in a series', async () => {
     const k = await setup()
     const sid = (await k.call('guma_create_series', { name: 'BathyTopo' })).series_id

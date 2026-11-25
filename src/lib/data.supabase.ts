@@ -1014,7 +1014,8 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
     // A client typed as "In-house" must get a real client row, never the
     // hidden one in-house jobs hang off. Same filter as data.local.ts.
     .eq('system', false)
-    .ilike('name', args.client.name)
+    // Exact, ignoring case: ilike treats _ and % as wildcards (25 Nov).
+    .ilike('name', args.client.name.trim().replace(/[\\%_]/g, (c) => `\\${c}`))
     .limit(1)
 
   let clientId = existing?.[0]?.id as string | undefined
@@ -1034,14 +1035,12 @@ export async function saveQuote(args: SaveQuoteArgs): Promise<SavedQuote> {
     if (error) throw error
     clientId = data.id
   } else {
-    await supabase
-      .from('clients')
-      .update({
-        contact: args.client.contact || null,
-        email: args.client.email || null,
-        phone: args.client.phone || null,
-      })
-      .eq('id', clientId)
+    // Only what was given: blanks no longer wipe the details on file (25 Nov).
+    const given: Record<string, string> = {}
+    if (args.client.contact?.trim()) given.contact = args.client.contact.trim()
+    if (args.client.email?.trim()) given.email = args.client.email.trim()
+    if (args.client.phone?.trim()) given.phone = args.client.phone.trim()
+    if (Object.keys(given).length) await supabase.from('clients').update(given).eq('id', clientId)
   }
 
   const { data: job, error: jErr } = await supabase
