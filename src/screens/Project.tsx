@@ -8918,10 +8918,15 @@ function PrintLine({
         {r.printerName ?? 'machine gone'} · {r.materialName ?? 'material gone'}
         {r.operator ? ` · ${r.operator}` : ''}
         {showFile ? ` · ${showFile}` : ''}
+        {/* Grouped like the plate: "printed 7 × Gu'ut lucha", not every
+            instance with its copy number (CG, 25 Nov). One copy of one
+            thing still says which copy. */}
         {marked.length > 0 &&
-          ` · ${r.outcome === 'success' ? 'printed' : 'failed'} ${marked
-            .map((m) => `${m.label} #${m.copies.join(', #')}`)
-            .join('; ')}`}
+          ` · ${r.outcome === 'success' ? 'printed' : 'failed'} ${
+            marked.length === 1 && marked[0].copies.length <= 3
+              ? `${marked[0].label} #${marked[0].copies.join(', #')}`
+              : piecesSummary(marked.map((m) => ({ label: m.label, qty: m.copies.length })), 4)
+          }`}
       </span>
       <span style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
         {photo}
