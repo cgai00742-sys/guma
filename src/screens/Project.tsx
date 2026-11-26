@@ -39,6 +39,8 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ProjectInbox } from '../components/ProjectInbox'
 import { PrintPhotoLink, useRunPhotoRefs } from '../components/PrintPhotos'
+import { PlateCheck, piecesSummary } from '../components/PlateCheck'
+import { importFixedFile } from '../lib/fixedFile'
 import {
   CLIENT_KIND_LABEL,
   PAYMENT_KINDS,
@@ -4253,14 +4255,14 @@ function SliceRuns({
           return cs.size ? [`${p.label}, copy ${[...cs].sort((a, b) => a - b).join(' & ')}`] : []
         })
         // What this plate makes, by name -- the thread back to the build sheet.
+        // Copies of one thing are one entry, and a long plate says its first
+        // few and how many more -- a plate of 14 instances read as a paragraph
+        // (CG, 25 Nov).
         const makes = (() => {
-          const by = new Map<string, number>()
-          for (const id of g.ids)
-            for (const sec of detail.slices.find((x) => x.id === id)?.sections ?? []) {
-              const label = detail.parts.find((p) => p.id === sec.partId)?.label ?? sec.label
-              if (id === g.first.id) by.set(label, (by.get(label) ?? 0) + Math.max(1, sec.qty ?? 1))
-            }
-          return [...by].map(([l, q]) => (q > 1 ? `${l} ×${q}` : l))
+          const all: { label: string; qty: number }[] = []
+          for (const sec of detail.slices.find((x) => x.id === g.first.id)?.sections ?? [])
+            all.push({ label: detail.parts.find((p) => p.id === sec.partId)?.label ?? sec.label, qty: Math.max(1, sec.qty ?? 1) })
+          return all.length ? [piecesSummary(all)] : []
         })()
         const latest = runs[0]
         const status = !latest
@@ -4269,7 +4271,7 @@ function SliceRuns({
             ? { cls: 'ok', text: runs.length > 1 ? `printed · ${runs.length} prints` : 'printed' }
             : { cls: 'crit', text: latest.outcome === 'failed' ? 'failed' : 'stopped part way' }
         return (
-          <div className={`plate ${status.cls === 'ok' ? 'done' : ''}`.trim()} key={s.id} data-testid={`plate-${s.id}`}>
+          <div className={`plate ${status.cls === 'ok' ? 'done' : ''}`.trim()} key={s.id} data-testid={`plate-${s.id}`} data-plate-ids={g.ids.join(' ')}>
             <div className="platehead">
               {/* The slicer's own picture of the plate: the quickest way to
                   tell two plates apart (CG, 22 Oct). */}
@@ -4604,6 +4606,20 @@ function SliceRuns({
                   </div>
                 )}
               </div>
+            )}
+            {/* Pass or fail what it made, here beside its prints and photo
+                (CG, 25 Nov) -- not on a list of parts further up. */}
+            {runs.length > 0 && (
+              <PlateCheck
+                ctx={ctx}
+                jobId={detail.jobId}
+                parts={detail.parts}
+                runIds={runIds}
+                phase={detail.phase}
+                kind={detail.facts.kind}
+                busy={busy || saving}
+                onChanged={onChanged}
+              />
             )}
             {/* Recorded as clean, but a copy this plate prints has been
                 failed since -- the record and the build sheet disagree.
@@ -5499,46 +5515,8 @@ function BuildSheet({
    */
   /** Read a re-sliced file onto this part: same import as any other, so it
    *  becomes the part's slice rather than a duplicate row. */
-  async function importFixed(
-    part: PartRow,
-    file: File,
-  ): Promise<{ name: string; importId: string; duplicateOf?: string }> {
-    const parsed = await parseSliceFile(file)
-    // A re-sliced plate can carry other objects too, but one of them has to
-    // be this part -- otherwise the file is not its fix, and importing it
-    // would quietly add new parts to the build sheet.
-    if (
-      parsed.sections.length > 1 &&
-      !parsed.sections.some((sec) => sec.label.trim().toLowerCase() === part.label.trim().toLowerCase())
-    ) {
-      throw new Error(
-        `${parsed.fileName} has ${parsed.sections.length} objects on it and none is named “${part.label}”, so it is not this part's fix. Slice the part on its own, or keep its name, and try again.`,
-      )
-    }
-    const bytes = new Uint8Array(await file.arrayBuffer())
-    const r = await importSlice(ctx.shop.id, detail.jobId, ctx.profile.id, {
-      file: await packFile(bytes),
-      fileName: parsed.fileName,
-      kind: parsed.kind,
-      printerModel: parsed.printerModel,
-      printerId: matchPrinter(ctx.printerRows, parsed.printerModel)?.id ?? null,
-      materialText: parsed.totals.material,
-      materialId: matchMaterial(ctx.materials, parsed.totals.material)?.id ?? null,
-      estMinutes: parsed.totals.estMinutes,
-      estGrams: parsed.totals.estGrams,
-      notes: parsed.notes,
-      progress: parsed.progress,
-      forPartId: part.id,
-      sections: parsed.sections.map((sec) => ({
-        label: sec.label,
-        qty: sec.qty,
-        estMinutes: sec.estMinutes,
-        estGrams: sec.estGrams,
-        material: sec.material,
-      })),
-    })
-    return { name: parsed.fileName, importId: r.importId, duplicateOf: r.duplicateOf ?? undefined }
-  }
+  /** A re-sliced file for one failed part (lib/fixedFile.ts). */
+  const importFixed = (part: PartRow, file: File) => importFixedFile(ctx, detail.jobId, part, file)
 
   /**
    * A failed copy, with a fixed file: the file goes on the part and the
@@ -5960,13 +5938,32 @@ function BuildSheet({
                           }
                           onCancel={() => setAct(null)}
                         />
+                      ) : platesOf(p.id).length > 0 ? (
+                        // A part a plate makes is checked ON that plate, beside
+                        // its prints and photo (CG, 25 Nov: "match up the pieces
+                        // to the plates and ask the user to pass/fail them on
+                        // that section"). Here it is a summary, and the way there.
+                        <div className="partacts">
+                          {platesOf(p.id).map((g, i) => (
+                            <button
+                              key={g.first.id}
+                              type="button"
+                              className="linkbtn"
+                              style={{ width: 'auto', marginTop: 0, fontSize: 12 }}
+                              title={g.first.fileName}
+                              onClick={() =>
+                                document
+                                  .querySelector(`[data-plate-ids~="${g.first.id}"]`)
+                                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                              }
+                            >
+                              {platesOf(p.id).length > 1 ? `plate ${i + 1}` : 'on its plate'} ↓
+                            </button>
+                          ))}
+                        </div>
                       ) : (
                         <div className="partacts">
                           {allowedStatuses(detail.phase, detail.facts.kind)
-                            // A part a plate makes is marked printed by that plate's
-                            // prints -- one place to record, not two. Failing a copy
-                            // found bad after it came off, and checking, stay here.
-                            .filter((st) => !(st === 'printed' && platesOf(p.id).length > 0))
                             .filter((st) => movable(copiesOf(p), st) > 0)
                             .map((st) => {
                               const c = copiesOf(p)

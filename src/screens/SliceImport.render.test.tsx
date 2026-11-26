@@ -426,7 +426,7 @@ describe("the shop's own work", () => {
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
-    await within(await screen.findByRole('region', { name: /^plates$/i })).findByText('Buoy shell ×2, Cap')
+    await within(await screen.findByRole('region', { name: /^plates$/i })).findByText('2 × Buoy shell, Cap')
 
     // In-house work has no quote to compare against, so its actual cost is
     // the only number it has. Polluting that would be worse here, not less
@@ -905,9 +905,10 @@ describe('a failed part, Voltage-style', () => {
     await user.click(await screen.findByRole('button', { name: /record the print/i }))
     await screen.findByText(/Recorded as printed on/i)
 
-    const row = (await screen.findByText('Buoy shell')).closest('tr')!
-    await user.click(within(row).getByRole('button', { name: /^fail buoy shell$/i }))
-    const send = screen.getByRole('button', { name: /mark it failed/i })
+    // Failed on its plate, beside the print (CG, 25 Nov), not on the parts list.
+    const piece = await screen.findByTestId('piece-buoy shell')
+    await user.click(within(piece).getByRole('button', { name: /fail/i }))
+    const send = screen.getByRole('button', { name: /send it back/i })
     expect((send as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
     await user.type(screen.getByLabelText(/what went wrong/i), 'Warped corner')
     await user.type(screen.getByLabelText(/how to get it right/i), 'Brim on, dry the spool')
@@ -1190,8 +1191,9 @@ describe('failing one part of a plate, and swapping in its fixed file', () => {
     await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, 'review')
     cleanup()
     await renderProject(jobId, ctx)
-    await user.click(await screen.findByRole('button', { name: /^pass cap$/i }))
-    await user.click(await screen.findByRole('button', { name: /^fail buoy shell$/i }))
+    // On the plate: Cap passes, one of the two Buoy shells goes back.
+    await user.click(within(await screen.findByTestId('piece-cap')).getByRole('button', { name: /pass/i }))
+    await user.click(within(await screen.findByTestId('piece-buoy shell')).getByRole('button', { name: /fail/i }))
     await user.type(screen.getByLabelText(/what went wrong/i), 'Warped corner')
     // The fix, sliced on its own, under whatever name the slicer used.
     const fixed = new File(
@@ -1200,7 +1202,7 @@ describe('failing one part of a plate, and swapping in its fixed file', () => {
       { type: 'text/plain' },
     )
     await user.upload(screen.getByLabelText(/fixed file/i), fixed)
-    await user.click(screen.getByRole('button', { name: /mark it failed/i }))
+    await user.click(screen.getByRole('button', { name: /send it back/i }))
 
     await waitFor(() => {
       const parts = currentDb.sqlite.prepare('select label, status from job_parts order by sort').all()
@@ -1403,7 +1405,7 @@ describe('several files at once, and each print said once (CG, 15 Oct)', () => {
     expect(screen.getAllByText(/came off clean · 2h 3m/)).toHaveLength(1)
     expect(screen.getByTestId('took-totals').textContent).toMatch(/1 print · all listed under their plates/)
     expect(within(plates).getAllByText('not printed yet')).toHaveLength(1)
-    expect(within(plates).getByText('Buoy shell ×2, Cap')).toBeDefined()
+    expect(within(plates).getByText('2 × Buoy shell, Cap')).toBeDefined()
   })
 
   it('counts the same file dropped twice in one go as one plate and one print', async () => {
@@ -1482,7 +1484,7 @@ describe('sorting the objects in a file onto parts (CG, 16 Oct)', () => {
     )
     // The plate is named for what it makes.
     const plates = screen.getByRole('region', { name: /^plates$/i })
-    expect(await within(plates).findByText('Small cap')).toBeDefined()
+    expect((await within(plates).findAllByText('Small cap')).length).toBeGreaterThan(0)
   })
 
   it('offers the file name and the object name as one-click names, and the old part as one click (CG, 23 Oct)', async () => {

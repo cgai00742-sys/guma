@@ -216,7 +216,7 @@ export const GATES: Record<JobPhase, GateItem[]> = {
       // when there is not.
       auto: (f) => (f.parts === 0 ? null : f.partsPassed === f.parts),
       autoFrom: 'from the build sheet',
-      fix: 'Pass every part on the build sheet, or send the failures back.',
+      fix: 'Pass every piece on its plate (Check the pieces, under Plates), or send the failures back.',
     },
     {
       key: 'finishing',
