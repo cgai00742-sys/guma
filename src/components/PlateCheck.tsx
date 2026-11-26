@@ -145,8 +145,10 @@ export function PlateCheck({
     const r = runs.find((x) => x.id === runId)
     if (!r) return null
     const f = slices.find((x) => x.id === r.sliceImportId)?.fileName
-    const short = f ? f.replace(/\.(bgcode|gcode|3mf|gco|g)$/i, '').split('_').slice(-2).join(' ') : null
-    return [r.startedAt?.slice(0, 10), short].filter(Boolean).join(' · ') || null
+    // "2026-11-01 · PETG 31m": when, on what, and the file's sliced time.
+    const time = f ? /(\d+h)?\d+m(?=\.[a-z0-9.]+$)/i.exec(f)?.[0] ?? null : null
+    const what = [r.materialName, time].filter(Boolean).join(' ')
+    return [r.startedAt?.slice(0, 10), what].filter(Boolean).join(' · ') || null
   }
   const rows = plateRows(sections, parts, runIds, describeRun)
   const [failing, setFailing] = useState<string | null>(null)
