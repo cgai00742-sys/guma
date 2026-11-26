@@ -24,7 +24,7 @@
  *
  * No arithmetic lives in this file. Every figure comes from priceQuote().
  */
-import { sheetVsQuote } from '../lib/sheetVsQuote'
+import { sheetVsQuote, singleOf } from '../lib/sheetVsQuote'
 import HoursInput from '../components/HoursInput'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { clearDraft, loadDraft, saveDraft } from '../lib/intakeDraft'
@@ -281,19 +281,27 @@ export default function Intake({ ctx, onCtxChanged }: { ctx: ShopContext; onCtxC
           // The build sheet is what is actually being made. If its copies
           // moved since the quote (CG, 8 Oct), the revision starts from
           // the sheet -- that is almost always why someone is revising.
-          const sheet = sheetVsQuote(q.builds ?? [], q.quantity, d.parts)
+          const sheet = sheetVsQuote(q.builds ?? [], q.quantity, d.parts, singleOf(q))
           const lines = sheet.changed ? sheet.builds : (q.builds ?? [])
           if (sheet.changed) {
             setFromSheet({
               quoted: sheet.quotedCopies,
               sheet: sheet.sheetCopies,
               notes: [
-                ...sheet.added.map((l) => `${l} added from its sliced file`),
+                ...(sheet.added.length > 6
+                  ? [`${sheet.added.length} parts priced from their sliced files`]
+                  : sheet.added.map((l) => `${l} added from its sliced file`)),
                 ...sheet.unpriced.map((l) => `${l} has no sliced numbers -- add it by hand`),
                 ...sheet.quotedOnly.map((l) => `${l} is on the quote but not the build sheet`),
               ],
             })
-            setWhy((w) => w || `Build sheet is now ${sheet.sheetCopies} copies (quoted ${sheet.quotedCopies}).`)
+            setWhy(
+              (w) =>
+                w ||
+                (sheet.sheetCopies === sheet.quotedCopies
+                  ? `Priced from the sliced files on the build sheet (${sheet.sheetCopies} copies).`
+                  : `Build sheet is now ${sheet.sheetCopies} copies (quoted ${sheet.quotedCopies}).`),
+            )
           }
           setInput({
             assetOrigin: d.assetOrigin,
@@ -307,7 +315,10 @@ export default function Intake({ ctx, onCtxChanged }: { ctx: ShopContext; onCtxC
             quantity: sheet.changed ? sheet.quantity : q.quantity,
             unitsPerPart: q.unitsPerPart,
             printHrsPerPart: q.printHrsPart,
-            finishingHrs: q.finishingHrs,
+            // Nothing quoted for finishing but hours logged on the project
+            // (the work came before the quote -- CG, 25 Nov): start from
+            // what was logged, and say so. A quoted figure is never touched.
+            finishingHrs: !(Number(q.finishingHrs) > 0) && d.actuals.finishingHours > 0 ? Math.round(d.actuals.finishingHours * 100) / 100 : q.finishingHrs,
             rush: q.rush,
             flatEach: q.flatEach,
             discountPct: q.discountPct,
@@ -321,6 +332,10 @@ export default function Intake({ ctx, onCtxChanged }: { ctx: ShopContext; onCtxC
               printHrsPerPart: b.printHrsPerPart,
             })),
           })
+          if (!(Number(q.finishingHrs) > 0) && d.actuals.finishingHours > 0) {
+            const note = `finishing set to the ${Math.round(d.actuals.finishingHours * 100) / 100} h logged on the project`
+            setFromSheet((f) => (f ? { ...f, notes: [...f.notes, note] } : { quoted: 0, sheet: 0, notes: [note] }))
+          }
           if (q.materialId) setMaterialId(q.materialId)
           if (q.printerId) setPrinterId(q.printerId)
           // Machines this quote was priced on stay priceable here even if
@@ -867,8 +882,12 @@ export default function Intake({ ctx, onCtxChanged }: { ctx: ShopContext; onCtxC
           numbers somewhere Guma will never see. */}
       {fromSheet && (
         <div className="attn" data-testid="from-sheet" style={{ marginBottom: 10 }}>
-          Copies taken from the build sheet: {fromSheet.sheet}, where the quote had {fromSheet.quoted}.
-          {fromSheet.notes.length > 0 && <> {fromSheet.notes.join('; ')}.</>}
+          {fromSheet.sheet === 0 && fromSheet.quoted === 0
+            ? 'From the project: '
+            : fromSheet.sheet === fromSheet.quoted
+              ? 'Priced from the sliced files on the build sheet. '
+              : `Copies taken from the build sheet: ${fromSheet.sheet}, where the quote had ${fromSheet.quoted}. `}
+          {fromSheet.notes.length > 0 && <>{fromSheet.notes.join('; ')}.</>}
         </div>
       )}
       {reviseJobId && acceptedTotal != null && (

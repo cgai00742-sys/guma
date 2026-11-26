@@ -171,7 +171,7 @@ import {
 } from '../lib/programs'
 import { buildComparison, compareToQuote, priceProjectQuote, type Comparison, type VarianceLine } from '../lib/actuals'
 import type { PricedQuote, RateSet } from '../lib/pricing'
-import { sheetVsQuote } from '../lib/sheetVsQuote'
+import { sheetVsQuote, singleOf } from '../lib/sheetVsQuote'
 import HoursInput from '../components/HoursInput'
 import { fmtHours } from '../lib/duration'
 import { fmtMinutes, progressAt, type ProgressPoint } from '../lib/gcodeWalk'
@@ -8050,7 +8050,7 @@ function EstimatedBuild({
       </div>
     )
   }
-  const sheet = sheetVsQuote(q.builds ?? [], q.quantity, detail.parts)
+  const sheet = sheetVsQuote(q.builds ?? [], q.quantity, detail.parts, singleOf(q))
   const asBuilt = sheet.changed
     ? (priceProjectQuote(detail, pctx, { builds: sheet.builds, quantity: sheet.quantity }) ?? asQuoted)
     : asQuoted
@@ -8226,7 +8226,7 @@ function schedulePlan(
   holds: StockHoldRow[] = [],
 ) {
   const q = detail.quoteInputs
-  const sheet = q ? sheetVsQuote(q.builds ?? [], q.quantity, detail.parts) : null
+  const sheet = q ? sheetVsQuote(q.builds ?? [], q.quantity, detail.parts, singleOf(q)) : null
   const material = materialCheck(
     sheet?.builds ?? [],
     q && !(q.builds ?? []).length ? { materialId: q.materialId, quantity: sheet?.quantity ?? q.quantity, unitsPerPart: q.unitsPerPart } : null,
@@ -9239,7 +9239,7 @@ function sheetPriceOf(
   if (!q) return null
   const asQuoted = priceProjectQuote(detail, pctx)
   if (!asQuoted) return null
-  const sheet = sheetVsQuote(q.builds ?? [], q.quantity, detail.parts)
+  const sheet = sheetVsQuote(q.builds ?? [], q.quantity, detail.parts, singleOf(q))
   const asBuilt = sheet.changed
     ? (priceProjectQuote(detail, pctx, { builds: sheet.builds, quantity: sheet.quantity }) ?? asQuoted)
     : asQuoted

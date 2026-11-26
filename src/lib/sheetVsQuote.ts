@@ -54,10 +54,20 @@ function printedFrom(p: PartRow): PartVariant | null {
   return p.variants.find((v) => v.estGrams != null || v.estMinutes != null) ?? null
 }
 
+/** The single line of a quote with no build lines: what it prices one
+ *  copy at, and on what. */
+export interface SingleLine {
+  unitsPerPart: number
+  printHrsPerPart: number
+  printerId: string | null
+  materialId: string | null
+}
+
 export function sheetVsQuote(
   quoted: QuoteBuildInput[],
   quotedQuantity: number,
   parts: PartRow[],
+  single?: SingleLine | null,
 ): SheetVsQuote {
   const quotedCopies = quoted.length ? quoted.reduce((a, b) => a + b.qty, 0) : quotedQuantity
   const sheetCopies = parts.reduce((a, p) => a + p.qty, 0)
@@ -72,6 +82,44 @@ export function sheetVsQuote(
     added: [],
   }
   if (parts.length === 0) return same
+
+  // A single-line quote that prices nothing -- no grams, no hours a copy --
+  // while the build sheet carries sliced numbers: price the sheet, a line
+  // per part from its own file. That is a project whose plates arrived
+  // after it was started (CG, 25 Nov: 37 pieces of the 32" Anson model,
+  // printed from Prints to check, quoted at the shop minimum and stuck in
+  // Review). A single line the shop priced by hand is left alone.
+  if (quoted.length === 0 && single && !(single.unitsPerPart > 0) && !(single.printHrsPerPart > 0)) {
+    const lines: QuoteBuildInput[] = []
+    const unpriced: string[] = []
+    for (const p of [...parts].sort((a, b) => a.sort - b.sort)) {
+      const v = printedFrom(p)
+      if (v && (v.estGrams != null || v.estMinutes != null)) {
+        const per = Math.max(1, v.sectionQty)
+        lines.push({
+          label: p.label,
+          printerId: v.printerId ?? single.printerId,
+          materialId: v.materialId ?? single.materialId,
+          qty: p.qty,
+          unitsPerPart: v.estGrams == null ? 0 : r2(v.estGrams / per),
+          printHrsPerPart: v.estMinutes == null ? 0 : r2(v.estMinutes / 60 / per),
+          sliceImportId: v.importId,
+        })
+      } else unpriced.push(p.label)
+    }
+    if (lines.length) {
+      return {
+        builds: lines,
+        quantity: quotedQuantity,
+        quotedCopies,
+        sheetCopies,
+        changed: true,
+        unpriced,
+        quotedOnly: [],
+        added: lines.map((l) => l.label),
+      }
+    }
+  }
 
   // A single-line quote has no lines to match against: the sheet's copies
   // are the quantity.
@@ -130,4 +178,9 @@ export function sheetVsQuote(
     quotedOnly,
     added,
   }
+}
+
+/** A project's quote inputs as the single line sheetVsQuote reads. */
+export function singleOf(q: { unitsPerPart: number; printHrsPart: number; printerId: string | null; materialId: string | null }): SingleLine {
+  return { unitsPerPart: Number(q.unitsPerPart) || 0, printHrsPerPart: Number(q.printHrsPart) || 0, printerId: q.printerId, materialId: q.materialId }
 }
