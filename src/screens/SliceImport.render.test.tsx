@@ -20,7 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -212,6 +212,14 @@ function gcodeFile(name = 'Reef buoy_sliced.gcode') {
 
 beforeEach(cleanup)
 
+
+/** Pieces are checked on their plates; the full parts list (counts, copies,
+ *  history) opens on request (CG, 25 Nov). Tests of those tools open it. */
+async function showAllParts() {
+  const b = await screen.findByRole('button', { name: /show all parts/i }).catch(() => null)
+  if (b) fireEvent.click(b)
+}
+
 describe('importing a sliced file from the project screen', () => {
   it('reads the file and shows what is on the plate before writing anything', async () => {
     const { ctx, jobId } = await seedShop()
@@ -264,6 +272,7 @@ describe('importing a sliced file from the project screen', () => {
     })
 
     // On the screen, not just in the table.
+    await showAllParts()
     const sheet = await screen.findByText('Buoy shell')
     expect(sheet).toBeDefined()
     expect(screen.getByText(/2 parts · 3 copies/)).toBeDefined()
@@ -275,6 +284,7 @@ describe('importing a sliced file from the project screen', () => {
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
+    await showAllParts()
     await screen.findByText('Buoy shell')
 
     // 86.5 g of PETG at $0.025 is $2.16, and 2h 3m on a machine at $9/h
@@ -324,6 +334,7 @@ describe('importing a sliced file from the project screen', () => {
 
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
+    await showAllParts()
     await screen.findByText('Buoy shell')
 
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile('fixed_v2.gcode'))
@@ -856,6 +867,7 @@ describe('the import is findable, and says what it did', () => {
 
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
+    await showAllParts()
     await screen.findByText('Buoy shell')
 
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile('fixed_v2.gcode'))
@@ -1554,6 +1566,7 @@ describe('one list: what the plates make is what the project makes (CG, 21 Oct)'
     await renderProject(jobId, ctx)
     await user.upload(screen.getByLabelText(/import sliced files/i), gcodeFile())
     await addAsEstimate(user)
+    await showAllParts()
     const list = await screen.findByRole('region', { name: /what this makes/i })
     const row = (await within(list).findByText('Cap')).closest('tr')!
     expect(within(row).queryByRole('button', { name: /^printed cap$/i })).toBeNull()
@@ -1901,6 +1914,7 @@ describe('a failed copy gets filled by the next good print of the same piece (CG
     await waitFor(() => expect(currentDb.sqlite.prepare("select count(*) n from job_parts where label like 'Cap%'").get()).toEqual({ n: 2 }))
     expect(capStates()).toBe('["reprint"]')
     // Open Cap's copies and fill the failed one from that plate.
+    await showAllParts()
     await user.click(screen.getByRole('button', { name: /each copy of cap$/i }))
     await user.click(await screen.findByRole('button', { name: /fill it from cap fix\.gcode/i }))
     await waitFor(() => expect(capStates()).toBe('["printed"]'))
@@ -1993,6 +2007,7 @@ describe('duplicates combined into one part (CG, 27 Oct)', () => {
     await data.addPart(ctx.shop.id, jobId, ctx.profile.id, { label: 'Cap (Instance 2)', qty: 2, note: null })
     cleanup()
     await renderProject(jobId, ctx)
+    await showAllParts()
     await user.click(screen.getByLabelText('Pick Cap (Instance 1)'))
     await user.click(screen.getByLabelText('Pick Cap (Instance 2)'))
     const box = screen.getByRole('group', { name: /combine parts/i })

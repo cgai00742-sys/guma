@@ -20,7 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -124,6 +124,14 @@ const MAUI = () =>
   new File([readFileSync(join(here, '../../samples/maui-top_prusa-xl.bgcode'))], 'Maui_Top_2mm Base.bgcode')
 
 beforeEach(cleanup)
+
+
+/** Pieces are checked on their plates; the full parts list (counts, copies,
+ *  history) opens on request (CG, 25 Nov). Tests of those tools open it. */
+async function showAllParts() {
+  const b = await screen.findByRole('button', { name: /show all parts/i }).catch(() => null)
+  if (b) fireEvent.click(b)
+}
 
 describe('saving a revision as a PDF (CG, 8 Oct: blank white screen)', () => {
   async function revise(ctx: unknown, jobId: string) {
@@ -245,6 +253,7 @@ describe('changing copies on the build sheet reprices the project (CG, 8 Oct)', 
     expect(screen.queryByRole('button', { name: /log hours/i })).toBeNull()
 
     // Five of the first part, through the real editor.
+    await showAllParts()
     await user.click(screen.getByRole('button', { name: `Edit ${before[0].label}` }))
     const copies = document.querySelector('input[id^="pe-qty-"]') as HTMLInputElement
     await user.clear(copies)

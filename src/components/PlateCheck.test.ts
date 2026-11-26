@@ -1,38 +1,43 @@
 import { describe, expect, it } from 'vitest'
-import { pieceName, piecesSummary, plateCopies } from './PlateCheck'
-import type { PartRow } from '../lib/data.types'
+import { pieceName, piecesSummary, plateRows } from './PlateCheck'
+import type { PartRow, SliceSectionRow } from '../lib/data.types'
 
 let id = 0
 const ev = (runId: string, copies: number[], at: string, toStatus: 'printed' | 'reprint' | 'passed' = 'printed') =>
   ({ id: ++id, kind: 'status', toStatus, fromStatus: null, copies, runId, at, n: null, note: null, actor: null, sliceImportId: null }) as never
-const part = (label: string, qty: number, copyStates: string[], history: unknown[]): PartRow =>
-  ({ id: label, label, qty, status: 'printed', note: null, sort: 0, history, variants: [], chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0, copyStates, spareN: 0 }) as never
+const part = (pid: string, qty: number, copyStates: string[], history: unknown[]): PartRow =>
+  ({ id: pid, label: pid, qty, status: 'printed', note: null, sort: 0, history, variants: [], chosenSectionId: null, printedN: 0, passedN: 0, reprintN: 0, copyStates, spareN: 0 }) as never
+const sec = (partId: string, qty = 1): SliceSectionRow => ({ id: `s-${partId}-${++id}`, partId, label: partId, qty, estMinutes: null, estGrams: null, material: null })
+const where = (r: string) => (r === 'nov1' ? '2026-11-01 · PETG 31m' : r)
 
-describe('pieces on a plate (CG, 25 Nov)', () => {
-  it('reads slicer instances as copies of one piece', () => {
+describe('the parts on a plate (CG, 25 Nov)', () => {
+  it('reads slicer instances as copies of one piece, for titles', () => {
     expect(pieceName("Gu'ut lucha (Instance 3)")).toBe("Gu'ut lucha")
-    expect(pieceName('M-RS850-Keel-Section.stl (Instance 2)')).toBe('M-RS850-Keel-Section')
-    expect(pieceName('Body1')).toBe('Body1')
-  })
-
-  it('titles a long plate by its first few pieces and how many more', () => {
-    const labels = [
-      ...Array.from({ length: 7 }, (_, i) => ({ label: `wedge pin (Instance ${i + 1})`, qty: 1 })),
-      ...Array.from({ length: 7 }, (_, i) => ({ label: `Gu'ut lucha (Instance ${i + 1})`, qty: 1 })),
-    ]
-    expect(piecesSummary(labels)).toBe("7 × wedge pin, 7 × Gu'ut lucha")
     expect(piecesSummary([{ label: 'A', qty: 1 }, { label: 'B', qty: 2 }, { label: 'C', qty: 1 }, { label: 'D', qty: 1 }, { label: 'E', qty: 1 }])).toBe('A, 2 × B, C and 2 more')
   })
 
-  it('groups the copies a plate printed, and a reprinted copy belongs to the plate that reprinted it', () => {
+  it('lists every part the plate file holds, one row each -- even ones another plate already counted', () => {
+    // The Nov 12 PETG plate printed the same 14 pieces the Nov 1 plate had;
+    // each part needs 1, so its print marked nothing. Before, it showed none.
+    const parts = [part('lucha (Instance 1)', 1, ['printed'], [ev('nov1', [1], '2026-11-01T10:00')]), part('lucha (Instance 2)', 1, ['passed'], [ev('nov1', [1], '2026-11-01T10:00')])]
+    const rows = plateRows([sec('lucha (Instance 1)'), sec('lucha (Instance 2)')], parts, new Set(['nov12']), where)
+    expect(rows.map((r) => [r.part.label, r.kind, r.where, r.copies.map((c) => c.state)])).toEqual([
+      ['lucha (Instance 1)', 'elsewhere', '2026-11-01 · PETG 31m', ['printed']],
+      ['lucha (Instance 2)', 'elsewhere', '2026-11-01 · PETG 31m', ['passed']],
+    ])
+  })
+
+  it("acts on this plate's own copies, and a piece failed here and reprinted elsewhere is checked there", () => {
     const parts = [
-      part('Body1', 1, ['printed'], [ev('run-a', [1], '2026-11-09T10:00'), ev('run-a', [1], '2026-11-09T11:00', 'reprint'), ev('run-b', [1], '2026-11-11T10:00')]),
-      part('torus (Instance 1)', 1, ['passed'], [ev('run-a', [1], '2026-11-09T10:00')]),
-      part('torus (Instance 2)', 1, ['printed'], [ev('run-a', [1], '2026-11-09T10:00')]),
+      part('Body1', 1, ['printed'], [ev('a', [1], '2026-11-09T10:00'), ev('a', [1], '2026-11-09T11:00', 'reprint'), ev('b', [1], '2026-11-11T10:00')]),
+      part('torus', 2, ['printed', 'printed'], [ev('a', [1, 2], '2026-11-09T10:00')]),
     ]
-    const a = plateCopies(parts, new Set(['run-a']))
-    expect(a.map((g) => [g.name, g.copies.map((c) => c.state)])).toEqual([['torus', ['passed', 'printed']]])
-    const b = plateCopies(parts, new Set(['run-b']))
-    expect(b.map((g) => [g.name, g.copies.length])).toEqual([['Body1', 1]])
+    const onA = plateRows([sec('Body1'), sec('torus', 2)], parts, new Set(['a']), (r) => r)
+    expect(onA.map((r) => [r.part.label, r.kind, r.onPlate, r.copies.length])).toEqual([
+      ['Body1', 'reprinted', 1, 0],
+      ['torus', 'mine', 2, 2],
+    ])
+    const onB = plateRows([sec('Body1')], parts, new Set(['b']), (r) => r)
+    expect(onB.map((r) => [r.kind, r.copies.length])).toEqual([['mine', 1]])
   })
 })

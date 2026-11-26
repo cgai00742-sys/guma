@@ -20,7 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -160,6 +160,14 @@ async function moveTo(
   for (const to of ladder.slice(0, ladder.indexOf(phase) + 1)) {
     await d.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, to as never)
   }
+}
+
+
+/** Pieces are checked on their plates; the full parts list (counts, copies,
+ *  history) opens on request (CG, 25 Nov). Tests of those tools open it. */
+async function showAllParts() {
+  const b = await screen.findByRole('button', { name: /show all parts/i }).catch(() => null)
+  if (b) fireEvent.click(b)
 }
 
 describe('a draft that has not been taken in', () => {
@@ -559,6 +567,7 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     const states = () =>
       JSON.parse((currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Hull'").get() as { copy_states: string }).copy_states)
 
+    await showAllParts()
     await user.click(screen.getByRole('button', { name: /each copy of hull/i }))
     const list = await screen.findByTestId(`each-copy-${partId}`)
     expect(list.textContent).toMatch(/Copy 5/)
@@ -588,6 +597,7 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     await d.setCopyStates(ctx.shop.id, partId, ctx.profile.id, [0], 'reprint', 'Spaghetti')
     await renderProject(jobId, ctx)
     const user = userEvent.setup()
+    await showAllParts()
     await user.click(screen.getByRole('button', { name: /each copy of hull/i }))
     const same = new File(
       ['; printing object Hull id:0 copy 0\n; total filament used [g] = 20\n; estimated printing time (normal mode) = 1h 0m 0s\n'],
@@ -608,6 +618,7 @@ describe('copies, not just parts (CG, 8 Oct: one test plate of five)', () => {
     const user = userEvent.setup()
     const states = () =>
       JSON.parse((currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Hull'").get() as { copy_states: string }).copy_states)
+    await showAllParts()
     await user.click(screen.getByRole('button', { name: /each copy of hull/i }))
 
     // Copy 2: a fixed file goes on the part and the copy goes back in the queue.

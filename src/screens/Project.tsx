@@ -4613,8 +4613,11 @@ function SliceRuns({
               <PlateCheck
                 ctx={ctx}
                 jobId={detail.jobId}
+                sections={s.sections}
                 parts={detail.parts}
                 runIds={runIds}
+                runs={detail.runs}
+                slices={detail.slices}
                 phase={detail.phase}
                 kind={detail.facts.kind}
                 busy={busy || saving}
@@ -5457,6 +5460,16 @@ function BuildSheet({
   const plateOnly = detail.facts.kind === 'inhouse'
   const platesOf = (partId: string) =>
     groupsAll.filter((g) => detail.slices.find((x) => x.id === g.first.id)?.sections.some((sec) => sec.partId === partId))
+  /** Parts no plate makes -- typed in by hand. They are the only ones listed
+   *  here: everything a plate makes is checked on that plate (CG, 25 Nov:
+   *  "I prefer it be eliminated and we just have one section where the
+   *  Plates are"). */
+  const offPlate = detail.parts.filter((p) => platesOf(p.id).length === 0)
+  // Every part -- for changing how many are needed, a copy's history,
+  // combining instances, removing one. Out of the way until asked for:
+  // checking happens on the plates.
+  const [allParts, setAllParts] = useState(false)
+  const listed = allParts ? detail.parts : offPlate
   /** Objects on a plate that no part on this list counts -- their part was
    *  removed, or never made. Counting them is one click. */
   const uncounted = groupsAll.flatMap((g) =>
@@ -5637,13 +5650,38 @@ function BuildSheet({
       {/* No separate failures line (CG, 20 Oct: "still is confusing ... just
           eliminate that section"). Each failure is on its plate's print, and
           What it took totals what failures cost. */}
-      {plateOnly ? null : detail.parts.length === 0 && uncounted.length === 0 ? (
+      {/* The plates first: that is where pieces are checked (CG, 25 Nov).
+          The full parts list opens below them, on request. */}
+      <SliceRuns
+        ctx={ctx}
+        detail={detail}
+        busy={busy || saving}
+        onChanged={onChanged}
+        setError={setError}
+      />
+
+      {!plateOnly && detail.parts.length > offPlate.length && (
+        <button
+          type="button"
+          className="linkbtn"
+          style={{ width: 'auto', marginTop: 10, fontSize: 12 }}
+          aria-expanded={allParts}
+          onClick={() => {
+            setAllParts((x) => !x)
+            setPicked(new Set())
+          }}
+        >
+          {allParts ? 'Hide the full parts list' : `Show all parts — counts, copies and history (${detail.parts.length})`}
+        </button>
+      )}
+
+      {plateOnly ? null : detail.parts.length === 0 && uncounted.length === 0 && detail.slices.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--txt-2)', marginTop: 14 }}>
           Nothing here yet — drop the sliced files above. Each one becomes a plate, and what is on it
           is listed here as what this project makes. Something with no file can be added by hand
           below.
         </div>
-      ) : detail.parts.length === 0 ? null : (
+      ) : listed.length === 0 ? null : (
         <>
         {picked.size > 0 && (
           <CopiesBar
@@ -5687,10 +5725,11 @@ function BuildSheet({
           </div>
         )}
         <div className="sechead" style={{ marginTop: 14 }}>
-          <h4>What this makes</h4>
+          <h4>{allParts ? 'All parts' : 'Not on any plate'}</h4>
           <span className="sub">
-            Worked out from the plates below: a plate&rsquo;s prints mark its parts. Change how many you
-            need with edit.
+            {allParts
+              ? 'How many of each are needed, every copy and its history. Pieces are checked on their plates, below.'
+              : 'Parts typed in by hand. Everything a plate makes is checked on its plate, below.'}
           </span>
         </div>
         {/* Parts with no plate behind them (CG, 23-24 Oct): an earlier plate
@@ -5786,12 +5825,12 @@ function BuildSheet({
                   <input
                     type="checkbox"
                     aria-label="Pick every part"
-                    checked={picked.size > 0 && picked.size === detail.parts.length}
+                    checked={picked.size > 0 && picked.size === listed.length}
                     ref={(el) => {
-                      if (el) el.indeterminate = picked.size > 0 && picked.size < detail.parts.length
+                      if (el) el.indeterminate = picked.size > 0 && picked.size < listed.length
                     }}
                     disabled={busy || saving}
-                    onChange={(e) => setPicked(e.target.checked ? new Set(detail.parts.map((x) => x.id)) : new Set())}
+                    onChange={(e) => setPicked(e.target.checked ? new Set(listed.map((x) => x.id)) : new Set())}
                   />
                 </th>
                 <th className="chev" aria-label="Show copies" />
@@ -5802,11 +5841,11 @@ function BuildSheet({
               </tr>
             </thead>
             <tbody>
-              {detail.parts.map((p, i) => (
+              {listed.map((p, i) => (
                 <Fragment key={p.id}>
                   <tr
                     className={`partrow ${copiesOpen === p.id ? 'open' : ''} ${
-                      landed > 0 && i >= detail.parts.length - landed ? 'landed' : ''
+                      landed > 0 && i >= listed.length - landed ? 'landed' : ''
                     } ${partDone(statesOf(p)) ? 'done' : ''}`.trim()}
                   >
                     <td className="pick">
@@ -6242,7 +6281,7 @@ function BuildSheet({
         </>
       )}
 
-      {detail.parts.length > 0 && !plateOnly && (
+      {listed.length > 0 && !plateOnly && (
         <div className="sheetsum">
           <span>One box per copy: amber = printed · green = every copy done (✓) or passed · red = going back · dashed = reprint queued</span>
           <span style={{ marginLeft: 'auto' }}>
@@ -6313,13 +6352,6 @@ function BuildSheet({
         </div>
       )}
 
-      <SliceRuns
-        ctx={ctx}
-        detail={detail}
-        busy={busy || saving}
-        onChanged={onChanged}
-        setError={setError}
-      />
 
       {/* Once building, Estimated build is gone from the page -- so a build
           sheet that no longer matches the agreed quote says so here, with

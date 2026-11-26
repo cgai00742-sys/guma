@@ -16,7 +16,7 @@
  */
 import { useState } from 'react'
 import { setCopyStates } from '../lib/data'
-import type { JobKind, JobPhase, PartRow, PartStatus, ShopContext } from '../lib/data.types'
+import type { JobKind, JobPhase, PartRow, PartStatus, PrintRunRow, ShopContext, SliceImportRow, SliceSectionRow } from '../lib/data.types'
 import { allowedStatuses, reprintNote } from '../lib/parts'
 import { statesOf } from '../lib/copies'
 import { importFixedFile } from '../lib/fixedFile'
@@ -46,42 +46,79 @@ interface Copy {
   state: PartStatus
 }
 
-interface Group {
-  name: string
+/** One part on the plate, and the copies its pass or fail acts on. */
+export interface PlateRow {
+  part: PartRow
+  /** How many of it the plate's file holds. */
+  onPlate: number
   copies: Copy[]
+  /**
+   * mine: this plate's print made them.
+   * elsewhere: another plate made the copies the build sheet counts -- this
+   *   plate printed it again (CG, 25 Nov: the Nov 12 PETG plate reprinted the
+   *   14 pieces of the Nov 1 plate, so its print marked nothing). Checking it
+   *   here acts on the part's copies.
+   * reprinted: failed here and printed again elsewhere: checked there.
+   * none: nothing printed of it yet.
+   */
+  kind: 'mine' | 'elsewhere' | 'reprinted' | 'none'
+  /** For elsewhere and reprinted: which print, in words. */
+  where: string | null
 }
 
-/** The copies this plate's prints made, by piece. */
-export function plateCopies(parts: PartRow[], runIds: Set<string>): Group[] {
-  const groups = new Map<string, Group>()
-  for (const p of parts) {
+/**
+ * The plate's parts, from its file -- what was physically on the bed, one
+ * row per part -- with the copies each row's Pass or Fail acts on.
+ */
+export function plateRows(
+  sections: SliceSectionRow[],
+  parts: PartRow[],
+  runIds: Set<string>,
+  describeRun: (runId: string) => string | null,
+): PlateRow[] {
+  const onPlate = new Map<string, number>()
+  for (const sec of sections) if (sec.partId) onPlate.set(sec.partId, (onPlate.get(sec.partId) ?? 0) + Math.max(1, sec.qty || 1))
+  const rows: PlateRow[] = []
+  for (const [partId, n] of onPlate) {
+    const p = parts.find((x) => x.id === partId)
+    if (!p) continue
     const states = statesOf(p)
-    // Each copy belongs to the print that made it LAST: one failed here and
-    // reprinted on another plate is checked there, not on both.
+    // Each copy belongs to the print that made it LAST.
     const lastRun = new Map<number, string | null>()
     for (const h of [...p.history].sort((a, b) => a.at.localeCompare(b.at) || a.id - b.id))
       if (h.kind === 'status' && h.toStatus === 'printed') for (const c of h.copies ?? []) lastRun.set(c, h.runId ?? null)
-    const mine = new Set<number>()
-    for (const [c, run] of lastRun) if (run && runIds.has(run)) mine.add(c)
-    for (const c of [...mine].sort((a, b) => a - b)) {
-      const state = states[c - 1]
-      if (!state || state === 'pending') continue
-      const name = pieceName(p.label)
-      const g = groups.get(name.toLowerCase()) ?? { name, copies: [] }
-      g.copies.push({ part: p, copy: c, state })
-      groups.set(name.toLowerCase(), g)
+    const copy = (c: number): Copy => ({ part: p, copy: c, state: states[c - 1] })
+    const mine = [...lastRun].filter(([c, r]) => r && runIds.has(r) && states[c - 1] && states[c - 1] !== 'pending').map(([c]) => copy(c))
+    if (mine.length) {
+      rows.push({ part: p, onPlate: n, copies: mine, kind: 'mine', where: null })
+      continue
+    }
+    const others = [...lastRun].filter(([c, r]) => r && !runIds.has(r) && states[c - 1] && states[c - 1] !== 'pending')
+    const failedHere = p.history.some((h) => h.runId && runIds.has(h.runId) && h.toStatus === 'reprint')
+    if (others.length && failedHere) {
+      rows.push({ part: p, onPlate: n, copies: [], kind: 'reprinted', where: describeRun(others[others.length - 1][1]!) })
+    } else if (others.length) {
+      rows.push({ part: p, onPlate: n, copies: others.slice(0, n).map(([c]) => copy(c)), kind: 'elsewhere', where: describeRun(others[0][1]!) })
+    } else {
+      rows.push({ part: p, onPlate: n, copies: [], kind: 'none', where: null })
     }
   }
-  return [...groups.values()]
+  return rows
 }
 
 const REASONS = ['Warping', 'Layer shift', 'Adhesion', 'Stringing', 'Surface finish', 'Wrong size', 'Broke in finishing']
 
+const PASS = { background: 'var(--ok)', color: '#06140d', border: '1px solid var(--ok)', fontWeight: 600 } as const
+const FAIL = { background: 'var(--red)', color: '#fff', border: '1px solid var(--red)', fontWeight: 600 } as const
+
 export function PlateCheck({
   ctx,
   jobId,
+  sections,
   parts,
   runIds,
+  runs,
+  slices,
   phase,
   kind,
   busy,
@@ -89,8 +126,13 @@ export function PlateCheck({
 }: {
   ctx: ShopContext
   jobId: string
+  /** The plate's objects, from its file. */
+  sections: SliceSectionRow[]
   parts: PartRow[]
   runIds: Set<string>
+  /** Every print and plate on the project, to say where else a part printed. */
+  runs: PrintRunRow[]
+  slices: SliceImportRow[]
   phase: JobPhase
   kind: JobKind
   busy: boolean
@@ -99,7 +141,14 @@ export function PlateCheck({
   const allowed = allowedStatuses(phase, kind)
   const canPass = allowed.includes('passed')
   const canFail = allowed.includes('reprint')
-  const groups = plateCopies(parts, runIds)
+  const describeRun = (runId: string) => {
+    const r = runs.find((x) => x.id === runId)
+    if (!r) return null
+    const f = slices.find((x) => x.id === r.sliceImportId)?.fileName
+    const short = f ? f.replace(/\.(bgcode|gcode|3mf|gco|g)$/i, '').split('_').slice(-2).join(' ') : null
+    return [r.startedAt?.slice(0, 10), short].filter(Boolean).join(' · ') || null
+  }
+  const rows = plateRows(sections, parts, runIds, describeRun)
   const [failing, setFailing] = useState<string | null>(null)
   const [n, setN] = useState(1)
   const [why, setWhy] = useState('')
@@ -107,10 +156,10 @@ export function PlateCheck({
   const [fixedFile, setFixedFile] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  if (!groups.length || (!canPass && !canFail)) return null
+  if (!rows.length || (!canPass && !canFail)) return null
 
-  const waiting = (g: Group) => g.copies.filter((c) => c.state === 'printed')
-  const allWaiting = groups.flatMap(waiting)
+  const waiting = (r: PlateRow) => r.copies.filter((c) => c.state === 'printed')
+  const allWaiting = rows.flatMap(waiting)
 
   /** Move copies, one call per part, one after another. */
   async function move(copies: Copy[], to: PartStatus, note: string | null, fixed: File | null = null) {
@@ -136,44 +185,64 @@ export function PlateCheck({
   }
 
   const off = busy || saving
+  const passedN = rows.reduce((a, r) => a + r.copies.filter((c) => c.state === 'passed').length, 0)
   return (
     <div className="objresults" role="group" aria-label="Check the pieces" data-testid="plate-check" style={{ marginTop: 10 }}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
-        <span className="lbl">Check the pieces</span>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
+        <span className="lbl">
+          Check the pieces — {rows.length} part{rows.length === 1 ? '' : 's'} on this plate
+          {passedN ? ` · ${passedN} passed` : ''}
+        </span>
         {canPass && allWaiting.length > 1 && (
-          <button type="button" className="btn sm primary" disabled={off} onClick={() => void move(allWaiting, 'passed', null)}>
-            Pass all {allWaiting.length}
+          <button type="button" className="btn sm" style={PASS} disabled={off} onClick={() => void move(allWaiting, 'passed', null)}>
+            ✓ Pass all {allWaiting.length}
           </button>
         )}
         {!canPass && <span className="hint" style={{ margin: 0 }}>Passing comes at Review; a bad piece can be failed now.</span>}
       </div>
-      {groups.map((g) => {
-        const w = waiting(g)
-        const passed = g.copies.filter((c) => c.state === 'passed').length
-        const back = g.copies.filter((c) => c.state === 'reprint').length
-        const total = g.copies.length
-        const key = g.name.toLowerCase()
+      {rows.map((r) => {
+        const w = waiting(r)
+        const passed = r.copies.filter((c) => c.state === 'passed').length
+        const back = r.copies.filter((c) => c.state === 'reprint').length
+        const key = r.part.id
+        const name = r.part.label.replace(/\.(stl|3mf|obj|step|stp)(?=\s*\(|$)/i, '')
+        const note =
+          r.kind === 'elsewhere'
+            ? `also printed on ${r.where ?? 'another plate'}`
+            : r.kind === 'reprinted'
+              ? `failed here — reprinted on ${r.where ?? 'another plate'}, check it there`
+              : r.kind === 'none'
+                ? 'not marked printed'
+                : ''
         return (
           <div key={key}>
-            <div className={`objrow ${back && !w.length && !passed ? 'failed' : ''}`.trim()} data-testid={`piece-${key}`}>
-              <span style={{ flex: 1 }}>
-                {total > 1 ? `${total} × ` : ''}
-                {g.name}
+            <div className={`objrow ${back && !w.length && !passed ? 'failed' : ''}`.trim()} data-testid={`piece-${name.toLowerCase()}`}>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                {name}
+                {r.onPlate > 1 ? ` ×${r.onPlate}` : ''}
                 <span className="pmeta" style={{ marginLeft: 8 }}>
-                  {[w.length ? `${w.length} to check` : '', passed ? `✓ ${passed} passed` : '', back ? `${back} going back` : ''].filter(Boolean).join(' · ')}
+                  {[
+                    passed ? `✓ ${passed > 1 ? `${passed} ` : ''}passed` : '',
+                    back ? `${back > 1 ? `${back} ` : ''}going back` : '',
+                    w.length > 1 ? `${w.length} to check` : '',
+                    note,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </span>
               </span>
               {w.length > 0 && (
-                <span className="seg" role="group" aria-label={`Check ${g.name}`}>
+                <span style={{ display: 'flex', gap: 6 }} role="group" aria-label={`Check ${name}`}>
                   {canPass && (
-                    <button type="button" className="segbtn printed" disabled={off} onClick={() => void move(w, 'passed', null)}>
+                    <button type="button" className="btn sm" style={PASS} disabled={off} onClick={() => void move(w, 'passed', null)}>
                       ✓ Pass{w.length > 1 ? ` ${w.length}` : ''}
                     </button>
                   )}
                   {canFail && (
                     <button
                       type="button"
-                      className="segbtn reprint"
+                      className="btn sm"
+                      style={FAIL}
                       disabled={off}
                       onClick={() => {
                         setFailing(failing === key ? null : key)
@@ -183,7 +252,7 @@ export function PlateCheck({
                         setFixedFile(null)
                       }}
                     >
-                      ✕ Fail…
+                      ✕ Fail
                     </button>
                   )}
                 </span>
@@ -199,13 +268,13 @@ export function PlateCheck({
                 )}
                 <label className="lbl" style={{ marginTop: 6 }}>What went wrong</label>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-                  {REASONS.map((r) => (
-                    <button key={r} type="button" className={`chip ${why === r ? 'on' : ''}`} onClick={() => setWhy(r)}>
-                      {r}
+                  {REASONS.map((x) => (
+                    <button key={x} type="button" className={`chip ${why === x ? 'on' : ''}`} onClick={() => setWhy(x)}>
+                      {x}
                     </button>
                   ))}
                 </div>
-                <input value={why} placeholder="Or say it in your words" aria-label={`What went wrong with ${g.name}`} onChange={(e) => setWhy(e.target.value)} />
+                <input value={why} placeholder="Or say it in your words" aria-label={`What went wrong with ${name}`} onChange={(e) => setWhy(e.target.value)} />
                 <label className="lbl" style={{ marginTop: 6 }}>How to get it right next time (optional)</label>
                 <input value={fix} placeholder="Brim on, slow first layer, dry the spool…" aria-label="How to get it right next time" onChange={(e) => setFix(e.target.value)} />
                 <label className="lbl" style={{ marginTop: 6 }} htmlFor={`fixed-${key}`}>
@@ -213,14 +282,14 @@ export function PlateCheck({
                 </label>
                 <input id={`fixed-${key}`} type="file" accept={SLICE_ACCEPT} onChange={(e) => setFixedFile(e.target.files?.[0] ?? null)} />
                 <div className="btnrow" style={{ marginTop: 6, alignItems: 'center' }}>
-                  <button type="button" className="btn sm danger" disabled={off || !why.trim()} onClick={() => void move(w.slice(0, n), 'reprint', reprintNote(why, fix, null), fixedFile)}>
+                  <button type="button" className="btn sm" style={FAIL} disabled={off || !why.trim()} onClick={() => void move(w.slice(0, n), 'reprint', reprintNote(why, fix, null), fixedFile)}>
                     {n > 1 ? `Send ${n} back` : 'Send it back'}
                   </button>
                   <button type="button" className="btn sm ghost" onClick={() => setFailing(null)}>
                     Cancel
                   </button>
                   <span className="hint" style={{ margin: 0 }}>
-                    They go back on the build sheet to print again, with this reason.
+                    It goes back on the list to print again, with this reason.
                   </span>
                 </div>
               </div>
