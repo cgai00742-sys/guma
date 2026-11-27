@@ -66,6 +66,9 @@ export interface PlateRow {
   kind: 'mine' | 'elsewhere' | 'reprinted' | 'none'
   /** For elsewhere and reprinted: which print, in words. */
   where: string | null
+  /** For reprinted: the copies failed on this plate and printed again on
+   *  another, with the print they failed on -- so the link can be undone. */
+  replaced?: { copy: Copy; failedOn: string }[]
 }
 
 /**
@@ -85,10 +88,7 @@ export function plateRows(
     const p = parts.find((x) => x.id === partId)
     if (!p) continue
     const states = statesOf(p)
-    // Each copy belongs to the print that made it LAST.
-    const lastRun = new Map<number, string | null>()
-    for (const h of [...p.history].sort((a, b) => a.at.localeCompare(b.at) || a.id - b.id))
-      if (h.kind === 'status' && h.toStatus === 'printed') for (const c of h.copies ?? []) lastRun.set(c, h.runId ?? null)
+    const lastRun = copyRuns(p)
     const copy = (c: number): Copy => ({ part: p, copy: c, state: states[c - 1], runId: lastRun.get(c) ?? null })
     const mine = [...lastRun].filter(([c, r]) => r && runIds.has(r) && states[c - 1] && states[c - 1] !== 'pending').map(([c]) => copy(c))
     if (mine.length) {
@@ -98,7 +98,11 @@ export function plateRows(
     const others = [...lastRun].filter(([c, r]) => r && !runIds.has(r) && states[c - 1] && states[c - 1] !== 'pending')
     const failedHere = p.history.some((h) => h.runId && runIds.has(h.runId) && h.toStatus === 'reprint')
     if (others.length && failedHere) {
-      rows.push({ part: p, onPlate: n, copies: [], kind: 'reprinted', where: describeRun(others[others.length - 1][1]!) })
+      const replaced = others.flatMap(([c]) => {
+        const f = [...p.history].reverse().find((h) => h.toStatus === 'reprint' && h.runId && runIds.has(h.runId) && (h.copies ?? []).includes(c))
+        return f ? [{ copy: copy(c), failedOn: f.runId! }] : []
+      })
+      rows.push({ part: p, onPlate: n, copies: [], kind: 'reprinted', where: describeRun(others[others.length - 1][1]!), replaced })
     } else if (others.length) {
       rows.push({ part: p, onPlate: n, copies: others.slice(0, n).map(([c]) => copy(c)), kind: 'elsewhere', where: describeRun(others[0][1]!) })
     } else {
@@ -106,6 +110,39 @@ export function plateRows(
     }
   }
   return rows
+}
+
+/**
+ * Which print each copy (1-based) belongs to now: the one that made it
+ * LAST -- or, failed on a named print, that one (an undone replacement goes
+ * back there).
+ */
+function copyRuns(p: PartRow): Map<number, string | null> {
+  const lastRun = new Map<number, string | null>()
+  for (const h of [...p.history].sort((a, b) => a.at.localeCompare(b.at) || a.id - b.id))
+    if (h.kind === 'status' && (h.toStatus === 'printed' || (h.toStatus === 'reprint' && h.runId)))
+      for (const c of h.copies ?? []) lastRun.set(c, h.runId ?? null)
+  return lastRun
+}
+
+/**
+ * The prints that could have replaced a failed copy (CG, 27 Nov: "when I
+ * fail the first it asks if the later piece with the same file name was the
+ * replacement"). A print counts when it came off clean after the copy's
+ * own print, its plate holds this part, and it filled no copy of it -- an
+ * extra print of the piece, which is what a reprint recorded before its
+ * failure was known looks like (the 32" Anson cross-member: Oct 30, then
+ * again Nov 9). Oldest first.
+ */
+export function replacementCandidates(c: Pick<Copy, 'part' | 'runId'>, runs: PrintRunRow[], slices: SliceImportRow[]): PrintRunRow[] {
+  const own = c.runId ? runs.find((r) => r.id === c.runId) : null
+  // A print some copy belongs to now is not a spare; one whose link was undone is again.
+  const filled = new Set([...copyRuns(c.part).values()].filter((r): r is string => !!r))
+  return runs
+    .filter((r) => r.id !== c.runId && r.outcome === 'success' && !filled.has(r.id))
+    .filter((r) => !own?.startedAt || !r.startedAt || r.startedAt >= own.startedAt)
+    .filter((r) => slices.find((s) => s.id === r.sliceImportId)?.sections.some((sec) => sec.partId === c.part.id))
+    .sort((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''))
 }
 
 const REASONS = ['Warping', 'Layer shift', 'Adhesion', 'Stringing', 'Surface finish', 'Wrong size', 'Broke in finishing']
@@ -157,6 +194,9 @@ export function PlateCheck({
   const [why, setWhy] = useState('')
   const [fix, setFix] = useState('')
   const [fixedFile, setFixedFile] = useState<File | null>(null)
+  /** For a failure with a later print of the piece: which print replaced it
+   *  (its id), none yet (null), or not answered (undefined). Never guessed. */
+  const [replaceWith, setReplaceWith] = useState<string | null | undefined>(undefined)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   if (!rows.length || (!canPass && !canFail)) return null
@@ -185,6 +225,50 @@ export function PlateCheck({
     } finally {
       setSaving(false)
     }
+  }
+
+  /** Fail a copy on its own print, and -- when the person says a later
+   *  print was its replacement -- mark it printed by that one, so each
+   *  plate shows its own piece: "failed here, reprinted there" on the
+   *  first, the replacement to check on the second. */
+  async function failCopy(c: Copy, note: string, fixed: File | null, by: string | null) {
+    if (!by) return move([c], 'reprint', note, fixed, c.runId)
+    setSaving(true)
+    setError(null)
+    try {
+      await setCopyStates(ctx.shop.id, c.part.id, ctx.profile.id, [c.copy - 1], 'reprint', note, c.runId)
+      await setCopyStates(ctx.shop.id, c.part.id, ctx.profile.id, [c.copy - 1], 'printed', `Replaced by the ${describeRun(by) ?? 'later'} print.`, by)
+      setFailing(null)
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /** Not its replacement after all: the copy goes back to the print it
+   *  failed on, failed, as it was before the link. */
+  async function unlink(c: Copy, failedOn: string) {
+    setSaving(true)
+    setError(null)
+    try {
+      const note = `Undid the link: the ${describeRun(c.runId ?? '') ?? 'later'} print was not its replacement.`
+      await setCopyStates(ctx.shop.id, c.part.id, ctx.profile.id, [c.copy - 1], 'reprint', note, failedOn)
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const openFail = (key: string, preset: string | null | undefined = undefined) => {
+    setFailing(failing === key ? null : key)
+    setWhy('')
+    setFix('')
+    setFixedFile(null)
+    setReplaceWith(preset)
   }
 
   const off = busy || saving
@@ -223,6 +307,23 @@ export function PlateCheck({
                 {name}
                 <span className="pmeta" style={{ marginLeft: 8 }}>{note}</span>
               </span>
+              {/* Linked to the wrong print: undo, back to failed here. Once
+                  the replacement has been checked, undo that first. */}
+              {(r.replaced ?? [])
+                .filter((x) => x.copy.state === 'printed')
+                .map((x) => (
+                  <button
+                    key={x.copy.copy}
+                    type="button"
+                    className="btn sm ghost"
+                    disabled={off}
+                    aria-label={`Undo the replacement of ${name}${(r.replaced ?? []).length > 1 ? ` copy ${x.copy.copy}` : ''}`}
+                    title={`Not the replacement? Back to failed here, still to reprint.`}
+                    onClick={() => void unlink(x.copy, x.failedOn)}
+                  >
+                    ↺ Undo
+                  </button>
+                ))}
             </div>,
           ]
         const many = r.copies.length > 1
@@ -230,6 +331,10 @@ export function PlateCheck({
           const key = `${r.part.id}:${c.copy}`
           const label = many ? `${name} · copy ${c.copy}` : name
           const testid = `piece-${name.toLowerCase()}${many ? `-${c.copy}` : ''}`
+          const later = replacementCandidates(c, runs, slices)
+          // On a plate that printed it again: this plate's own print, if it could be the replacement.
+          const here = r.kind === 'elsewhere' ? later.find((x) => runIds.has(x.id)) ?? null : null
+          const fromHere = failing === key && replaceWith != null && runIds.has(replaceWith)
           return (
             <div key={key}>
               <div className={`objrow ${c.state === 'reprint' ? 'failed' : ''}`.trim()} data-testid={testid}>
@@ -257,14 +362,22 @@ export function PlateCheck({
                         className="btn sm"
                         style={FAIL}
                         disabled={off}
-                        onClick={() => {
-                          setFailing(failing === key ? null : key)
-                          setWhy('')
-                          setFix('')
-                          setFixedFile(null)
-                        }}
+                        onClick={() => openFail(key)}
                       >
                         ✕ Fail
+                      </button>
+                    )}
+                    {/* Printed here again, but the copy is the earlier
+                        print's: was this the reprint of a bad one? */}
+                    {canFail && here && (
+                      <button
+                        type="button"
+                        className="btn sm ghost"
+                        disabled={off}
+                        title={`If the ${r.where ?? 'earlier'} piece was bad and this print replaced it`}
+                        onClick={() => openFail(key, here.id)}
+                      >
+                        Replaced a bad one?
                       </button>
                     )}
                   </span>
@@ -286,6 +399,26 @@ export function PlateCheck({
               </div>
               {failing === key && (
                 <div className="fld" style={{ margin: '4px 0 8px', padding: 8, background: 'var(--panel-3)', borderRadius: 6 }}>
+                  {fromHere && (
+                    <p className="hint" style={{ marginTop: 0 }}>
+                      The {r.where ?? 'earlier'} piece failed, and this plate's print replaced it. Say what went wrong with the first one.
+                    </p>
+                  )}
+                  {!fromHere && later.length > 0 && (
+                    <>
+                      <label className="lbl">Was a later print its replacement?</label>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }} role="group" aria-label="Was a later print its replacement?">
+                        {later.map((x) => (
+                          <button key={x.id} type="button" className={`chip ${replaceWith === x.id ? 'on' : ''}`} onClick={() => setReplaceWith(x.id)}>
+                            Yes — the {describeRun(x.id) ?? 'later'} print
+                          </button>
+                        ))}
+                        <button type="button" className={`chip ${replaceWith === null ? 'on' : ''}`} onClick={() => setReplaceWith(null)}>
+                          No — print it again
+                        </button>
+                      </div>
+                    </>
+                  )}
                   <label className="lbl">What went wrong</label>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
                     {REASONS.map((x) => (
@@ -297,19 +430,33 @@ export function PlateCheck({
                   <input value={why} placeholder="Or say it in your words" aria-label={`What went wrong with ${label}`} onChange={(e) => setWhy(e.target.value)} />
                   <label className="lbl" style={{ marginTop: 6 }}>How to get it right next time (optional)</label>
                   <input value={fix} placeholder="Brim on, slow first layer, dry the spool…" aria-label="How to get it right next time" onChange={(e) => setFix(e.target.value)} />
-                  <label className="lbl" style={{ marginTop: 6 }} htmlFor={`fixed-${key}`}>
-                    Fixed file (optional) — the re-sliced plate for the reprint
-                  </label>
-                  <input id={`fixed-${key}`} type="file" accept={SLICE_ACCEPT} onChange={(e) => setFixedFile(e.target.files?.[0] ?? null)} />
+                  {!replaceWith && (
+                    <>
+                      <label className="lbl" style={{ marginTop: 6 }} htmlFor={`fixed-${key}`}>
+                        Fixed file (optional) — the re-sliced plate for the reprint
+                      </label>
+                      <input id={`fixed-${key}`} type="file" accept={SLICE_ACCEPT} onChange={(e) => setFixedFile(e.target.files?.[0] ?? null)} />
+                    </>
+                  )}
                   <div className="btnrow" style={{ marginTop: 6, alignItems: 'center' }}>
-                    <button type="button" className="btn sm" style={FAIL} disabled={off || !why.trim()} onClick={() => void move([c], 'reprint', reprintNote(why, fix, null), fixedFile)}>
-                      Send it back
+                    <button
+                      type="button"
+                      className="btn sm"
+                      style={FAIL}
+                      disabled={off || !why.trim() || (later.length > 0 && replaceWith === undefined)}
+                      onClick={() => void failCopy(c, reprintNote(why, fix, null), replaceWith ? null : fixedFile, replaceWith ?? null)}
+                    >
+                      {replaceWith ? 'Fail it — replaced' : 'Send it back'}
                     </button>
                     <button type="button" className="btn sm ghost" onClick={() => setFailing(null)}>
                       Cancel
                     </button>
                     <span className="hint" style={{ margin: 0 }}>
-                      It goes back on the list to print again, with this reason.
+                      {replaceWith
+                        ? `Failed on its own plate; the ${describeRun(replaceWith) ?? 'later'} print counts as this copy, to check on its plate.`
+                        : later.length > 0 && replaceWith === undefined
+                          ? 'Say whether a later print replaced it first.'
+                          : 'It goes back on the list to print again, with this reason.'}
                     </span>
                   </div>
                 </div>

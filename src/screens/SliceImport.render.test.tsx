@@ -2167,3 +2167,56 @@ describe('equipment and hardware (CG, 27 Oct)', () => {
     expect(mag).toBeDefined()
   })
 })
+
+describe('a failed piece and the later print that replaced it (CG, 27 Nov)', () => {
+  it('asks on failing whether a later print of the piece was the replacement, links the two, and undoes', async () => {
+    const { ctx, jobId, data } = await seedShop()
+    const { importPlateFile, recordConnectPrint } = await import('../lib/plateSync')
+    const plate = async (name: string, text: string) => {
+      const f = new File([text], name, { type: 'text/plain' })
+      return (await importPlateFile(ctx, jobId, f, null, data as never)).importId
+    }
+    // Oct 30 prints the buoy and is recorded clean; Nov 9 prints it again
+    // (a different file), which fills nothing -- the cross-member's story.
+    const first = await plate('Reef buoy_sliced.gcode', GCODE)
+    await recordConnectPrint(ctx, jobId, first, { printedOn: '2026-10-30', minutes: 60, outcome: 'success' }, data as never)
+    const second = await plate('Reef buoy again_sliced.gcode', GCODE + '\n; sliced again\n')
+    await recordConnectPrint(ctx, jobId, second, { printedOn: '2026-11-09', minutes: 60, outcome: 'success' }, data as never)
+    await data.updateJobPhase(ctx.shop.id, jobId, ctx.profile.id, 'review')
+    const user = userEvent.setup()
+    await renderProject(jobId, ctx)
+    const onPlate = async (id: string) => within(await screen.findByTestId(`plate-${id}`))
+    const capState = () => currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Cap'").get()
+
+    // Fail Cap on Oct 30: it asks, and will not send until answered.
+    await user.click(within((await onPlate(first)).getByTestId('piece-cap')).getByRole('button', { name: /^✕ fail$/i }))
+    const p1 = await onPlate(first)
+    await user.type(p1.getByLabelText(/what went wrong with cap/i), 'Warped corner')
+    expect((p1.getByRole('button', { name: /send it back/i }) as HTMLButtonElement).disabled).toBe(true)
+    await user.click(p1.getByRole('button', { name: /yes — the 2026-11-09/i }))
+    await user.click(p1.getByRole('button', { name: /fail it — replaced/i }))
+    await waitFor(() => expect(capState()).toEqual({ copy_states: '["printed"]' }))
+
+    // Oct 30 says where it went; Nov 9 has the piece to check.
+    await (await onPlate(first)).findByText(/failed here — reprinted on 2026-11-09/i)
+    const p2 = await onPlate(second)
+    expect(within(p2.getByTestId('piece-cap')).getByRole('button', { name: /pass/i })).toBeTruthy()
+
+    // Wrong print: undo -- failed on Oct 30 again, still to reprint.
+    await user.click((await onPlate(first)).getByRole('button', { name: /undo the replacement of cap/i }))
+    await waitFor(() => expect(capState()).toEqual({ copy_states: '["reprint"]' }))
+    await (await onPlate(first)).findByText(/failed — going back/i)
+
+    // From the Nov 9 side: undo the fail, then say this print replaced it.
+    await user.click((await onPlate(first)).getByRole('button', { name: /undo fail on cap/i }))
+    await waitFor(() => expect(capState()).toEqual({ copy_states: '["printed"]' }))
+    await user.click(within((await onPlate(second)).getByTestId('piece-cap')).getByRole('button', { name: /replaced a bad one/i }))
+    const p2b = await onPlate(second)
+    await p2b.findByText(/piece failed, and this plate's print replaced it/i)
+    await user.type(p2b.getByLabelText(/what went wrong with cap/i), 'Layer shift')
+    await user.click(p2b.getByRole('button', { name: /fail it — replaced/i }))
+    await (await onPlate(first)).findByText(/failed here — reprinted on 2026-11-09/i)
+    const notes = currentDb.sqlite.prepare("select e.note from part_events e join job_parts p on p.id = e.part_id where p.label = 'Cap' and e.note is not null order by e.id").all() as { note: string }[]
+    expect(notes.at(-1)?.note).toMatch(/Replaced by the 2026-11-09/)
+  }, 30_000)
+})

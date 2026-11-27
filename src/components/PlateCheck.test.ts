@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { pieceName, piecesSummary, plateRows } from './PlateCheck'
-import type { PartRow, SliceSectionRow } from '../lib/data.types'
+import { pieceName, piecesSummary, plateRows, replacementCandidates } from './PlateCheck'
+import type { PartRow, PrintRunRow, SliceImportRow, SliceSectionRow } from '../lib/data.types'
 
 let id = 0
 const ev = (runId: string, copies: number[], at: string, toStatus: 'printed' | 'reprint' | 'passed' = 'printed') =>
@@ -48,5 +48,42 @@ describe('the parts on a plate (CG, 25 Nov)', () => {
     ]
     const [row] = plateRows([sec('shell', 2)], parts, new Set(['a']), (r) => r)
     expect([row.kind, row.copies.map((c) => [c.copy, c.state, c.runId])]).toEqual(['mine', [[1, 'reprint', 'a'], [2, 'printed', 'a']]])
+  })
+
+  describe('a failure and the later print that replaced it (CG, 27 Nov)', () => {
+    // The 32" Anson cross-member: printed Oct 30 (recorded clean), printed
+    // again Nov 9 on a plate with Body1 -- which filled nothing of it.
+    const run = (id: string, day: string, slice: string, outcome = 'success') => ({ id, startedAt: day, sliceImportId: slice, outcome }) as unknown as PrintRunRow
+    const runs = [run('oct30', '2026-10-30', 'p1'), run('nov9', '2026-11-09', 'p2'), run('nov11', '2026-11-11', 'p3', 'failed'), run('oct1', '2026-10-01', 'p2')]
+    const slices = [
+      { id: 'p1', sections: [sec('cross'), sec('outrigger')] },
+      { id: 'p2', sections: [sec('cross'), sec('Body1')] },
+      { id: 'p3', sections: [sec('cross')] },
+    ] as unknown as SliceImportRow[]
+
+    it('offers the later clean prints of the piece that filled nothing', () => {
+      const cross = part('cross', 1, ['printed'], [ev('oct30', [1], '2026-10-30T10:00')])
+      expect(replacementCandidates({ part: cross, runId: 'oct30' }, runs, slices).map((r) => r.id)).toEqual(['nov9'])
+      // A print that filled a copy of it is not a spare.
+      const two = part('cross', 2, ['printed', 'printed'], [ev('oct30', [1], '2026-10-30T10:00'), ev('nov9', [2], '2026-11-09T10:00')])
+      expect(replacementCandidates({ part: two, runId: 'oct30' }, runs, slices)).toEqual([])
+    })
+
+    it('shows each plate its own piece once linked, and goes back when undone', () => {
+      const linked = part('cross', 1, ['printed'], [
+        ev('oct30', [1], '2026-10-30T10:00'),
+        ev('oct30', [1], '2026-11-27T10:00', 'reprint'),
+        ev('nov9', [1], '2026-11-27T10:01'),
+      ])
+      const onOct30 = plateRows([sec('cross')], [linked], new Set(['oct30']), (r) => r)
+      expect(onOct30.map((r) => [r.kind, r.where, r.replaced?.map((x) => [x.copy.copy, x.failedOn])])).toEqual([['reprinted', 'nov9', [[1, 'oct30']]]])
+      const onNov9 = plateRows([sec('cross')], [linked], new Set(['nov9']), (r) => r)
+      expect(onNov9.map((r) => [r.kind, r.copies.map((c) => [c.state, c.runId])])).toEqual([['mine', [['printed', 'nov9']]]])
+
+      // Undone: failed on Oct 30 again, still to reprint; Nov 9 an extra print.
+      const undone = part('cross', 1, ['reprint'], [...linked.history, ev('oct30', [1], '2026-11-27T10:02', 'reprint')])
+      expect(plateRows([sec('cross')], [undone], new Set(['oct30']), (r) => r).map((r) => [r.kind, r.copies.map((c) => c.state)])).toEqual([['mine', ['reprint']]])
+      expect(plateRows([sec('cross')], [undone], new Set(['nov9']), (r) => r).map((r) => r.kind)).toEqual(['elsewhere'])
+    })
   })
 })
