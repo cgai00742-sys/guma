@@ -40,6 +40,7 @@ export type InboxApi = RecordApi &
     | 'adoptInboxItem'
     | 'decideInbox'
     | 'listShelf'
+    | 'saveInboxPhoto'
   >
 
 async function sha1(bytes: Uint8Array): Promise<string> {
@@ -275,43 +276,7 @@ export async function sendBackToInbox(
       plans.push({ runId: r.id, existing, add: null })
       continue
     }
-    const slice = detail.slices.find((s) => s.id === r.sliceImportId)
-    if (!slice) throw new Error('A print with no plate cannot go to the Inbox — there is no file to approve it from.')
-    const fileId = await keepFromPlate(ctx, api, slice)
-    const fb = fallback(r.id)
-    const results = (await api.listMadeItems(ctx.shop.id, jobId)).filter((m) => m.runId === r.id)
-    const failedLabels = results.filter((m) => m.status === 'failed').map((m) => m.label)
-    const date = (r.startedAt ?? '').slice(0, 10) || null
-    plans.push({
-      runId: r.id,
-      existing: null,
-      add: {
-        sourceRef: `run:${r.id}`,
-        printerId: r.printerId,
-        fileId,
-        fileName: slice.fileName,
-        startedAt: date,
-        endedAt: date,
-        state: r.outcome === 'cancelled' ? 'stopped' : 'finished',
-        minutes: r.hours == null ? null : Math.round(Number(r.hours) * 60),
-        facts: {},
-        suggestedJobId: jobId,
-        suggestReason: 'It was recorded on this project before being sent back.',
-        decision: {
-          jobId,
-          materialId: r.materialId,
-          reason: r.failureReason,
-          // Where its pieces were: the earlier answer, kept as the start.
-          place: (() => {
-            const asm = results.find((m) => m.status === 'assembled' && m.assemblyId)?.assemblyId
-            if (asm) return { kind: 'assembly' as const, assemblyId: asm }
-            return results.some((m) => m.status === 'kept') ? { kind: 'kept' as const } : null
-          })(),
-          objects: failedLabels.length ? Object.fromEntries(slice.sections.map((s) => [s.label, failedLabels.includes(s.label) ? 'failed' : 'good'])) : undefined,
-        },
-        ...fb,
-      },
-    })
+    plans.push({ runId: r.id, existing: null, add: await rowForRun(ctx, api, jobId, detail, r, fallback(r.id)) })
   }
   await api.takeBackPlaced(ctx.shop.id, runs.map((r) => r.id))
   const order = [...plans].sort((a, b) => {
@@ -332,6 +297,93 @@ export async function sendBackToInbox(
     }
   }
   return plans.length
+}
+
+/**
+ * Keep the printer camera's photo with a print already on a project (CG,
+ * 27 Nov: the end-of-print snapshot on every plate, "for all projects in the
+ * past and ... moving forward"). A print that came through the Inbox has its
+ * row; one recorded before the Inbox existed (RS850, 17-24 Nov) gets a row
+ * made from it, approved and tied to the print -- the person approved it
+ * when they recorded it. `sourceRef` names it in the printer's log
+ * ("connect:<printer>:160") so syncing that job later finds it, not a
+ * second print. Nothing about the print changes: no copies, no grams.
+ */
+export async function photoForPrint(
+  ctx: ShopContext,
+  api: InboxApi,
+  jobId: string,
+  runId: string,
+  photo: { kind: 'camera_last' | 'camera_first'; data: string; takenAt: string | null },
+  sourceRef: string | null = null,
+): Promise<{ inboxId: string; made: boolean }> {
+  const had = await api.inboxForRun(ctx.shop.id, runId)
+  if (had) {
+    await api.saveInboxPhoto(ctx.shop.id, had.id, photo.kind, photo.data, photo.takenAt)
+    return { inboxId: had.id, made: false }
+  }
+  const detail = await api.loadProjectDetail(ctx.shop.id, jobId)
+  const r = detail.runs.find((x) => x.id === runId)
+  if (!r) throw new Error('That print is not on this project.')
+  if (sourceRef) {
+    const taken = (await api.listInbox(ctx.shop.id, 'all')).find((x) => x.sourceRef === sourceRef)
+    if (taken) throw new Error(`${sourceRef} is already a different print in Guma${taken.runId ? '' : ' (still in Prints to check)'} — check which job this print was.`)
+  }
+  const add = await rowForRun(ctx, api, jobId, detail, r, {
+    ...(sourceRef ? { sourceRef } : {}),
+    suggestReason: 'Recorded on this project before the Inbox; kept here for its photo.',
+  })
+  const res = await api.addInboxItem(ctx.shop.id, { ...add, decision: { ...add.decision, inspected: true } })
+  await api.setInboxStatus(ctx.shop.id, res.id, 'approved', runId)
+  await api.saveInboxPhoto(ctx.shop.id, res.id, photo.kind, photo.data, photo.takenAt)
+  return { inboxId: res.id, made: true }
+}
+
+/**
+ * An Inbox row made from a print recorded on a project: its kept plate file,
+ * its earlier answers as the decision. For a print sent back, and for one
+ * that never came through the Inbox but now has a photo to keep.
+ */
+async function rowForRun(
+  ctx: ShopContext,
+  api: InboxApi,
+  jobId: string,
+  detail: Awaited<ReturnType<InboxApi['loadProjectDetail']>>,
+  r: Awaited<ReturnType<InboxApi['loadProjectDetail']>>['runs'][number],
+  fb: Partial<InboxAddInput>,
+): Promise<InboxAddInput> {
+  const slice = detail.slices.find((s) => s.id === r.sliceImportId)
+  if (!slice) throw new Error('A print with no plate cannot go to the Inbox — there is no file to approve it from.')
+  const fileId = await keepFromPlate(ctx, api, slice)
+  const results = (await api.listMadeItems(ctx.shop.id, jobId)).filter((m) => m.runId === r.id)
+  const failedLabels = results.filter((m) => m.status === 'failed').map((m) => m.label)
+  const date = (r.startedAt ?? '').slice(0, 10) || null
+  return {
+    sourceRef: `run:${r.id}`,
+    printerId: r.printerId,
+    fileId,
+    fileName: slice.fileName,
+    startedAt: date,
+    endedAt: date,
+    state: r.outcome === 'cancelled' ? 'stopped' : 'finished',
+    minutes: r.hours == null ? null : Math.round(Number(r.hours) * 60),
+    facts: {},
+    suggestedJobId: jobId,
+    suggestReason: 'It was recorded on this project before being sent back.',
+    decision: {
+      jobId,
+      materialId: r.materialId,
+      reason: r.failureReason,
+      // Where its pieces were: the earlier answer, kept as the start.
+      place: (() => {
+        const asm = results.find((m) => m.status === 'assembled' && m.assemblyId)?.assemblyId
+        if (asm) return { kind: 'assembly' as const, assemblyId: asm }
+        return results.some((m) => m.status === 'kept') ? { kind: 'kept' as const } : null
+      })(),
+      objects: failedLabels.length ? Object.fromEntries(slice.sections.map((s) => [s.label, failedLabels.includes(s.label) ? 'failed' : 'good'])) : undefined,
+    },
+  ...fb,
+  }
 }
 
 /** Keep a plate's stored file for the Inbox. */

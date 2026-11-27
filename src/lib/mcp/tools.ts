@@ -48,7 +48,7 @@ import { todayISO } from '../dates'
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { findPlates } from '../plateSync'
-import { addPrinterLogPrint, notReady } from '../printInbox'
+import { addPrinterLogPrint, notReady, photoForPrint } from '../printInbox'
 import { assemblyStatus } from '../madeItems'
 
 export interface ToolDef {
@@ -612,28 +612,38 @@ export function buildTools(): ToolDef[] {
     {
       name: 'guma_inbox_add_photo',
       description:
-        'Keep the printer camera\'s photo with a print in Prints to check -- the snapshot Prusa Connect shows under "Camera snapshots" on the job page (Last = the end of the print, what the person inspects; First = the start). Read it from a path on this computer: a JPEG saved from the snapshot, about 1280 pixels wide. The person sees it beside the print when saying how it came off, and it stays with the print once approved. A second photo of the same kind replaces the first.',
+        'Keep the printer camera\'s photo with a print -- the snapshot Prusa Connect shows under "Camera snapshots" on the job page (Last = the end of the print, what the person inspects; First = the start). Read it from a path on this computer: a JPEG saved from the snapshot, about 1280 pixels wide. Name the print by source_ref for one in Prints to check (the person sees it while saying how it came off, and it stays with the print once approved), or by job_id + print_id for a print already on a project (from guma_project runs) -- it then shows on that print\'s plate. For a print already on a project, also pass source_ref ("connect:<printer uuid>:<job#>") when you know which printer job it was, so a later sync of that job finds it instead of adding it twice. A second photo of the same kind replaces the first. Adding a photo never changes how the print came off.',
       inputSchema: obj(
         {
-          source_ref: str('The print\'s source_ref, as given to guma_inbox_add_print.'),
+          source_ref: str('The print\'s source_ref, as given to guma_inbox_add_print. With print_id: the printer job it was.'),
+          job_id: str('With print_id: the project the print is on.'),
+          print_id: str('A print already on a project (guma_project runs[].id).'),
           file_path: str('Absolute path to the .jpg (or .png) on this computer.'),
           kind: { type: 'string', enum: ['camera_last', 'camera_first'], description: 'Default camera_last.' },
           taken_at: str('When the camera took it, ISO with the shop\'s offset, if known.'),
         },
-        ['source_ref', 'file_path'],
+        ['file_path'],
       ),
       writes: true,
       handler: async (a, ctx) => {
-        const row = (await local.listInbox(ctx.shop.id, 'all')).find((r) => r.sourceRef === String(a.source_ref))
-        if (!row) throw new Error(`No print ${a.source_ref} in Prints to check — add it with guma_inbox_add_print first.`)
+        const byPrint = a.print_id != null
+        if (byPrint && !a.job_id) throw new Error('Pass job_id with print_id: the project the print is on.')
+        if (!byPrint && !a.source_ref) throw new Error('Name the print: source_ref for one in Prints to check, or job_id + print_id for one on a project.')
+        const row = byPrint ? null : (await local.listInbox(ctx.shop.id, 'all')).find((r) => r.sourceRef === String(a.source_ref))
+        if (!byPrint && !row) throw new Error(`No print ${a.source_ref} in Prints to check — add it with guma_inbox_add_print first.`)
         const path = String(a.file_path)
         const ext = path.toLowerCase().split('.').pop()
         const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : null
         if (!mime) throw new Error('Only a .jpg, .png or .webp photo can be kept.')
         const bytes = await readFile(path)
         const kind = a.kind === 'camera_first' ? 'camera_first' : 'camera_last'
-        await local.saveInboxPhoto(ctx.shop.id, row.id, kind, `data:${mime};base64,${bytes.toString('base64')}`, a.taken_at ?? null)
-        return { inbox_id: row.id, file_name: row.fileName, kind, kept_kb: Math.round(bytes.length / 1024) }
+        const data = `data:${mime};base64,${bytes.toString('base64')}`
+        if (byPrint) {
+          const res = await photoForPrint(ctx, local, String(a.job_id), String(a.print_id), { kind, data, takenAt: a.taken_at ?? null }, a.source_ref ? String(a.source_ref) : null)
+          return { inbox_id: res.inboxId, print_id: a.print_id, kind, kept_kb: Math.round(bytes.length / 1024), made_a_record_for_it: res.made }
+        }
+        await local.saveInboxPhoto(ctx.shop.id, row!.id, kind, data, a.taken_at ?? null)
+        return { inbox_id: row!.id, file_name: row!.fileName, kind, kept_kb: Math.round(bytes.length / 1024) }
       },
     },
     {

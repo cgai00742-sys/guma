@@ -631,6 +631,56 @@ describe('Prusa Connect sync, through the Print Inbox (CG, 23-24 Nov)', () => {
     expect(await k.local.runPhotoRefs(k.ctx.shop.id, jobId)).toEqual({ [res[0].runId!]: r.inbox_id })
   })
 
+  it('keeps a photo with a print recorded before the Inbox, on its plate, without touching the print (CG, 27 Nov)', async () => {
+    const k = await setup()
+    const { addPrinterLogPrint, sendBackToInbox } = await import('../printInbox')
+    const { recordConnectPrint, importPlateFile } = await import('../plateSync')
+    const jobId = await k.local.createInHouseJob(k.ctx.shop.id, { title: 'RS850', brief: '', seriesId: null, neededBy: null })
+    const asm = await k.local.saveAssembly(k.ctx.shop.id, jobId, { name: 'Boat', needs: [] })
+    const bytes = readFileSync(REEF)
+    const file = { name: 'reef-buoy_prusa.gcode', arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), text: async () => bytes.toString('utf8') }
+    const plate = await importPlateFile(k.ctx, jobId, file, null, k.local)
+    const rec = await recordConnectPrint(k.ctx, jobId, plate.importId, { printedOn: '2026-11-22', minutes: 25, outcome: 'success', assemblyId: asm }, k.local)
+    const before = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
+    const made = await k.local.listMadeItems(k.ctx.shop.id, jobId)
+
+    const dir = mkdtempSync(join(tmpdir(), 'guma-photo-'))
+    const jpg = join(dir, 'guma-snapshot-hatsa-161-last.jpg')
+    writeFileSync(jpg, Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==', 'base64'))
+    await expect(k.call('guma_inbox_add_photo', { print_id: rec.runId, file_path: jpg })).rejects.toThrow(/job_id/)
+    const added = await k.call('guma_inbox_add_photo', { job_id: jobId, print_id: rec.runId, source_ref: 'connect:h:161', file_path: jpg, taken_at: '2026-11-22T13:47:00-10:00' })
+    expect(added).toMatchObject({ made_a_record_for_it: true, kind: 'camera_last' })
+    // On the plate now, and the print, its copies and its pieces untouched.
+    expect(await k.local.runPhotoRefs(k.ctx.shop.id, jobId)).toEqual({ [rec.runId!]: added.inbox_id })
+    const after = await k.local.loadProjectDetail(k.ctx.shop.id, jobId)
+    expect(after.runs).toEqual(before.runs)
+    expect(after.parts.map((p) => p.copyStates)).toEqual(before.parts.map((p) => p.copyStates))
+    expect(await k.local.listMadeItems(k.ctx.shop.id, jobId)).toEqual(made)
+    // Never waiting to be checked: it was approved when it was recorded.
+    expect(await k.local.listInbox(k.ctx.shop.id, 'new')).toHaveLength(0)
+    expect((await k.local.listInbox(k.ctx.shop.id, 'all'))[0]).toMatchObject({ status: 'approved', runId: rec.runId, sourceRef: 'connect:h:161' })
+
+    // Again: the same record, the photo replaced.
+    const again = await k.call('guma_inbox_add_photo', { job_id: jobId, print_id: rec.runId, file_path: jpg })
+    expect(again).toMatchObject({ inbox_id: added.inbox_id, made_a_record_for_it: false })
+    expect((await k.local.inboxPictures(k.ctx.shop.id, added.inbox_id)).photos).toHaveLength(1)
+
+    // Syncing that printer job later finds it rather than adding it twice.
+    const log = await addPrinterLogPrint(k.ctx, k.local, file, { sourceRef: 'connect:h:161', printerId: null, startedAt: null, endedAt: '2026-11-22T13:47:00-10:00', state: 'finished', minutes: 25, facts: {} } as any)
+    expect(log.existed).toBe(true)
+    expect(await k.local.listInbox(k.ctx.shop.id, 'all')).toHaveLength(1)
+
+    // A job number already used by another print is refused.
+    const rec2 = await recordConnectPrint(k.ctx, jobId, plate.importId, { printedOn: '2026-11-23', minutes: 25, outcome: 'success' }, k.local)
+    await expect(k.call('guma_inbox_add_photo', { job_id: jobId, print_id: rec2.runId, source_ref: 'connect:h:161', file_path: jpg })).rejects.toThrow(/already a different print/)
+
+    // Sent back to the Inbox later, the photo goes with it.
+    await sendBackToInbox(k.ctx, k.local, jobId, [rec.runId!])
+    const back = (await k.local.listInbox(k.ctx.shop.id, 'new'))[0]
+    expect(back.id).toBe(added.inbox_id)
+    expect((await k.local.inboxPictures(k.ctx.shop.id, back.id)).photos).toHaveLength(1)
+  })
+
   it('sends the good pieces to the Shelf, and a second print of the same thing joins that product (CG, 25 Nov)', async () => {
     const k = await setup()
     const { approveInbox } = await import('../printInbox')

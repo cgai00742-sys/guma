@@ -38,7 +38,7 @@ import {
 } from '../lib/sliceImport'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ProjectInbox } from '../components/ProjectInbox'
-import { PrintPhotoLink, useRunPhotoRefs } from '../components/PrintPhotos'
+import { PlatePictures, PrintPhotoLink, useRunPhotoRefs } from '../components/PrintPhotos'
 import { PlateCheck, piecesSummary } from '../components/PlateCheck'
 import { importFixedFile } from '../lib/fixedFile'
 import {
@@ -4274,14 +4274,14 @@ function SliceRuns({
           <div className={`plate ${status.cls === 'ok' ? 'done' : ''}`.trim()} key={s.id} data-testid={`plate-${s.id}`} data-plate-ids={g.ids.join(' ')}>
             <div className="platehead">
               {/* The slicer's own picture of the plate: the quickest way to
-                  tell two plates apart (CG, 22 Oct). */}
-              {s.thumbnail ? (
-                <img className="platethumb" src={s.thumbnail} alt={`Preview of ${s.fileName}`} />
-              ) : (
-                <div className="platethumb none" aria-hidden="true">
-                  no preview
-                </div>
-              )}
+                  tell two plates apart (CG, 22 Oct). Beside it, the camera's
+                  photo of what came off the bed (CG, 27 Nov). */}
+              <PlatePictures
+                ctx={ctx}
+                preview={s.thumbnail}
+                fileName={s.fileName}
+                shots={runs.flatMap((r) => (photoRefs[r.id] ? [{ runId: r.id, inboxId: photoRefs[r.id], date: r.startedAt?.slice(0, 10) ?? null, outcome: r.outcome }] : []))}
+              />
               <div className="platename">
                 {/* Named for what it makes: two plates can share a file name
                     and hold different parts (CG, 16 Oct). */}
