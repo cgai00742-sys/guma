@@ -44,6 +44,8 @@ interface Copy {
   /** 1-based, as the history names copies. */
   copy: number
   state: PartStatus
+  /** The print that made this copy last, if one did. */
+  runId: string | null
 }
 
 /** One part on the plate, and the copies its pass or fail acts on. */
@@ -87,7 +89,7 @@ export function plateRows(
     const lastRun = new Map<number, string | null>()
     for (const h of [...p.history].sort((a, b) => a.at.localeCompare(b.at) || a.id - b.id))
       if (h.kind === 'status' && h.toStatus === 'printed') for (const c of h.copies ?? []) lastRun.set(c, h.runId ?? null)
-    const copy = (c: number): Copy => ({ part: p, copy: c, state: states[c - 1] })
+    const copy = (c: number): Copy => ({ part: p, copy: c, state: states[c - 1], runId: lastRun.get(c) ?? null })
     const mine = [...lastRun].filter(([c, r]) => r && runIds.has(r) && states[c - 1] && states[c - 1] !== 'pending').map(([c]) => copy(c))
     if (mine.length) {
       rows.push({ part: p, onPlate: n, copies: mine, kind: 'mine', where: null })
@@ -152,7 +154,6 @@ export function PlateCheck({
   }
   const rows = plateRows(sections, parts, runIds, describeRun)
   const [failing, setFailing] = useState<string | null>(null)
-  const [n, setN] = useState(1)
   const [why, setWhy] = useState('')
   const [fix, setFix] = useState('')
   const [fixedFile, setFixedFile] = useState<File | null>(null)
@@ -164,7 +165,7 @@ export function PlateCheck({
   const allWaiting = rows.flatMap(waiting)
 
   /** Move copies, one call per part, one after another. */
-  async function move(copies: Copy[], to: PartStatus, note: string | null, fixed: File | null = null) {
+  async function move(copies: Copy[], to: PartStatus, note: string | null, fixed: File | null = null, runId: string | null = null) {
     setSaving(true)
     setError(null)
     try {
@@ -176,7 +177,7 @@ export function PlateCheck({
       const byPart = new Map<string, Copy[]>()
       for (const c of copies) byPart.set(c.part.id, [...(byPart.get(c.part.id) ?? []), c])
       for (const [partId, cs] of byPart)
-        await setCopyStates(ctx.shop.id, partId, ctx.profile.id, cs.map((c) => c.copy - 1), to, note)
+        await setCopyStates(ctx.shop.id, partId, ctx.profile.id, cs.map((c) => c.copy - 1), to, note, runId)
       setFailing(null)
       await onChanged()
     } catch (e) {
@@ -202,11 +203,10 @@ export function PlateCheck({
         )}
         {!canPass && <span className="hint" style={{ margin: 0 }}>Passing comes at Review; a bad piece can be failed now.</span>}
       </div>
-      {rows.map((r) => {
-        const w = waiting(r)
-        const passed = r.copies.filter((c) => c.state === 'passed').length
-        const back = r.copies.filter((c) => c.state === 'reprint').length
-        const key = r.part.id
+      {/* One row per PIECE: two copies of a part on the plate are two
+          rows, each passed or failed on its own (CG, 26 Nov: "in case one of
+          them was good but the other not"). A decision can be undone. */}
+      {rows.flatMap((r) => {
         const name = r.part.label.replace(/\.(stl|3mf|obj|step|stp)(?=\s*\(|$)/i, '')
         const note =
           r.kind === 'elsewhere'
@@ -216,88 +216,107 @@ export function PlateCheck({
               : r.kind === 'none'
                 ? 'not marked printed'
                 : ''
-        return (
-          <div key={key}>
-            <div className={`objrow ${back && !w.length && !passed ? 'failed' : ''}`.trim()} data-testid={`piece-${name.toLowerCase()}`}>
+        if (!r.copies.length)
+          return [
+            <div key={r.part.id} className="objrow" data-testid={`piece-${name.toLowerCase()}`}>
               <span style={{ flex: 1, minWidth: 0 }}>
                 {name}
-                {r.onPlate > 1 ? ` ×${r.onPlate}` : ''}
-                <span className="pmeta" style={{ marginLeft: 8 }}>
-                  {[
-                    passed ? `✓ ${passed > 1 ? `${passed} ` : ''}passed` : '',
-                    back ? `${back > 1 ? `${back} ` : ''}going back` : '',
-                    w.length > 1 ? `${w.length} to check` : '',
-                    note,
-                  ]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </span>
+                <span className="pmeta" style={{ marginLeft: 8 }}>{note}</span>
               </span>
-              {w.length > 0 && (
-                <span style={{ display: 'flex', gap: 6 }} role="group" aria-label={`Check ${name}`}>
-                  {canPass && (
-                    <button type="button" className="btn sm" style={PASS} disabled={off} onClick={() => void move(w, 'passed', null)}>
-                      ✓ Pass{w.length > 1 ? ` ${w.length}` : ''}
-                    </button>
-                  )}
-                  {canFail && (
-                    <button
-                      type="button"
-                      className="btn sm"
-                      style={FAIL}
-                      disabled={off}
-                      onClick={() => {
-                        setFailing(failing === key ? null : key)
-                        setN(1)
-                        setWhy('')
-                        setFix('')
-                        setFixedFile(null)
-                      }}
-                    >
-                      ✕ Fail
-                    </button>
-                  )}
+            </div>,
+          ]
+        const many = r.copies.length > 1
+        return r.copies.map((c) => {
+          const key = `${r.part.id}:${c.copy}`
+          const label = many ? `${name} · copy ${c.copy}` : name
+          const testid = `piece-${name.toLowerCase()}${many ? `-${c.copy}` : ''}`
+          return (
+            <div key={key}>
+              <div className={`objrow ${c.state === 'reprint' ? 'failed' : ''}`.trim()} data-testid={testid}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  {label}
+                  <span className="pmeta" style={{ marginLeft: 8 }}>
+                    {[
+                      c.state === 'passed' ? '✓ passed' : c.state === 'reprint' ? '✕ failed — going back' : '',
+                      note,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
                 </span>
+                {c.state === 'printed' ? (
+                  <span style={{ display: 'flex', gap: 6 }} role="group" aria-label={`Check ${label}`}>
+                    {canPass && (
+                      <button type="button" className="btn sm" style={PASS} disabled={off} onClick={() => void move([c], 'passed', null)}>
+                        ✓ Pass
+                      </button>
+                    )}
+                    {canFail && (
+                      <button
+                        type="button"
+                        className="btn sm"
+                        style={FAIL}
+                        disabled={off}
+                        onClick={() => {
+                          setFailing(failing === key ? null : key)
+                          setWhy('')
+                          setFix('')
+                          setFixedFile(null)
+                        }}
+                      >
+                        ✕ Fail
+                      </button>
+                    )}
+                  </span>
+                ) : c.state === 'passed' || c.state === 'reprint' ? (
+                  // Marked the wrong one: back to "printed, not checked yet".
+                  // A failed copy that has been reprinted is past undoing here.
+                  <button
+                    type="button"
+                    className="btn sm ghost"
+                    disabled={off}
+                    aria-label={`Undo ${c.state === 'passed' ? 'pass' : 'fail'} on ${label}`}
+                    title="Marked the wrong one? Back to printed, not checked yet."
+                    // Undone on the same print, so the copy stays on this plate.
+                    onClick={() => void move([c], 'printed', `Undid the ${c.state === 'passed' ? 'pass' : 'fail'}: marked by mistake.`, null, c.runId)}
+                  >
+                    ↺ Undo
+                  </button>
+                ) : null}
+              </div>
+              {failing === key && (
+                <div className="fld" style={{ margin: '4px 0 8px', padding: 8, background: 'var(--panel-3)', borderRadius: 6 }}>
+                  <label className="lbl">What went wrong</label>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                    {REASONS.map((x) => (
+                      <button key={x} type="button" className={`chip ${why === x ? 'on' : ''}`} onClick={() => setWhy(x)}>
+                        {x}
+                      </button>
+                    ))}
+                  </div>
+                  <input value={why} placeholder="Or say it in your words" aria-label={`What went wrong with ${label}`} onChange={(e) => setWhy(e.target.value)} />
+                  <label className="lbl" style={{ marginTop: 6 }}>How to get it right next time (optional)</label>
+                  <input value={fix} placeholder="Brim on, slow first layer, dry the spool…" aria-label="How to get it right next time" onChange={(e) => setFix(e.target.value)} />
+                  <label className="lbl" style={{ marginTop: 6 }} htmlFor={`fixed-${key}`}>
+                    Fixed file (optional) — the re-sliced plate for the reprint
+                  </label>
+                  <input id={`fixed-${key}`} type="file" accept={SLICE_ACCEPT} onChange={(e) => setFixedFile(e.target.files?.[0] ?? null)} />
+                  <div className="btnrow" style={{ marginTop: 6, alignItems: 'center' }}>
+                    <button type="button" className="btn sm" style={FAIL} disabled={off || !why.trim()} onClick={() => void move([c], 'reprint', reprintNote(why, fix, null), fixedFile)}>
+                      Send it back
+                    </button>
+                    <button type="button" className="btn sm ghost" onClick={() => setFailing(null)}>
+                      Cancel
+                    </button>
+                    <span className="hint" style={{ margin: 0 }}>
+                      It goes back on the list to print again, with this reason.
+                    </span>
+                  </div>
+                </div>
               )}
             </div>
-            {failing === key && (
-              <div className="fld" style={{ margin: '4px 0 8px', padding: 8, background: 'var(--panel-3)', borderRadius: 6 }}>
-                {w.length > 1 && (
-                  <>
-                    <label className="lbl">How many failed? (of {w.length})</label>
-                    <input type="number" min={1} max={w.length} value={n} style={{ maxWidth: 100 }} onChange={(e) => setN(Math.min(w.length, Math.max(1, Math.floor(Number(e.target.value) || 1))))} />
-                  </>
-                )}
-                <label className="lbl" style={{ marginTop: 6 }}>What went wrong</label>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-                  {REASONS.map((x) => (
-                    <button key={x} type="button" className={`chip ${why === x ? 'on' : ''}`} onClick={() => setWhy(x)}>
-                      {x}
-                    </button>
-                  ))}
-                </div>
-                <input value={why} placeholder="Or say it in your words" aria-label={`What went wrong with ${name}`} onChange={(e) => setWhy(e.target.value)} />
-                <label className="lbl" style={{ marginTop: 6 }}>How to get it right next time (optional)</label>
-                <input value={fix} placeholder="Brim on, slow first layer, dry the spool…" aria-label="How to get it right next time" onChange={(e) => setFix(e.target.value)} />
-                <label className="lbl" style={{ marginTop: 6 }} htmlFor={`fixed-${key}`}>
-                  Fixed file (optional) — the re-sliced plate for the reprint
-                </label>
-                <input id={`fixed-${key}`} type="file" accept={SLICE_ACCEPT} onChange={(e) => setFixedFile(e.target.files?.[0] ?? null)} />
-                <div className="btnrow" style={{ marginTop: 6, alignItems: 'center' }}>
-                  <button type="button" className="btn sm" style={FAIL} disabled={off || !why.trim()} onClick={() => void move(w.slice(0, n), 'reprint', reprintNote(why, fix, null), fixedFile)}>
-                    {n > 1 ? `Send ${n} back` : 'Send it back'}
-                  </button>
-                  <button type="button" className="btn sm ghost" onClick={() => setFailing(null)}>
-                    Cancel
-                  </button>
-                  <span className="hint" style={{ margin: 0 }}>
-                    It goes back on the list to print again, with this reason.
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-        )
+          )
+        })
       })}
       {error && (
         <div className="attn crit" role="alert" style={{ marginTop: 6 }}>

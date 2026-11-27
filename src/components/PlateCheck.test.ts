@@ -40,4 +40,13 @@ describe('the parts on a plate (CG, 25 Nov)', () => {
     const onB = plateRows([sec('Body1')], parts, new Set(['b']), (r) => r)
     expect(onB.map((r) => [r.kind, r.copies.length])).toEqual([['mine', 1]])
   })
+
+  it('keeps each copy its own row, and an undone check stays on its plate (CG, 26 Nov)', () => {
+    // Two shells: copy 1 failed, copy 2 passed by mistake and undone on the same print.
+    const parts = [
+      part('shell', 2, ['reprint', 'printed'], [ev('a', [1, 2], '2026-11-09T10:00'), ev('a', [1], '2026-11-09T11:00', 'reprint'), ev('a', [2], '2026-11-09T11:01', 'passed'), ev('a', [2], '2026-11-09T11:02')]),
+    ]
+    const [row] = plateRows([sec('shell', 2)], parts, new Set(['a']), (r) => r)
+    expect([row.kind, row.copies.map((c) => [c.copy, c.state, c.runId])]).toEqual(['mine', [[1, 'reprint', 'a'], [2, 'printed', 'a']]])
+  })
 })

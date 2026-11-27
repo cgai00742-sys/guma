@@ -918,7 +918,8 @@ describe('a failed part, Voltage-style', () => {
     await screen.findByText(/Recorded as printed on/i)
 
     // Failed on its plate, beside the print (CG, 25 Nov), not on the parts list.
-    const piece = await screen.findByTestId('piece-buoy shell')
+    // Two shells on the plate are two rows: this one is copy 1.
+    const piece = await screen.findByTestId('piece-buoy shell-1')
     await user.click(within(piece).getByRole('button', { name: /fail/i }))
     const send = screen.getByRole('button', { name: /send it back/i })
     expect((send as HTMLButtonElement).disabled, 'a reason is required').toBe(true)
@@ -1205,7 +1206,15 @@ describe('failing one part of a plate, and swapping in its fixed file', () => {
     await renderProject(jobId, ctx)
     // On the plate: Cap passes, one of the two Buoy shells goes back.
     await user.click(within(await screen.findByTestId('piece-cap')).getByRole('button', { name: /pass/i }))
-    await user.click(within(await screen.findByTestId('piece-buoy shell')).getByRole('button', { name: /fail/i }))
+    await screen.findByRole('button', { name: /undo pass on cap/i })
+    // Passed the wrong one? Undo puts it back to printed, not checked (CG, 26 Nov).
+    await user.click(within(await screen.findByTestId('piece-cap')).getByRole('button', { name: /undo pass/i }))
+    await waitFor(() =>
+      expect(currentDb.sqlite.prepare("select copy_states from job_parts where label = 'Cap'").get()).toEqual({ copy_states: '["printed"]' }),
+    )
+    await user.click(within(await screen.findByTestId('piece-cap')).getByRole('button', { name: /pass/i }))
+    // One of the two shells failed, the other is untouched.
+    await user.click(within(await screen.findByTestId('piece-buoy shell-1')).getByRole('button', { name: /fail/i }))
     await user.type(screen.getByLabelText(/what went wrong/i), 'Warped corner')
     // The fix, sliced on its own, under whatever name the slicer used.
     const fixed = new File(

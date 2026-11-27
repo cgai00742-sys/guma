@@ -775,8 +775,10 @@ export async function setCopyStates(
   copies: number[],
   to: PartStatus,
   note: string | null,
+  /** The print these copies came off -- so an undone pass or fail stays on its plate. */
+  runId: string | null = null,
 ): Promise<void> {
-  return (await backend()).setCopyStates(shopId, partId, actorId, copies, to, note)
+  return (await backend()).setCopyStates(shopId, partId, actorId, copies, to, note, runId)
 }
 
 /** Several parts to new copy counts at once; extras kept as spares. */
